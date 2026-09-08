@@ -4,7 +4,7 @@ import type { CallDirection, CallStatus } from '@prisma/client'
 
 /**
  * POST /api/calls/log
- * Called by the Python AI agent to log completed calls to the database.
+ * Called by the Python AI agent to create/update calls while they are active.
  * Replaces the Airtable integration from the original repo.
  */
 export async function POST(req: NextRequest) {
@@ -43,28 +43,49 @@ export async function POST(req: NextRequest) {
 
     const now = new Date()
 
-    // Create call log
-    const callLog = await prisma.callLog.create({
-      data: {
-        contactId: contact?.id,
-        customerName: customerName || 'Unknown Customer',
-        phone: phone || 'Unknown',
-        direction: (direction === 'INBOUND' ? 'INBOUND' : 'OUTBOUND') as CallDirection,
-        status: (['COMPLETED', 'MISSED', 'NO_ANSWER', 'BUSY'].includes(status) ? status : 'COMPLETED') as CallStatus,
-        duration: durationStr,
-        durationSec: totalSec,
-        agent: agent || 'AI Agent - Anushka',
-        date: now,
-        time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }),
-        purpose: purpose || 'AI Call',
-        outcome: outcome || 'Completed',
-        notes: notes || '',
-        recording: recording || false,
-        livekitRoomId: livekitRoomId || null,
-        callType: callType || 'ai_outbound',
-        aiHandled: true,
-      },
-    })
+    const statusValue = (['QUEUED', 'IN_PROGRESS', 'FAILED', 'COMPLETED', 'MISSED', 'NO_ANSWER', 'BUSY'].includes(status)
+      ? status : 'COMPLETED') as CallStatus
+    const mutableData = {
+      contactId: contact?.id,
+      customerName: customerName || 'Unknown Customer',
+      phone: phone || 'Unknown',
+      direction: (direction === 'INBOUND' ? 'INBOUND' : 'OUTBOUND') as CallDirection,
+      status: statusValue,
+      duration: durationStr,
+      durationSec: totalSec,
+      agent: agent || 'AI Agent - Anushka',
+      purpose: purpose || 'AI Call',
+      outcome: outcome || 'Completed',
+      notes: notes || '',
+      recording: recording || false,
+      livekitRoomId: livekitRoomId || null,
+      callType: callType || 'ai_outbound',
+      aiHandled: true,
+    }
+
+    // A worker sends several snapshots for one call. Reuse its room ID so
+    // transcripts grow in one record instead of creating duplicate calls.
+    const callLog = livekitRoomId
+      ? await prisma.callLog.upsert({
+          where: { livekitRoomId },
+          update: mutableData,
+          create: {
+            ...mutableData,
+            date: now,
+            time: now.toLocaleTimeString('en-IN', {
+              hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata',
+            }),
+          },
+        })
+      : await prisma.callLog.create({
+          data: {
+            ...mutableData,
+            date: now,
+            time: now.toLocaleTimeString('en-IN', {
+              hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata',
+            }),
+          },
+        })
 
     // Create transcript if provided
     if (transcript) {
@@ -72,8 +93,14 @@ export async function POST(req: NextRequest) {
       const messages = parseTranscript(transcript)
       const sentiment = analyzeSentiment(transcript)
 
-      await prisma.callTranscript.create({
-        data: {
+      await prisma.callTranscript.upsert({
+        where: { callLogId: callLog.id },
+        update: {
+          summary: generateSummary(transcript),
+          sentiment,
+          messages,
+        },
+        create: {
           callLogId: callLog.id,
           summary: generateSummary(transcript),
           sentiment,

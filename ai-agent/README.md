@@ -1,110 +1,70 @@
-# LiveKit Vobiz Outbound Agent 📞
+# Sekol Tiles calling agent
 
-A production-ready voice agent capable of making outbound calls using **LiveKit**, **Deepgram**, and **Groq (Llama 3.3)**.  
-Designed for reliability, speed, and ease of deployment.
+LiveKit voice worker: Deepgram Nova-3 multilingual STT, Sarvam Bulbul v3 TTS and
+the Groq model selected by `AI_AGENT_GROQ_MODEL`. The existing streaming audio, VAD and interruption
+settings are preserved. The opening greeting goes directly to TTS without an LLM request.
 
-## 🚀 Features
-- **Ultra-Fast LLM**: Uses **Groq** running `llama-3.3-70b-versatile` for near-instant responses.
-- **High-Quality Audio**: Uses **Deepgram** for both Speech-to-Text (STT) and Text-to-Speech (TTS).
-- **SIP Trunking**: Integrated with **Vobiz** for PSTN connectivity.
-- **Robust Configuration**: Centralized `config.py` for easy customization of prompts, models, and voices.
+## Configuration and startup
 
----
+Install `requirements.txt` in a clean virtual environment and run `python agent.py start`.
+The worker loads the repository `.env`; set `AI_AGENT_VERTICAL=tiles` to load `.env.tiles`,
+or `AI_AGENT_ENV_FILE` to an explicit path. Process environment takes precedence.
 
-## 🛠️ Setup & Installation
+Required: `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `GROQ_API_KEY`,
+`DEEPGRAM_API_KEY`, `SARVAM_API_KEY`. Outbound calls also require
+`OUTBOUND_SIP_TRUNK_ID` (or `VOBIZ_SIP_TRUNK_ID`). Set `CRM_API_URL` and
+`CRM_API_SECRET` for call logging and appointments. Configure `DEFAULT_TRANSFER_NUMBER`
+for human transfers. The worker and CRM must use the same `LIVEKIT_AGENT_NAME`.
 
-### 1. Prerequisites
-- Python 3.10+ (Recommended: 3.10.13)
-- A [LiveKit Cloud](https://cloud.livekit.io/) account
-- A [Deepgram](https://deepgram.com/) API Key
-- A [Groq](https://groq.com/) API Key
-- A SIP Provider (e.g., Vobiz)
+`AI_AGENT_GROQ_MODEL` controls the calling model (the local `.env` selects
+`qwen/qwen3.8-27b`; GPT OSS is the fallback only when this variable is empty). The shared
+legacy `GROQ_MODEL` setting is intentionally not read by this voice worker because
+it also controls WhatsApp. GPT OSS uses low reasoning effort and
+`include_reasoning=false`; Groq does not support `reasoning_format` for this model.
+Qwen uses a 256-token output allowance: reserving 1024 tokens exceeded this
+account's 1000 output-tokens-per-minute limit and caused HTTP 429 responses.
+GPT OSS retains a 1024-token allowance for reasoning and tool arguments. The prompt
+keeps spoken answers short. Missing Groq credentials fail visibly rather than
+silently switching providers.
 
-### 2. Clone & Install
-```bash
-# Clone the repository
-git clone <your-repo-url>
-cd LiveKit-Vobiz-Outbound-main
+For the tiles vertical, the voice identity defaults to Sekol Tiles. Optional overrides:
+`AI_AGENT_NAME`, `AI_AGENT_BRAND_NAME`, `AI_AGENT_WEBSITE`, `AI_AGENT_EMAIL`,
+`AI_AGENT_PHONE`. `AI_AGENT_NAME` is the spoken name, not the worker dispatch name.
 
-# Create a virtual environment
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+After deploying changes, rebuild/restart the worker (`docker compose up -d --build ai-agent`
+for the repository compose setup) and deploy the CRM changes. Local file edits alone
+do not update a running worker on a remote server.
 
-# Install dependencies
-pip install -r requirements.txt
+## Knowledge and call context
+
+Company facts were verified on 7 September 2026 from:
+- [Sekol Tiles products and company overview](https://sekoltiles.com/)
+- [Sekol Tiles contact details and hours](https://sekoltiles.com/contact-us/)
+- [Groq GPT OSS model settings](https://console.groq.com/docs/model/openai/gpt-oss-120b)
+- [Groq reasoning parameters](https://console.groq.com/docs/reasoning)
+
+The prompt contains static verified facts, avoiding network retrieval on each turn.
+Prices, stock, order/payment status and unverified services require team confirmation.
+
+Dispatch metadata uses `call_type`, `phone_number` (E.164), `customer_name`, and
+`reason`. `CallContext` puts these into persistent per-call agent instructions along
+with the India date. LiveKit maintains the conversation history, including the
+direct greeting. Supplied details are reused, and customer corrections take priority.
+This is memory within one call; it does not fetch previous calls or CRM order data.
+Custom context stays complete in the instructions and is addressed after the
+customer agrees to talk; private/free-text notes are not recited in the opening.
+
+## Verification
+
+From the repository root:
+
+```sh
+python -m unittest discover -s ai-agent -p 'test_*.py' -v
+npx vitest run lib/validations/ai-call.test.ts
+npx tsc --noEmit
 ```
 
-### 3. Configure Environment
-Copy the example environment file and fill in your credentials:
-```bash
-cp .env.example .env
-nano .env  # Or open in your editor
-```
-**Required Variables:**
-- `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_SECRET`
-- `DEEPGRAM_API_KEY`
-- `GROQ_API_KEY`
-- `VOBIZ_SIP_*` variables (for outbound calls)
-
----
-
-## 🏃‍♂️ Usage
-
-### 1. Start the Agent
-This runs the agent process which listens for room connections.
-```bash
-python agent.py start
-```
-
-### 2. Make an Outbound Call
-In a **new terminal window** (ensure `venv` is active), run:
-```bash
-python make_call.py --to +91XXXXXXXXXX
-```
-*Note: The number must include the country code (e.g., +1 or +91).*
-
----
-
-## 🔧 Troubleshooting Guide
-
-### ❌ Error: `model_decommissioned` (Groq/Llama)
-**Cause:** The configured LLM model is no longer supported by Groq.  
-**Fix:**
-1. Open `config.py`.
-2. Update `GROQ_MODEL` to a supported model (e.g., `llama-3.3-70b-versatile` or `llama-3.1-8b-instant`).
-3. **Restart `agent.py`** to apply changes.
-
-### ❌ Error: `404 Not Found` (SIP Trunk)
-**Cause:** The `SIP_TRUNK_ID` in `.env` is incorrect or doesn't exist in your LiveKit project.  
-**Fix:**
-1. Run `python list_trunks.py` to see available trunks.
-2. If none exist, run `python create_trunk.py` to create one.
-3. Update `.env` with the correct ID.
-
-### ❌ Error: `Address already in use` (Port 8081)
-**Cause:** Another instance of `agent.py` is already running.  
-**Fix:**
-1. Find the process: `lsof -i :8081`
-2. Kill it: `kill -9 <PID>` or `pkill -f "python agent.py"`
-
-### ❌ Error: `No module named 'certifi'` or other imports
-**Cause:** Dependencies are missing.  
-**Fix:**
-1. Ensure your virtual environment is active (`source venv/bin/activate`).
-2. Run `pip install -r requirements.txt`.
-
-### ❌ Call Connects but No Audio
-**Cause:** TTS (Text-to-Speech) failure or WebSocket issues.  
-**Fix:**
-1. Check terminal logs for `APIStatusError`.
-2. If using OpenAI TTS, ensure you have OpenAI credits.
-3. Recommended: Switch to Deepgram TTS (set `TTS_PROVIDER=deepgram` in `.env`).
-
----
-
-## 📂 Project Structure
-- `agent.py`: Main application logic.
-- `config.py`: Central configuration for prompts, models, and constants.
-- `make_call.py`: Script to initiate outbound calls.
-- `create_trunk.py` / `setup_trunk.py`: Utilities for SIP trunk management.
-# LIvekitAIVoice
+Use a browser test for voice quality and a controlled phone test for SIP transfer,
+hangup and full speech latency. The CRM's “Configured” status checks settings; it
+does not establish whether a remote worker is online. “Call Requested” means a
+dispatch was accepted, not that the customer answered.

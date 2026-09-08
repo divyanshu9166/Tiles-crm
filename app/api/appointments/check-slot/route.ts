@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
+import {
+  APPOINTMENT_SLOTS,
+  normalizeAppointmentDate,
+  normalizeAppointmentTime,
+  timeToMinutes,
+} from '@/lib/appointments/booking'
 
 /**
  * GET /api/appointments/check-slot?date=YYYY-MM-DD&time=HH:MM+AM
@@ -16,40 +22,6 @@ import { prisma } from '@/lib/db'
  *   - AI calling agent (Anushka) before confirming appointment on call
  *   - WhatsApp appointment chatbot after customer picks a time
  */
-
-// Fixed showroom visit slots — 10 AM to 5 PM
-const ALL_SLOTS = [
-  '10:00 AM',
-  '11:00 AM',
-  '12:00 PM',
-  '2:00 PM',
-  '3:00 PM',
-  '4:00 PM',
-  '5:00 PM',
-]
-
-/** Convert "HH:MM AM/PM" or "HH AM/PM" or "HH:MM" → minutes since midnight */
-function timeToMinutes(t: string): number {
-  const normalized = t.trim().toUpperCase()
-  // Match HH:MM AM/PM, HH AM/PM, or just HH:MM (assumes 24-hour if no AM/PM, but falls back to AM/PM logic)
-  const match = normalized.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?$/)
-  if (!match) return -1
-  
-  let hours = parseInt(match[1], 10)
-  const minutes = match[2] ? parseInt(match[2], 10) : 0
-  const period = match[3]
-  
-  if (period === 'PM' && hours !== 12) hours += 12
-  if (period === 'AM' && hours === 12) hours = 0
-  
-  // If no AM/PM provided and hours between 1 and 7, assume PM (e.g. "2:00" -> 2 PM) 
-  // since showroom is open 10 AM to 5 PM
-  if (!period && hours >= 1 && hours <= 7) {
-    hours += 12
-  }
-
-  return hours * 60 + minutes
-}
 
 export async function GET(req: NextRequest) {
   const apiSecret = req.headers.get('x-api-secret')
@@ -69,25 +41,22 @@ export async function GET(req: NextRequest) {
   }
 
   // Parse date — accept YYYY-MM-DD
-  const requestedDate = new Date(dateStr)
-  if (isNaN(requestedDate.getTime())) {
-    return NextResponse.json({ error: 'Invalid date format. Use YYYY-MM-DD.' }, { status: 400 })
-  }
-
-  const requestedMinutes = timeToMinutes(timeStr)
-  if (requestedMinutes < 0) {
+  const date = normalizeAppointmentDate(dateStr)
+  if (!date) return NextResponse.json({ error: 'Use a real current or future date in YYYY-MM-DD format.' }, { status: 400 })
+  const time = normalizeAppointmentTime(timeStr)
+  if (!time) {
     return NextResponse.json(
-      { error: 'Invalid time format. Use HH:MM AM/PM (e.g. 11:00 AM).' },
+      { error: 'Choose a listed showroom slot, e.g. 11:00 AM or 2:00 PM.' },
       { status: 400 },
     )
   }
+  const requestedMinutes = timeToMinutes(time)
+  if (requestedMinutes === null) return NextResponse.json({ error: 'Invalid appointment time.' }, { status: 400 })
 
   try {
     // Fetch all appointments on the requested date
-    const dayStart = new Date(dateStr)
-    dayStart.setHours(0, 0, 0, 0)
-    const dayEnd = new Date(dateStr)
-    dayEnd.setHours(23, 59, 59, 999)
+    const dayStart = new Date(`${date}T00:00:00.000Z`)
+    const dayEnd = new Date(`${date}T23:59:59.999Z`)
 
     const existingAppointments = await prisma.appointment.findMany({
       where: {
@@ -101,7 +70,7 @@ export async function GET(req: NextRequest) {
     const CONFLICT_WINDOW_MINUTES = 60
     const conflictingSlot = existingAppointments.find((appt) => {
       const apptMinutes = timeToMinutes(appt.time)
-      return Math.abs(apptMinutes - requestedMinutes) < CONFLICT_WINDOW_MINUTES
+      return apptMinutes !== null && Math.abs(apptMinutes - requestedMinutes) < CONFLICT_WINDOW_MINUTES
     })
 
     if (!conflictingSlot) {
@@ -110,11 +79,12 @@ export async function GET(req: NextRequest) {
 
     // Slot is taken — find available slots from the fixed list
     const bookedMinutes = new Set(
-      existingAppointments.map((a) => timeToMinutes(a.time)).filter((m) => m >= 0),
+      existingAppointments.map((a) => timeToMinutes(a.time)).filter((m): m is number => m !== null),
     )
 
-    const suggestions = ALL_SLOTS.filter((slot) => {
+    const suggestions = APPOINTMENT_SLOTS.filter((slot) => {
       const slotMin = timeToMinutes(slot)
+      if (slotMin === null) return false
       return !Array.from(bookedMinutes).some(
         (booked) => Math.abs(booked - slotMin) < CONFLICT_WINDOW_MINUTES,
       )

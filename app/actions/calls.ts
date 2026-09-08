@@ -4,6 +4,8 @@ import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { createCallLogSchema } from '@/lib/validations/call'
 import type { CallDirection, CallStatus } from '@prisma/client'
+import { outboundAICallSchema } from '@/lib/validations/ai-call'
+import { callingAgentStatus } from '@/lib/calling-agent-status'
 
 export async function getCallLogs() {
   const calls = await prisma.callLog.findMany({
@@ -94,6 +96,8 @@ export async function getCallStats() {
 }
 
 export async function initiateAICall(phoneNumber: string, reason: string, customerName: string = '') {
+  const parsed = outboundAICallSchema.safeParse({ phoneNumber, reason, customerName })
+  if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
   try {
     const LIVEKIT_URL = process.env.LIVEKIT_URL
     const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY
@@ -103,43 +107,17 @@ export async function initiateAICall(phoneNumber: string, reason: string, custom
       return { success: false, error: 'LiveKit not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET in .env' }
     }
 
-    const { createRoom, dispatchAgent } = await import('@/lib/livekit')
-    const roomName = `outbound-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-
-    await createRoom(roomName)
-    await dispatchAgent(roomName, {
-      call_type: 'outbound',
-      phone_number: phoneNumber,
-      reason: reason || 'Follow-up call',
-      customer_name: customerName || '',
-    })
+    const { startOutboundAICall } = await import('@/lib/calling-agent/outbound')
+    const { roomName, callLogId } = await startOutboundAICall(parsed.data)
 
     revalidatePath('/calls')
-    return { success: true, data: { roomName, message: `Call initiated to ${phoneNumber}` } }
-  } catch (error: any) {
+    return { success: true, data: { roomName, callLogId, message: `Call queued for ${phoneNumber}` } }
+  } catch (error: unknown) {
     console.error('Failed to initiate AI call:', error)
-    return { success: false, error: error?.message || 'Failed to initiate call' }
+    return { success: false, error: error instanceof Error ? error.message : 'Failed to initiate call' }
   }
 }
 
 export async function getAIAgentStatus() {
-  const livekitConfigured = !!(process.env.LIVEKIT_URL && process.env.LIVEKIT_API_KEY && process.env.LIVEKIT_API_SECRET)
-  const hasSarvam = !!process.env.SARVAM_API_KEY
-  const hasGemini = !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY)
-  const hasSipTrunk = !!process.env.OUTBOUND_SIP_TRUNK_ID
-  const configured = livekitConfigured && hasSarvam && hasGemini
-
-  return {
-    success: true,
-    data: {
-      configured,
-      agentName: process.env.AI_AGENT_NAME || 'anushka',
-      livekitUrl: livekitConfigured ? process.env.LIVEKIT_URL : null,
-      hasLiveKit: livekitConfigured,
-      hasSarvam,
-      hasGemini,
-      hasVobiz: !!process.env.VOBIZ_SIP_DOMAIN || hasSipTrunk,
-      hasSipTrunk,
-    },
-  }
+  return { success: true, data: await callingAgentStatus() }
 }

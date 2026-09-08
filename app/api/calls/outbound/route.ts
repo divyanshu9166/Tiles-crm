@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { outboundAICallSchema } from '@/lib/validations/ai-call'
 
 /**
  * POST /api/calls/outbound
@@ -8,11 +9,11 @@ import { NextRequest, NextResponse } from 'next/server'
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
-    const { phoneNumber, reason, customerName } = body
-
-    if (!phoneNumber) {
-      return NextResponse.json({ error: 'Phone number is required' }, { status: 400 })
+    const parsed = outboundAICallSchema.safeParse(body)
+    if (!parsed.success) {
+      return NextResponse.json({ error: parsed.error.issues[0].message }, { status: 400 })
     }
+    const { phoneNumber, reason, customerName } = parsed.data
 
     const LIVEKIT_URL = process.env.LIVEKIT_URL
     const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY
@@ -25,26 +26,19 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // Generate a unique room name
-    const roomName = `outbound-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-
-    // Use LiveKit Server API to create room and dispatch agent
-    // We use the REST API directly since we're in a Next.js API route
-    const { createToken, createRoom, dispatchAgent } = await import('@/lib/livekit')
-
-    await createRoom(roomName)
-    await dispatchAgent(roomName, {
-      call_type: 'outbound',
-      phone_number: phoneNumber,
+    const { startOutboundAICall } = await import('@/lib/calling-agent/outbound')
+    const { roomName, callLogId } = await startOutboundAICall({
+      phoneNumber,
       reason: reason || 'Follow-up call',
-      customer_name: customerName || '',
+      customerName: customerName || '',
     })
 
     return NextResponse.json({
       success: true,
       data: {
         roomName,
-        message: `Outbound call initiated to ${phoneNumber}`,
+        callLogId,
+        message: `Call queued for ${phoneNumber}`,
       },
     })
   } catch (error) {

@@ -95,6 +95,23 @@ export async function createRoom(roomName: string): Promise<void> {
   }
 }
 
+/** Delete a room created for a call that could not be dispatched. */
+export async function deleteRoom(roomName: string): Promise<void> {
+  const httpUrl = getHttpUrl()
+  const token = createJWT({ video: { roomAdmin: true, room: roomName } })
+  const response = await fetch(`${httpUrl}/twirp/livekit.RoomService/DeleteRoom`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ room: roomName }),
+  })
+  if (!response.ok && response.status !== 404) {
+    throw new Error(`Failed to delete room: ${response.status} ${await response.text()}`)
+  }
+}
+
 /**
  * Dispatch the AI agent to a room via the REST API.
  */

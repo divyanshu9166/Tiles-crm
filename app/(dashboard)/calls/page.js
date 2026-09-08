@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Phone,
   PhoneIncoming,
@@ -78,9 +78,28 @@ export default function CallsPage() {
   const [outboundPhone, setOutboundPhone] = useState('');
   const [outboundName, setOutboundName] = useState('');
   const [outboundReason, setOutboundReason] = useState('');
+  const [customReason, setCustomReason] = useState('');
   const [callingState, setCallingState] = useState('idle'); // idle | calling | connected | ended
+  const [activeCallLogId, setActiveCallLogId] = useState(null);
   const [browserCallState, setBrowserCallState] = useState('idle'); // idle | connecting | connected
   const [callMessage, setCallMessage] = useState('');
+  const browserRoomRef = useRef(null);
+
+  const removeBrowserCallAudio = () => {
+    document.querySelectorAll('[data-livekit-browser-audio="true"]').forEach((element) => element.remove());
+  };
+
+  const disconnectBrowserRoom = async (room = browserRoomRef.current) => {
+    if (!room) return;
+    // Prevent a pending microphone negotiation from using a room we are closing.
+    if (browserRoomRef.current === room) browserRoomRef.current = null;
+    removeBrowserCallAudio();
+    try {
+      await room.disconnect();
+    } catch (error) {
+      console.warn('Browser voice room cleanup failed:', error);
+    }
+  };
 
   const refreshLogs = () => {
     getCallLogs().then(res => {
@@ -98,12 +117,38 @@ export default function CallsPage() {
     });
   }, []);
 
-  // Auto-refresh every 15s while a call is in progress
+  // Auto-refresh while either calling mode is active.
   useEffect(() => {
-    if (callingState !== 'connected') return;
+    if (callingState !== 'connected' && browserCallState !== 'connected') return;
     const interval = setInterval(refreshLogs, 15000);
     return () => clearInterval(interval);
-  }, [callingState]);
+  }, [callingState, browserCallState]);
+
+  useEffect(() => {
+    if (!activeCallLogId) return;
+    const activeCall = callLogs.find((call) => call.id === activeCallLogId);
+    if (!activeCall) return;
+    if (['Completed', 'No answer', 'Busy', 'Failed', 'Missed'].includes(activeCall.status)) {
+      setCallingState('ended');
+      setCallMessage(`Call finished: ${activeCall.outcome || activeCall.status}.`);
+    }
+  }, [activeCallLogId, callLogs]);
+
+  // A call may finish while another tab is open. Always load fresh database
+  // state when the user opens logs or transcripts.
+  useEffect(() => {
+    if (activeTab !== 'logs' && activeTab !== 'transcripts') return;
+    getCallLogs().then(res => {
+      if (res.success) setCallLogs(res.data);
+    });
+  }, [activeTab]);
+
+  useEffect(() => () => {
+    const room = browserRoomRef.current;
+    browserRoomRef.current = null;
+    removeBrowserCallAudio();
+    if (room) void room.disconnect().catch(() => undefined);
+  }, []);
 
   // Derive phone book from call logs
   const phoneBook = useMemo(() => {
@@ -121,8 +166,9 @@ export default function CallsPage() {
   const callTranscripts = useMemo(() => {
     return callLogs.filter(c => c.transcript).map(c => ({
       id: c.id, customer: c.customer, phone: c.phone, date: c.date, time: c.time,
-      duration: c.duration, summary: c.transcript.summary, sentiment: c.transcript.sentiment,
-      messages: c.transcript.messages,
+      direction: c.direction, duration: c.duration,
+      summary: c.transcript.summary || 'AI-handled call', sentiment: c.transcript.sentiment || 'Neutral',
+      messages: Array.isArray(c.transcript.messages) ? c.transcript.messages : [],
     }));
   }, [callLogs]);
 
@@ -155,7 +201,7 @@ export default function CallsPage() {
       return (
         t.customer.toLowerCase().includes(searchQuery.toLowerCase()) ||
         t.phone.includes(searchQuery) ||
-        t.summary.toLowerCase().includes(searchQuery.toLowerCase())
+        (t.summary || '').toLowerCase().includes(searchQuery.toLowerCase())
       );
     });
   }, [searchQuery, callTranscripts]);
@@ -205,6 +251,9 @@ export default function CallsPage() {
   };
 
   const getStatusBadge = (status) => {
+    if (status === 'Queued') return <span className="px-2 py-0.5 rounded-full text-xs border bg-blue-500/10 text-blue-700 border-blue-500/20">Queued</span>;
+    if (status === 'In progress') return <span className="px-2 py-0.5 rounded-full text-xs border bg-amber-500/10 text-amber-700 border-amber-500/20">In progress</span>;
+    if (status === 'Failed') return <span className="px-2 py-0.5 rounded-full text-xs border bg-red-500/10 text-red-700 border-red-500/20">Failed</span>;
     const styles = {
       Completed: 'bg-emerald-500/10 text-emerald-700 border-emerald-500/20',
       Missed: 'bg-red-500/10 text-red-700 border-red-500/20',
@@ -595,6 +644,13 @@ export default function CallsPage() {
       </div>
 
       <div className="space-y-3">
+        {filteredTranscripts.length === 0 && (
+          <div className="glass-card p-8 text-center">
+            <MessageSquare className="mx-auto h-8 w-8 text-muted" />
+            <p className="mt-3 font-medium text-foreground">No transcripts saved yet</p>
+            <p className="mt-1 text-sm text-muted">Active AI calls appear here as the conversation progresses.</p>
+          </div>
+        )}
         {filteredTranscripts.map((transcript) => (
           <div key={transcript.id} className="glass-card overflow-hidden">
             {/* Header */}
@@ -930,30 +986,37 @@ export default function CallsPage() {
 
   // ─── AI CALLER TAB ───
   const handleOutboundCall = async () => {
-    if (!outboundPhone) return;
+    if (!outboundPhone.trim() || callingState !== 'idle') return;
+    if (!agentStatus?.workerOnline) {
+      setCallMessage('AI worker is offline. Start the worker before placing an outbound call.');
+      return;
+    }
+    const reason = outboundReason === 'Custom reason' ? customReason.trim() : outboundReason;
+    if (outboundReason === 'Custom reason' && !reason) {
+      setCallMessage('Please enter the custom call reason.');
+      return;
+    }
     setCallingState('calling');
     setCallMessage('');
-    const res = await initiateAICall(outboundPhone, outboundReason, outboundName);
-    if (res.success) {
-      setCallingState('connected');
-      setCallMessage(`Call initiated! Room: ${res.data.roomName}`);
-      // Refresh at 30s, 60s, 120s, 180s after call starts to catch when it ends
-      [30000, 60000, 120000, 180000, 300000].forEach(delay => {
-        setTimeout(() => getCallLogs().then(r => { if (r.success) setCallLogs(r.data); }), delay);
-      });
-    } else {
+    try {
+      const res = await initiateAICall(outboundPhone, reason, outboundName);
+      if (res.success) {
+        setCallingState('connected');
+        setActiveCallLogId(res.data.callLogId);
+        setCallMessage('Call queued. Waiting for the AI worker to dial the customer.');
+      } else {
+        setCallingState('idle');
+        setCallMessage(res.error || 'Failed to initiate call');
+      }
+    } catch (err) {
       setCallingState('idle');
-      setCallMessage(res.error || 'Failed to initiate call');
+      setCallMessage(err.message || 'Failed to initiate call');
     }
   };
 
   const handleBrowserCall = async () => {
     if (browserCallState === 'connected') {
-      // End call
-      if (window._livekitRoom) {
-        await window._livekitRoom.disconnect();
-        window._livekitRoom = null;
-      }
+      await disconnectBrowserRoom();
       setBrowserCallState('idle');
       return;
     }
@@ -980,28 +1043,34 @@ export default function CallsPage() {
       }
 
       const room = new window.LivekitClient.Room();
-      window._livekitRoom = room;
+      browserRoomRef.current = room;
 
       room.on(window.LivekitClient.RoomEvent.TrackSubscribed, (track) => {
         if (track.kind === 'audio') {
           const el = track.attach();
-          el.id = 'livekit-audio';
+          el.dataset.livekitBrowserAudio = 'true';
           document.body.appendChild(el);
         }
       });
 
       room.on(window.LivekitClient.RoomEvent.Disconnected, () => {
+        if (browserRoomRef.current === room) browserRoomRef.current = null;
         setBrowserCallState('idle');
-        const audioEl = document.getElementById('livekit-audio');
-        if (audioEl) audioEl.remove();
+        removeBrowserCallAudio();
         // Refresh logs
         getCallLogs().then(r => { if (r.success) setCallLogs(r.data); });
       });
 
       await room.connect(data.url, data.token);
+      if (browserRoomRef.current !== room) return;
       await room.localParticipant.setMicrophoneEnabled(true);
+      if (browserRoomRef.current !== room) {
+        await room.localParticipant.setMicrophoneEnabled(false);
+        return;
+      }
       setBrowserCallState('connected');
     } catch (err) {
+      await disconnectBrowserRoom();
       setBrowserCallState('idle');
       setCallMessage('Failed to connect: ' + err.message);
     }
@@ -1018,9 +1087,9 @@ export default function CallsPage() {
           <StatCard
             icon={Bot}
             label="AI Agent"
-            value={agentStatus?.configured ? 'Online' : 'Not Configured'}
-            trend={agentStatus?.configured ? 'LiveKit + Sarvam + Gemini ready' : 'Setup required'}
-            positive={agentStatus?.configured}
+            value={agentStatus?.workerOnline ? 'Online' : agentStatus?.configured ? 'Worker Offline' : 'Not Configured'}
+            trend={agentStatus?.workerOnline ? 'Ready to accept calls' : agentStatus?.configured ? 'Start or restore the AI worker' : 'Setup required'}
+            positive={agentStatus?.workerOnline}
           />
           <StatCard icon={PhoneOutgoing} label="AI Outbound" value={aiCalls.filter(c => c.direction === 'Outbound').length} trend="Total AI calls" positive />
           <StatCard icon={PhoneIncoming} label="AI Inbound" value={aiCalls.filter(c => c.direction === 'Inbound').length} trend="Total AI calls" positive />
@@ -1043,8 +1112,10 @@ export default function CallsPage() {
             </p>
             <div className="space-y-3">
               <div>
-                <label className="text-sm text-muted mb-1 block">Phone Number *</label>
+                <label htmlFor="ai-outbound-phone" className="text-sm text-muted mb-1 block">Phone Number *</label>
                 <input
+                  id="ai-outbound-phone"
+                  name="phoneNumber"
                   type="text"
                   placeholder="+91XXXXX XXXXX"
                   value={outboundPhone}
@@ -1053,8 +1124,10 @@ export default function CallsPage() {
                 />
               </div>
               <div>
-                <label className="text-sm text-muted mb-1 block">Customer Name</label>
+                <label htmlFor="ai-outbound-customer-name" className="text-sm text-muted mb-1 block">Customer Name</label>
                 <input
+                  id="ai-outbound-customer-name"
+                  name="customerName"
                   type="text"
                   placeholder="Enter name (optional)"
                   value={outboundName}
@@ -1063,8 +1136,10 @@ export default function CallsPage() {
                 />
               </div>
               <div>
-                <label className="text-sm text-muted mb-1 block">Call Reason</label>
+                <label htmlFor="ai-outbound-reason" className="text-sm text-muted mb-1 block">Call Reason</label>
                 <select
+                  id="ai-outbound-reason"
+                  name="callReason"
                   value={outboundReason}
                   onChange={(e) => setOutboundReason(e.target.value)}
                   className="w-full px-4 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground focus:outline-none focus:border-accent/50"
@@ -1082,12 +1157,18 @@ export default function CallsPage() {
                 </select>
               </div>
               {outboundReason === 'Custom reason' && (
-                <input
-                  type="text"
-                  placeholder="Enter custom reason..."
-                  onChange={(e) => setOutboundReason(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground placeholder:text-muted focus:outline-none focus:border-accent/50"
-                />
+                <div>
+                  <label htmlFor="ai-outbound-custom-reason" className="text-sm text-muted mb-1 block">Custom Call Reason</label>
+                  <textarea
+                    id="ai-outbound-custom-reason"
+                    name="customCallReason"
+                    placeholder="Enter custom reason..."
+                    value={customReason}
+                    maxLength={2000}
+                    onChange={(e) => setCustomReason(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground placeholder:text-muted focus:outline-none focus:border-accent/50"
+                  />
+                </div>
               )}
 
               {callMessage && (
@@ -1098,21 +1179,23 @@ export default function CallsPage() {
 
               <button
                 onClick={handleOutboundCall}
-                disabled={!outboundPhone || callingState === 'calling'}
+                disabled={!outboundPhone.trim() || callingState !== 'idle' || !agentStatus?.workerOnline}
                 className="w-full flex items-center justify-center gap-2 min-h-[48px] py-2.5 bg-accent text-white rounded-xl text-sm font-semibold hover:bg-accent-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {callingState === 'calling' ? (
                   <><Loader2 className="w-4 h-4 animate-spin" /> Initiating Call...</>
                 ) : callingState === 'connected' ? (
-                  <><PhoneCall className="w-4 h-4" /> Call in Progress</>
+                  <><PhoneCall className="w-4 h-4" /> Call Queued</>
+                ) : callingState === 'ended' ? (
+                  <><CheckCircle2 className="w-4 h-4" /> Call Finished</>
                 ) : (
                   <><PhoneOutgoing className="w-4 h-4" /> Start AI Call</>
                 )}
               </button>
 
-              {callingState === 'connected' && (
+              {(callingState === 'connected' || callingState === 'ended') && (
                 <button
-                  onClick={() => { setCallingState('idle'); setCallMessage(''); }}
+                  onClick={() => { setCallingState('idle'); setActiveCallLogId(null); setCallMessage(''); }}
                   className="w-full py-2 text-sm text-muted hover:text-foreground transition-colors"
                 >
                   Reset
@@ -1187,9 +1270,11 @@ export default function CallsPage() {
                 <p className="text-xs text-muted mb-2 uppercase tracking-wider">Service Status</p>
                 <div className="grid grid-cols-2 gap-2">
                   {[
+                    { label: 'AI Worker Online', ok: agentStatus.workerOnline },
                     { label: 'LiveKit', ok: agentStatus.hasLiveKit },
-                    { label: 'Sarvam STT/TTS', ok: agentStatus.hasSarvam },
-                    { label: 'Gemini LLM', ok: agentStatus.hasGemini },
+                    { label: 'Deepgram STT', ok: agentStatus.hasDeepgram },
+                    { label: 'Sarvam TTS', ok: agentStatus.hasSarvam },
+                    { label: 'Groq LLM', ok: agentStatus.hasGroq },
                     { label: 'Vobiz SIP', ok: agentStatus.hasVobiz },
                     { label: 'SIP Trunk', ok: agentStatus.hasSipTrunk },
                   ].map(({ label, ok }) => (

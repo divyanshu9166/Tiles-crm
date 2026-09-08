@@ -14,19 +14,27 @@ export async function POST(req: NextRequest) {
 
   try {
     const { customerName, phone, preferredTime, reason } = await req.json()
+    if (
+      typeof customerName !== 'string' || !customerName.trim() ||
+      typeof phone !== 'string' || !/^\+[1-9]\d{7,14}$/.test(phone.replace(/[\s().-]/g, '')) ||
+      typeof preferredTime !== 'string' || !preferredTime.trim()
+    ) {
+      return NextResponse.json({ error: 'customerName, E.164 phone, and preferredTime are required' }, { status: 400 })
+    }
+    const normalizedPhone = phone.replace(/[\s().-]/g, '')
 
     // Try to link to existing contact
-    const contact = phone ? await prisma.contact.findFirst({ where: { phone } }) : null
+    const contact = await prisma.contact.findFirst({ where: { phone: normalizedPhone } })
 
     const now = new Date()
 
     const callLog = await prisma.callLog.create({
       data: {
         contactId: contact?.id,
-        customerName: customerName || 'Unknown',
-        phone: phone || 'Unknown',
+        customerName: customerName.trim().slice(0, 120),
+        phone: normalizedPhone,
         direction: 'OUTBOUND',
-        status: 'COMPLETED',
+        status: 'QUEUED',
         duration: '0:00',
         durationSec: 0,
         agent: 'AI Agent - Anushka',
@@ -34,7 +42,7 @@ export async function POST(req: NextRequest) {
         time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }),
         purpose: `Callback requested: ${reason || 'General'}`,
         outcome: 'Callback Scheduled',
-        notes: `Customer requested callback at ${preferredTime}. Reason: ${reason}`,
+        notes: `Customer requested callback at ${preferredTime.trim().slice(0, 200)}. Reason: ${typeof reason === 'string' ? reason.slice(0, 500) : 'General'}`,
         recording: false,
         callType: 'ai_inbound',
         aiHandled: true,

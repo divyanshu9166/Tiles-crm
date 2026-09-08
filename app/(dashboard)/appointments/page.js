@@ -45,6 +45,15 @@ export default function AppointmentsPage() {
     });
   }, []);
 
+  // AI bookings happen outside this browser tab. Keep the calendar current
+  // while it is open, without requiring a manual page reload.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') void refresh();
+    }, 15000);
+    return () => clearInterval(interval);
+  }, []);
+
   const getDaysInMonth = (m, y) => new Date(y, m + 1, 0).getDate();
   const getFirstDay = (m, y) => new Date(y, m, 1).getDay();
   const daysInMonth = getDaysInMonth(currentMonth, currentYear);

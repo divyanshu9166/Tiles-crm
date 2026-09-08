@@ -12,6 +12,7 @@ const publicPaths = [
   '/api/email-track',
   '/api/calls/log',
   '/api/calls/schedule-callback',
+  '/api/appointments/check-slot',
   '/api/appointments/create',
   '/api/whatsapp/webhook',
 ]

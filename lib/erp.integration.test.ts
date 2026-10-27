@@ -20,7 +20,9 @@ import { createSalesOrder, createSalesOrderFromQuotation, createInvoiceFromSales
 import { validatePicking, getPickings, cancelPicking, reserveDeliverySlabs, getPicking, returnDelivery } from '@/app/actions/operations'
 import { createStoneLot } from '@/app/actions/stone-inventory'
 import { approvePurchaseOrder, receivePurchaseOrder, cancelPurchaseOrder, createPurchaseOrder, recordPurchaseOrderPayment } from '@/app/actions/purchases'
-import { cancelInvoice } from '@/app/actions/invoices'
+import { cancelInvoice, createInvoice, updateInvoice, finalizeHeldInvoice, createCreditNote, recordPayment } from '@/app/actions/invoices'
+import { createOrder, updateOrderStatus } from '@/app/actions/orders'
+import { moveOrderToDraft, moveQuotationToDraft, movePurchaseOrderToDraft } from '@/app/actions/drafts'
 import { createQuotation } from '@/app/actions/quotations'
 import { getReplenishment, orderReplenishment, saveReorderRule, saveVendorPrice } from '@/app/actions/replenishment'
 import { createInventoryCount, setCountedQty, applyInventoryCount, getInventoryCount } from '@/app/actions/inventory-counts'
@@ -149,7 +151,7 @@ describe.skipIf(!url)('ERP document flows (Odoo parity)', () => {
     if (!order.success) throw new Error(order.error)
     const invoice = await createInvoiceFromSalesOrder({ orderId: order.data.id })
     if (!invoice.success) throw new Error(invoice.error)
-    expect(invoice.data.total).toBe(3000 + 540 + 200)
+    expect(invoice.data.total).toBe(3000 + 540 + 200 + 36) // freight carries 18% GST (M15)
     expect((await createInvoiceFromSalesOrder({ orderId: order.data.id })).success).toBe(false)
     expect((await cancelSalesOrder(order.data.id)).success).toBe(false) // active invoice
   })
@@ -637,6 +639,183 @@ describe.skipIf(!url)('ERP document flows (Odoo parity)', () => {
     const entry = await db.journalEntry.findUniqueOrThrow({ where: { sourceKey: `LC:${draft.data.id}` }, include: { lines: { include: { account: true } } } })
     const byCode = Object.fromEntries(entry.lines.map(line => [line.account.code, line.debit - line.credit]))
     expect(byCode).toEqual({ '1200': 1270, '5001': 330, '2001': -1600 })
+  })
+
+  // ── Phase 2: money and stock correctness ──────────────────────────────
+  const stockOf = async (productId: number) => (await db.product.findUniqueOrThrow({ where: { id: productId } })).stock
+  const posInvoice = (product: { id: number; name: string; sku: string }, item: Record<string, unknown>, extra: Record<string, unknown> = {}) => createInvoice({
+    customer: 'Walk-in', phone: contactPhone(), godownId,
+    items: [{ productId: product.id, name: product.name, sku: product.sku, quantity: 1, price: 1000, gstRate: 18, ...item }],
+    payments: [{ amount: 100000, method: 'Cash' }], ...extra,
+  })
+
+  it('M1: a BOX tile sold by area bills and deducts the same boxes', async () => {
+    const tile = await newProduct(50, { unitOfMeasure: 'BOX', coveragePerBox: 15 })
+    const res = await posInvoice(tile, { unitOfMeasure: 'BOX', areaSqft: 300, coveragePerBox: 15 })
+    if (!res.success || !res.data) throw new Error(res.error)
+    expect(res.data.subtotal).toBe(20 * 1000)
+    expect(res.data.items[0].quantity).toBe(20)
+    expect(await stockOf(tile.id)).toBe(30) // used to drop by the typed 1
+  })
+
+  it('M4: money handed back as change is not booked as cash received', async () => {
+    const product = await newProduct(5)
+    const res = await posInvoice(product, {}, { payments: [{ amount: 2000, method: 'Cash' }] })
+    if (!res.success || !res.data) throw new Error(res.error)
+    expect(res.data.total).toBe(1180)
+    expect(res.data.amountPaid).toBe(1180)
+    expect(res.data.payments.reduce((sum: number, p: { amount: number }) => sum + p.amount, 0)).toBe(1180)
+    expect(res.data.payments[0].notes).toMatch(/change ₹820/)
+  })
+
+  it('M5: an issued bill keeps its lines; only notes and similar details can change', async () => {
+    const product = await newProduct(10)
+    const created = await posInvoice(product, { quantity: 2 })
+    if (!created.success || !created.data) throw new Error(created.error)
+    const invoice = created.data
+    const base = { customer: 'Walk-in', phone: (await db.contact.findUniqueOrThrow({ where: { id: invoice.contactId } })).phone, discount: 0, discountType: 'none', payments: [] }
+    const sameLines = [{ productId: product.id, name: product.name, sku: product.sku, quantity: 2, price: 1000, gstRate: 18 }]
+    const changed = await updateInvoice(invoice.id, { ...base, items: [{ ...sameLines[0], quantity: 5 }] })
+    expect(changed.success).toBe(false)
+    expect(changed.error).toMatch(/credit note/)
+    const notesOnly = await updateInvoice(invoice.id, { ...base, items: sameLines, notes: 'Deliver after 5pm' })
+    expect(notesOnly.success, notesOnly.error).toBe(true)
+    const after = await db.invoice.findUniqueOrThrow({ where: { id: invoice.id }, include: { items: true } })
+    expect([after.notes, after.total, after.items[0].quantity]).toEqual(['Deliver after 5pm', invoice.total, 2])
+    expect(await stockOf(product.id)).toBe(8)
+  })
+
+  it('M6: a cancelled parked bill can never be finalized', async () => {
+    const product = await newProduct(10)
+    const held = await posInvoice(product, { quantity: 3 }, { isHeld: true, payments: [{ amount: 0, method: 'Cash' }] })
+    if (!held.success || !held.data) throw new Error(held.error)
+    expect((await cancelInvoice(held.data.id)).success).toBe(true)
+    expect((await finalizeHeldInvoice(held.data.id)).success).toBe(false)
+    expect(await stockOf(product.id)).toBe(10)
+  })
+
+  it('M7: moving a cancelled store order to drafts does not add its stock back again', async () => {
+    const product = await newProduct(50)
+    const order = await createOrder({ customer: 'Store buyer', phone: contactPhone(), productId: product.id, quantity: 5, amount: 5000, source: 'STORE', godownId })
+    if (!order.success || !order.data) throw new Error(order.error)
+    expect(await stockOf(product.id)).toBe(45)
+    expect((await updateOrderStatus({ id: order.data.id, status: 'CANCELLED' })).success).toBe(true)
+    expect(await stockOf(product.id)).toBe(50)
+    expect((await moveOrderToDraft(order.data.id)).success).toBe(true)
+    expect(await stockOf(product.id)).toBe(50) // used to become 55
+  })
+
+  it('M8: a quotation already confirmed as a sales order cannot be deleted and re-confirmed', async () => {
+    const product = await newProduct(10)
+    const phone = contactPhone()
+    const quote = await createQuotation({ customer: 'Builder', phone, items: [{ productId: product.id, name: product.name, quantity: 2, rate: 500 }] })
+    if (!quote.success || !quote.data) throw new Error(quote.error)
+    const order = await createSalesOrderFromQuotation({ quotationId: quote.data.dbId, godownId })
+    if (!order.success) throw new Error(order.error)
+    const moved = await moveQuotationToDraft(quote.data.dbId)
+    expect(moved.success).toBe(false)
+    expect(moved.error).toMatch(/confirmed as/)
+  })
+
+  it('M9: only an untouched purchase order can be moved to drafts', async () => {
+    const product = await newProduct()
+    const make = async () => {
+      const created = await createPurchaseOrder({ supplierId, items: [{ productId: product.id, name: product.name, sku: product.sku, quantity: 4, unitCost: 100, gstRate: 0 }] })
+      return (created as { data: { id: number } }).data.id
+    }
+    const approvedId = await make()
+    await approvePurchaseOrder(approvedId)
+    const blocked = await movePurchaseOrderToDraft(approvedId)
+    expect(blocked.success).toBe(false)
+    expect(await db.purchaseOrder.count({ where: { id: approvedId } })).toBe(1)
+    const draftId = await make()
+    expect((await movePurchaseOrderToDraft(draftId)).success).toBe(true)
+  })
+
+  it('M10/M11: credit notes reduce what is owed, restore stock once, and block cancelling', async () => {
+    const product = await newProduct(10)
+    const created = await posInvoice(product, { quantity: 2 }, { payments: [{ amount: 1000, method: 'Cash' }] }) // total 2360, owes 1360
+    if (!created.success || !created.data) throw new Error(created.error)
+    const id = created.data.id
+    expect((await cancelInvoice(id)).error).toMatch(/credit note/) // has a payment
+    expect((await createCreditNote({ invoiceId: id, amount: 360, reason: 'Price adjustment' })).success).toBe(true)
+    expect((await db.invoice.findUniqueOrThrow({ where: { id } })).balanceDue).toBe(1000)
+    expect(await stockOf(product.id)).toBe(8)
+    // Full credit, clicked twice at once: one wins, goods come back once.
+    const results = await Promise.all([1, 2].map(() => createCreditNote({ invoiceId: id, amount: 2000, reason: 'Returned' })))
+    expect(results.filter(result => result.success)).toHaveLength(1)
+    const after = await db.invoice.findUniqueOrThrow({ where: { id } })
+    expect([after.invoiceStatus, after.balanceDue]).toEqual(['REFUNDED', 0])
+    expect(await stockOf(product.id)).toBe(10)
+  })
+
+  it('M12: two payments on the same bill at the same moment both count', async () => {
+    const product = await newProduct(5)
+    const created = await posInvoice(product, { quantity: 2 }, { payments: [{ amount: 360, method: 'Cash' }] }) // total 2360, owes 2000
+    if (!created.success || !created.data) throw new Error(created.error)
+    const id = created.data.id
+    const results = await Promise.all([1, 2].map(() => recordPayment({ invoiceId: id, amount: 1000, method: 'UPI' })))
+    expect(results.every(result => result.success)).toBe(true)
+    const after = await db.invoice.findUniqueOrThrow({ where: { id }, include: { payments: true } })
+    expect([after.amountPaid, after.balanceDue, after.paymentStatus]).toEqual([2360, 0, 'PAID'])
+    expect(after.payments.reduce((sum, payment) => sum + payment.amount, 0)).toBe(2360)
+  })
+
+  it('M14: a vendor bill carries the PO discount into what is owed', async () => {
+    const product = await newProduct()
+    const created = await createPurchaseOrder({ supplierId, discount: 500, items: [{ productId: product.id, name: product.name, sku: product.sku, quantity: 10, unitCost: 1000, gstRate: 18 }] })
+    const poId = (created as { data: { id: number } }).data.id
+    const po = await db.purchaseOrder.findUniqueOrThrow({ where: { id: poId } })
+    await approvePurchaseOrder(poId)
+    expect((await receivePurchaseOrder(poId)).success).toBe(true)
+    const bill = await createBillFromPurchaseOrder(poId)
+    if (!bill.success) throw new Error(bill.error)
+    const saved = await db.vendorBill.findUniqueOrThrow({ where: { id: bill.data.id } })
+    expect([saved.subtotal, saved.gst, saved.total]).toEqual([9500, 1710, 11210])
+    expect(saved.total).toBe(po.total) // owed exactly what the PO said
+  })
+
+  it('M16: re-invoicing an order after cancelling its invoice bills the freight again', async () => {
+    const product = await newProduct(10)
+    const order = await createSalesOrder({ customer: 'Freight', phone: contactPhone(), godownId, invoicePolicy: 'ORDERED', freightCharge: 3000, lines: [{ productId: product.id, quantity: 2, price: 1000, gstRate: 18 }] })
+    if (!order.success) throw new Error(order.error)
+    const first = await createInvoiceFromSalesOrder({ orderId: order.data.id })
+    if (!first.success) throw new Error(first.error)
+    expect((await db.invoice.findUniqueOrThrow({ where: { id: first.data.id } })).freightCharge).toBe(3000)
+    expect((await cancelInvoice(first.data.id)).success).toBe(true)
+    const second = await createInvoiceFromSalesOrder({ orderId: order.data.id })
+    if (!second.success) throw new Error(second.error)
+    expect((await db.invoice.findUniqueOrThrow({ where: { id: second.data.id } })).freightCharge).toBe(3000)
+  })
+
+  it('M15: freight and installation carry GST at the principal line rate on POS bills', async () => {
+    const tile = await newProduct(10)
+    const small = await newProduct(10)
+    const res = await createInvoice({
+      customer: 'Charges', phone: contactPhone(), godownId,
+      items: [
+        { productId: tile.id, name: tile.name, sku: tile.sku, quantity: 3, price: 1000, gstRate: 12 }, // principal (3000)
+        { productId: small.id, name: small.name, sku: small.sku, quantity: 1, price: 500, gstRate: 18 },
+      ],
+      freightCharge: 1500, installationCharge: 500,
+      payments: [{ amount: 100000, method: 'Cash' }],
+    })
+    if (!res.success || !res.data) throw new Error(res.error)
+    // goods GST 360 + 90; charges 2000 at 12% = 240
+    expect([res.data.chargesGst, res.data.gst, res.data.total]).toEqual([240, 690, 3500 + 690 + 2000])
+    expect(res.data.cgst + res.data.sgst).toBe(690)
+  })
+
+  it('M15: a sales order taxes its charges and its invoice matches the order total', async () => {
+    const product = await newProduct(10)
+    const order = await createSalesOrder({ customer: 'Charges SO', phone: contactPhone(), godownId, invoicePolicy: 'ORDERED', freightCharge: 2000, lines: [{ productId: product.id, quantity: 2, price: 1000, gstRate: 18 }] })
+    if (!order.success) throw new Error(order.error)
+    const saved = await db.salesOrder.findUniqueOrThrow({ where: { id: order.data.id } })
+    expect([saved.gst, saved.total]).toEqual([360 + 360, 2000 + 720 + 2000])
+    const invoice = await createInvoiceFromSalesOrder({ orderId: order.data.id })
+    if (!invoice.success) throw new Error(invoice.error)
+    const billed = await db.invoice.findUniqueOrThrow({ where: { id: invoice.data.id } })
+    expect([billed.chargesGst, billed.total]).toEqual([360, saved.total])
   })
 
   it('lists open transfers with late flags', async () => {

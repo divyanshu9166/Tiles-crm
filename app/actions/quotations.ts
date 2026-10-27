@@ -3,7 +3,7 @@
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { createQuotationSchema, updateQuotationSchema, updateQuotationStatusSchema } from '@/lib/validations/quotation'
-import { getBillableArea } from '@/lib/units'
+import { linePrice } from '@/lib/line-math'
 import { createInvoice } from '@/app/actions/invoices'
 import type { Quotation, QuotationItem, QuotationStatus, Contact, Product } from '@prisma/client'
 import { requireAuth, requireRole } from '@/lib/auth-helpers'
@@ -129,14 +129,14 @@ function getPreferredItemDescription(
 }
 
 function calculateQuotationLineAmount(item: { quantity: number; rate: number; unitOfMeasure?: string; areaSqft?: number; coveragePerBox?: number }, product?: { unitOfMeasure?: string | null; coveragePerBox?: number | null } | null) {
-  const quantity = Math.max(1, Number(item.quantity) || 1)
-  const rate = Math.max(0, Math.round(Number(item.rate) || 0))
-  const unit = String(item.unitOfMeasure || product?.unitOfMeasure || 'PCS').toUpperCase()
-  const areaSqft = Math.max(0, Number(item.areaSqft) || 0)
-  const coverage = Math.max(0, Number(item.coveragePerBox ?? product?.coveragePerBox) || 0)
-  if (unit === 'SQFT' || unit === 'SQM' || unit === 'SLAB') return Math.round(getBillableArea(areaSqft, quantity, unit) * rate)
-  if (unit === 'BOX' && coverage > 0 && areaSqft > 0) return Math.ceil(areaSqft / coverage) * rate
-  return quantity * rate
+  // Shared with the quotation screen (lib/line-math).
+  return linePrice({
+    quantity: item.quantity,
+    rate: Math.max(0, Math.round(Number(item.rate) || 0)),
+    unitOfMeasure: item.unitOfMeasure || product?.unitOfMeasure || 'PCS',
+    areaSqft: item.areaSqft,
+    coveragePerBox: item.coveragePerBox ?? product?.coveragePerBox,
+  }).amount
 }
 
 function formatQuotation(quotation: QuotationWithRelations) {

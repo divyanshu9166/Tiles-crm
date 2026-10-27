@@ -32,6 +32,7 @@ import { getStoneLots } from '@/app/actions/stone-inventory';
 import { getGodowns } from '@/app/actions/godowns';
 import { getPricelists, getPricesFor } from '@/app/actions/pricelists';
 import { getBillableArea } from '@/lib/units';
+import { chargesTax, linePrice, principalGstRate } from '@/lib/line-math';
 import { getActiveVertical } from '@/lib/brand';
 
 const DEFAULT_STORE_NAME = getActiveVertical() === 'tiles' ? 'Tiles, Granite & Marble Showroom' : 'Furniture Store';
@@ -177,47 +178,14 @@ const normalizeHsnCode = (value) => String(value || '').replace(/\s+/g, '').toUp
  * @returns {{ amount: number, boxes?: number, area?: number }}
  */
 function computeLineAmount(item, product) {
-  const unit = String(item?.unitOfMeasure || product?.unitOfMeasure || 'PCS').toUpperCase();
-  const quantity = Math.max(1, Number(item?.quantity) || 1);
-  const rate = Math.max(0, Number(item?.rate) || 0);
-  const coveragePerBox = Math.max(0, Number(item?.coveragePerBox ?? product?.coveragePerBox) || 0);
-  const area = Math.max(0, Number(item?.area ?? item?.areaInput) || 0);
-  const hasCoverage = coveragePerBox > 0;
-
-  // A serialized slab is sold by its exact measured area, not by a count of one.
-  if (unit === 'SLAB') {
-    const billedArea = area > 0 ? area : quantity;
-    return { amount: billedArea * rate, area: billedArea };
-  }
-
-  // Furniture and any per-piece (PCS) product: unchanged quantity * rate math.
-  if (unit === 'SQM') {
-    const billableArea = getBillableArea(area, quantity, unit);
-    return { amount: billableArea * rate, area: area || quantity, billableArea };
-  }
-
-  if (unit !== 'SQFT' && unit !== 'BOX') {
-    return { amount: quantity * rate };
-  }
-
-  if (unit === 'SQFT') {
-    if (hasCoverage) {
-      // Amount is priced per square foot; boxes are derived from the area.
-      const boxes = Math.max(0, Math.ceil(area / coveragePerBox));
-      return { amount: area * rate, boxes, area };
-    }
-    // No coverage defined: use the entered quantity directly, no box conversion.
-    return { amount: quantity * rate };
-  }
-
-  // unit === 'BOX'
-  if (hasCoverage && area > 0) {
-    // Derive the number of boxes from the entered area; price per box.
-    const boxes = Math.max(0, Math.ceil(area / coveragePerBox));
-    return { amount: boxes * rate, boxes, area };
-  }
-  // No area entered (or no coverage): bill the box count, as the server does.
-  return { amount: quantity * rate };
+  // Same rules as the server (lib/line-math), so the cart total is the saved total.
+  return linePrice({
+    quantity: item?.quantity,
+    rate: item?.rate,
+    unitOfMeasure: item?.unitOfMeasure || product?.unitOfMeasure || 'PCS',
+    areaSqft: item?.area ?? item?.areaInput,
+    coveragePerBox: item?.coveragePerBox ?? product?.coveragePerBox,
+  });
 }
 
 /** POS cart adapter: cart items carry qty/price plus optional unit/coverage/area. */
@@ -482,14 +450,19 @@ export default function BillingPage() {
     acc.igst += igst;
     acc.cgst += cgst;
     acc.sgst += sgst;
+    acc.lines.push({ taxable: taxableAmount, gstRate: rate });
     return acc;
-  }, { taxable: 0, totalGst: 0, igst: 0, cgst: 0, sgst: 0 });
+  }, { taxable: 0, totalGst: 0, igst: 0, cgst: 0, sgst: 0, lines: [] });
 
-  const posTotalGst = posTaxSummary.totalGst;
-  const posIgst = posTaxSummary.igst;
-  const posCgst = posTaxSummary.cgst;
-  const posSgst = posTaxSummary.sgst;
-  const posTotal = posTaxSummary.taxable + posTotalGst + (posTransportCost || 0) + (posFreightCharge || 0) + (posLoadingCharge || 0) + (posInstallationCharge || 0);
+  // Transport/freight/loading/installation carry GST at the principal line's
+  // rate, exactly as the server bills them (lib/line-math).
+  const posChargesTotal = (posTransportCost || 0) + (posFreightCharge || 0) + (posLoadingCharge || 0) + (posInstallationCharge || 0);
+  const posChargeTax = chargesTax(posChargesTotal, principalGstRate(posTaxSummary.lines, gstRate), posSupplyType === 'INTERSTATE');
+  const posTotalGst = posTaxSummary.totalGst + posChargeTax.gst;
+  const posIgst = posTaxSummary.igst + posChargeTax.igst;
+  const posCgst = posTaxSummary.cgst + posChargeTax.cgst;
+  const posSgst = posTaxSummary.sgst + posChargeTax.sgst;
+  const posTotal = posTaxSummary.taxable + posTotalGst + posChargesTotal;
   const posTotalPayments = posPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
   const posAdvancePaid = Math.min(posTotalPayments, posTotal);
   const posBalanceDue = Math.max(0, posTotal - posTotalPayments);
@@ -781,8 +754,11 @@ export default function BillingPage() {
            batchId: item.batchId || undefined,
         };
       }));
+      // The server stores the discount in rupees (even when it was entered as a
+      // percent), so reload it as a flat amount: reading 1,000 back as 1,000%
+      // used to wipe the whole bill.
       setPosDiscount(invoice.discount || 0);
-      setPosDiscountType(invoice.discountType === 'percent' ? 'percent' : 'flat');
+      setPosDiscountType('flat');
       setPosTransportCost(invoice.transportCost || 0);
       setPosFreightCharge(invoice.freightCharge || 0);
       setPosLoadingCharge(invoice.loadingCharge || 0);

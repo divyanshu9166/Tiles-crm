@@ -95,8 +95,8 @@ export default function VendorBillPage() {
 
   const previewTotal = bill.lines.reduce((sum, line) => {
     const value = form.lines[line.id] || line;
-    const amount = (Number(value.quantity) || 0) * (Number(value.unitCost) || 0);
-    return sum + amount + Math.round(amount * line.gstRate / 100);
+    const amount = (Number(value.quantity) || 0) * (Number(value.unitCost) || 0) * (bill.discountFactor ?? 1);
+    return sum + Math.round(amount) + Math.round(amount * line.gstRate / 100);
   }, 0);
 
   return (
@@ -166,6 +166,7 @@ export default function VendorBillPage() {
             </div>
             <div className="flex justify-end p-4">
               <dl className="w-full max-w-xs text-sm space-y-1">
+                {bill.poDiscount > 0 && <div className="flex justify-between"><dt className="text-muted">PO discount</dt><dd className="text-foreground">−{formatINR(bill.poDiscount)}</dd></div>}
                 <div className="flex justify-between"><dt className="text-muted">Untaxed</dt><dd className="text-foreground">{formatINR(bill.subtotal)}</dd></div>
                 <div className="flex justify-between"><dt className="text-muted">{bill.supplyType === 'INTERSTATE' ? 'IGST' : 'CGST + SGST'}</dt><dd className="text-foreground">{formatINR(bill.gst)}</dd></div>
                 <div className="flex justify-between border-t border-border pt-1.5 font-semibold"><dt className="text-foreground">Total</dt><dd className="text-foreground">{formatINR(draft ? previewTotal : bill.total)}</dd></div>

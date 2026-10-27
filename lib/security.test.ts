@@ -19,7 +19,7 @@ vi.mock('@/lib/auth-helpers', () => ({
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
 
 const db = vi.hoisted(() => {
-  const fn = () => vi.fn(async () => null as unknown)
+  const fn = () => vi.fn(async (..._args: unknown[]) => null as unknown)
   return {
     storeSettings: { findFirst: fn(), create: fn(), upsert: fn() },
     staff: { findUnique: fn(), findMany: vi.fn(async () => [] as unknown[]) },
@@ -85,7 +85,7 @@ describe('staff are limited to their own records', () => {
   })
 
   it('submits expenses for approval, as themselves, without moving cash', async () => {
-    db.expense.create.mockImplementationOnce(async (args: { data: Record<string, unknown> }) => ({ id: 1, ...args.data }) as never)
+    db.expense.create.mockImplementationOnce(async (...args: unknown[]) => ({ id: 1, ...(args[0] as { data: Record<string, unknown> }).data }))
     await createExpense({ date: '2026-10-27', categoryId: 1, amount: 500, description: 'Tea', paymentMode: 'Cash', staffId: 99 })
     const data = (db.expense.create.mock.calls[0] as unknown as [{ data: Record<string, unknown> }])[0].data
     expect(data.status).toBe('Pending')

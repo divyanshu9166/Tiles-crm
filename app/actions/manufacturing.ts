@@ -974,19 +974,25 @@ export async function cancelProductionOrder(id: number, reason: string) {
   if (order.status === 'CANCELLED') return { success: true }
   if (!reason?.trim()) return { success: false, error: 'Enter a cancellation reason' }
 
+  try {
   await prisma.$transaction(async (tx) => {
     // This workflow issues and consumes material at completion time. The
     // issuedQty field is an audit/planning value, not a prior stock movement,
     // so cancellation must not add it back to inventory.
-    await tx.productionOrder.update({
-      where: { id },
+    const claimed = await tx.productionOrder.updateMany({
+      where: { id, status: { notIn: ['COMPLETED', 'CANCELLED'] } },
       data: { status: 'CANCELLED', cancelReason: reason, cancelledDate: new Date() },
     })
+    // A completion that won the race already moved stock: never mark it cancelled.
+    if (claimed.count !== 1) throw new Error('This production order was completed or cancelled meanwhile')
     if (order.customOrderId) {
       await releaseCustomOrderSlabsWithTx(tx, order.customOrderId)
       await resetCustomOrderAfterProductionChange(tx, order.customOrderId, `Production ${order.displayId} cancelled`)
     }
   })
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Could not cancel the production order' }
+  }
 
   revalidatePath('/manufacturing')
   revalidatePath('/inventory')
@@ -1086,7 +1092,13 @@ export async function completeProduction(data: unknown) {
     return { success: false, error: 'One or more production steps do not belong to this order' }
   }
 
+  try {
   await prisma.$transaction(async (tx) => {
+    // Re-check under a row lock: a double submit (or a cancel at the same
+    // time) used to consume materials and produce goods twice.
+    await tx.$queryRaw`SELECT id FROM "ProductionOrder" WHERE id = ${productionOrderId} FOR UPDATE`
+    const current = await tx.productionOrder.findUnique({ where: { id: productionOrderId }, select: { status: true } })
+    if (!current || (current.status !== 'IN_PROGRESS' && current.status !== 'ON_HOLD')) throw new Error('This production order was already completed or cancelled')
     let totalMaterialCost = 0
 
     for (const c of consumptions) {
@@ -1312,6 +1324,9 @@ export async function completeProduction(data: unknown) {
       })
     }
   })
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Could not complete production' }
+  }
 
   revalidatePath('/manufacturing')
   revalidatePath('/inventory')

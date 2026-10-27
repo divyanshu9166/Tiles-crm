@@ -5,7 +5,8 @@ import { lockInventoryProducts } from '@/lib/inventory-stock'
 import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { revalidatePath } from 'next/cache'
 import { createInvoiceSchema, updateInvoiceSchema, recordPaymentSchema, createCreditNoteSchema } from '@/lib/validations/invoice'
-import { getBillableArea } from '@/lib/units'
+import { chargesTax, linePrice, principalGstRate, stockQuantity } from '@/lib/line-math'
+import { nextCreditNoteNumber, refreshInvoiceBalance } from '@/lib/erp/credit-notes'
 import { syncStoneLotTotals } from '@/lib/stone-inventory'
 import type { PaymentStatus, InvoiceStatus } from '@prisma/client'
 
@@ -25,15 +26,16 @@ type InventoryInvoiceLine = InvoiceLineInput & {
   batchId?: number
 }
 
+// Shared with the POS screen (lib/line-math), so the cart total is the saved total.
 function calculateInvoiceLineAmount(item: InvoiceLineInput) {
-  const quantity = Math.max(1, Number(item.quantity) || 1)
-  const price = Math.max(0, Number(item.price) || 0)
-  const unit = String(item.unitOfMeasure || 'PCS').toUpperCase()
-  const areaSqft = Math.max(0, Number(item.areaSqft) || 0)
-  const coveragePerBox = Math.max(0, Number(item.coveragePerBox) || 0)
-  if (unit === 'SQFT' || unit === 'SQM' || unit === 'SLAB') return getBillableArea(areaSqft, quantity, unit) * price
-  if (unit === 'BOX' && coveragePerBox > 0 && areaSqft > 0) return Math.ceil(areaSqft / coveragePerBox) * price
-  return quantity * price
+  return linePrice({ quantity: item.quantity, rate: item.price, unitOfMeasure: item.unitOfMeasure, areaSqft: item.areaSqft, coveragePerBox: item.coveragePerBox }).amount
+}
+
+// The stock quantity a line takes: a BOX tile sold by area takes the boxes
+// that area needs (it used to bill 20 boxes and deduct the typed 1).
+function resolveLineQuantity(item: InvoiceLineInput & { slabId?: number }) {
+  if (item.slabId) return 1
+  return stockQuantity({ quantity: item.quantity, rate: item.price, unitOfMeasure: item.unitOfMeasure, areaSqft: item.areaSqft, coveragePerBox: item.coveragePerBox })
 }
 
 async function resolveInvoiceGodownId(requestedId?: number) {
@@ -136,6 +138,11 @@ async function restoreInvoiceInventory(tx: any, invoice: any) {
     // invoice only re-opens its quantity for invoicing (Odoo behaviour).
     for (const item of invoice.items) {
       if (item.salesOrderLineId) await tx.salesOrderLine.updateMany({ where: { id: item.salesOrderLineId, qtyInvoiced: { gte: item.quantity } }, data: { qtyInvoiced: { decrement: item.quantity }, invoicedSqft: { decrement: Number(item.areaSqft) || 0 } } })
+    }
+    // The order's freight/loading/installation are billed once; if this invoice
+    // carried them, the next invoice must bill them again.
+    if ((invoice.freightCharge || 0) + (invoice.loadingCharge || 0) + (invoice.installationCharge || 0) > 0) {
+      await tx.salesOrder.update({ where: { id: invoice.salesOrderId }, data: { chargesInvoiced: false } })
     }
     return
   }
@@ -367,7 +374,7 @@ export async function createInvoice(data: unknown) {
   const productIds = Array.from(new Set(items.map(item => item.productId)))
   const products = await prisma.product.findMany({
     where: { id: { in: productIds } },
-    select: { id: true, isSlabTracked: true },
+    select: { id: true, isSlabTracked: true, coveragePerBox: true },
   })
   const productsById = new Map(products.map(product => [product.id, product]))
   if (products.length !== productIds.length) return { success: false, error: 'One or more invoice products no longer exist' }
@@ -408,11 +415,12 @@ export async function createInvoice(data: unknown) {
   const resolvedItems = items.map(item => {
     const unitOfMeasure = item.unitOfMeasure || (item.slabId ? 'SLAB' : 'PCS')
     const areaSqft = item.areaSqft ?? (item.slabId ? slabsById.get(item.slabId)?.sqft : undefined)
+    const coveragePerBox = item.coveragePerBox ?? productsById.get(item.productId)?.coveragePerBox ?? undefined
+    const line = { ...item, unitOfMeasure, areaSqft, coveragePerBox }
     return {
-      ...item,
-      unitOfMeasure,
-      areaSqft,
-      lineAmount: calculateInvoiceLineAmount({ ...item, unitOfMeasure, areaSqft }),
+      ...line,
+      quantity: resolveLineQuantity(line),
+      lineAmount: calculateInvoiceLineAmount(line),
     }
   })
 
@@ -453,10 +461,14 @@ export async function createInvoice(data: unknown) {
   })
 
   const totalTaxable = itemRows.reduce((sum, item) => sum + item.taxableAmount, 0)
-  const totalGst = itemRows.reduce((sum, item) => sum + item.gstAmount, 0)
-  const igst = itemRows.reduce((sum, item) => sum + item.igst, 0)
-  const cgst = itemRows.reduce((sum, item) => sum + item.cgst, 0)
-  const sgst = itemRows.reduce((sum, item) => sum + item.sgst, 0)
+  // Transport/freight/loading/installation are part of the value of supply:
+  // taxed at the principal line's rate (composite supply), as quotations do.
+  const chargesTotal = (transportCost || 0) + (freightCharge || 0) + (loadingCharge || 0) + (installationCharge || 0)
+  const chargeTax = chargesTax(chargesTotal, principalGstRate(itemRows.map(item => ({ taxable: item.taxableAmount, gstRate: item.gstRate })), gstRate), resolvedSupplyType === 'INTERSTATE')
+  const totalGst = itemRows.reduce((sum, item) => sum + item.gstAmount, 0) + chargeTax.gst
+  const igst = itemRows.reduce((sum, item) => sum + item.igst, 0) + chargeTax.igst
+  const cgst = itemRows.reduce((sum, item) => sum + item.cgst, 0) + chargeTax.cgst
+  const sgst = itemRows.reduce((sum, item) => sum + item.sgst, 0) + chargeTax.sgst
   const logisticsTotal = (transportCost || 0) + (freightCharge || 0) + (loadingCharge || 0) + (installationCharge || 0)
   const total = totalTaxable + totalGst + logisticsTotal
 
@@ -464,6 +476,17 @@ export async function createInvoice(data: unknown) {
   const totalPayment = payments.reduce((sum, p) => sum + p.amount, 0)
   const amountPaid = Math.min(totalPayment, total) // can't overpay
   const balanceDue = total - amountPaid
+  // Payment rows add up to what was applied: money handed back as change is
+  // not cash received (it used to post ₹2,000 for an ₹1,180 bill).
+  let leftToApply = amountPaid
+  const paymentRows = payments.flatMap(payment => {
+    const applied = Math.min(payment.amount, leftToApply)
+    leftToApply -= applied
+    if (applied <= 0) return []
+    const change = payment.amount - applied
+    const changeNote = change > 0 ? `Tendered ₹${payment.amount.toLocaleString('en-IN')}, change ₹${change.toLocaleString('en-IN')}` : null
+    return [{ ...payment, amount: applied, notes: [payment.notes, changeNote].filter(Boolean).join(' · ') || undefined }]
+  })
 
   // Determine payment status from actual payments
   let paymentStatus: PaymentStatus = 'PENDING'
@@ -497,6 +520,7 @@ export async function createInvoice(data: unknown) {
       discount: discountAmount,
       discountType,
       gst: totalGst,
+      chargesGst: chargeTax.gst,
       cgst,
       sgst,
       igst,
@@ -542,7 +566,7 @@ export async function createInvoice(data: unknown) {
         })),
       },
       payments: {
-        create: payments.map(p => ({
+        create: paymentRows.map(p => ({
           amount: p.amount,
           method: p.method,
           reference: p.reference,
@@ -626,9 +650,28 @@ export async function updateInvoice(invoiceId: number, data: unknown) {
 
   const invoice = await prisma.invoice.findUnique({
     where: { id: invoiceId },
-    include: { payments: true, items: { select: { slabId: true, batchId: true, slab: { select: { sqft: true } } } } },
+    include: { payments: true, items: { select: { productId: true, quantity: true, price: true, areaSqft: true, slabId: true, batchId: true, slab: { select: { sqft: true } } } } },
   })
   if (!invoice) return { success: false, error: 'Invoice not found' }
+
+  // An issued bill has already taken stock and been posted to the books;
+  // rewriting its lines silently broke both. Only parked bills can change
+  // money or lines; issued bills keep their lines and totals.
+  const isHeld = !!invoice.heldAt
+  if (!isHeld) {
+    const lineKey = (line: { productId: number; quantity: number; price: number; areaSqft?: number | null; slabId?: number | null; batchId?: number | null }) =>
+      [line.productId, Number(line.quantity), Number(line.price), Math.round((Number(line.areaSqft) || 0) * 100), line.slabId || null, line.batchId || null].join(':')
+    const before = invoice.items.map(lineKey).sort().join('|')
+    const after = items.map(lineKey).sort().join('|')
+    const chargesChanged = (transportCost || 0) !== invoice.transportCost || (freightCharge || 0) !== invoice.freightCharge
+      || (loadingCharge || 0) !== invoice.loadingCharge || (installationCharge || 0) !== invoice.installationCharge
+    const requestedDiscount = discountType === 'flat' ? Number(discount) || 0 : discountType === 'percent' ? null : 0
+    const discountChanged = requestedDiscount !== null && requestedDiscount !== invoice.discount
+    const supplyChanged = (supplyType === 'INTERSTATE' ? 'INTERSTATE' : 'INTRASTATE') !== (invoice.supplyType || 'INTRASTATE')
+    if (before !== after || chargesChanged || discountChanged || supplyChanged) {
+      return { success: false, error: 'This bill is already issued, so its items, prices, discount and charges cannot change. Issue a credit note and create a new bill instead.' }
+    }
+  }
   if (invoice.invoiceStatus !== 'ACTIVE') return { success: false, error: 'Only active invoices can be edited' }
   if (invoice.salesOrderId) return { success: false, error: 'This invoice belongs to a sales order. Cancel it and invoice again from the order so delivered and invoiced quantities stay in sync.' }
 
@@ -674,6 +717,23 @@ export async function updateInvoice(invoiceId: number, data: unknown) {
     }
   }
 
+  if (!isHeld) {
+    const claimed = await prisma.invoice.updateMany({
+      where: { id: invoiceId, invoiceStatus: 'ACTIVE', heldAt: null },
+      data: {
+        contactId: contact.id,
+        roadPermit: roadPermit?.trim() || null,
+        placeOfSupply: placeOfSupply?.trim() || null,
+        dueDate: dueDate ? new Date(dueDate) : null,
+        salespersonId: salespersonId ?? null,
+        notes: notes || null,
+      },
+    })
+    if (claimed.count !== 1) return { success: false, error: 'This invoice changed meanwhile (cancelled or refunded). Refresh and try again.' }
+    revalidatePath('/billing')
+    return { success: true, data: await prisma.invoice.findUnique({ where: { id: invoiceId }, include: { items: true } }) }
+  }
+
   const settings = await prisma.storeSettings.findFirst({ where: { id: 1 } })
   const gstRate = settings?.gstRate ?? 18
 
@@ -681,7 +741,8 @@ export async function updateInvoice(invoiceId: number, data: unknown) {
     const unitOfMeasure = item.unitOfMeasure || (item.slabId ? 'SLAB' : 'PCS')
     const storedSlab = item.slabId ? invoice.items.find(existingItem => existingItem.slabId === item.slabId)?.slab : null
     const areaSqft = item.areaSqft ?? storedSlab?.sqft
-    return { ...item, unitOfMeasure, areaSqft, lineAmount: calculateInvoiceLineAmount({ ...item, unitOfMeasure, areaSqft }) }
+    const line = { ...item, unitOfMeasure, areaSqft }
+    return { ...line, quantity: resolveLineQuantity(line), lineAmount: calculateInvoiceLineAmount(line) }
   })
   const subtotal = resolvedItems.reduce((sum, item) => sum + item.lineAmount, 0)
   let discountAmount = 0
@@ -720,10 +781,14 @@ export async function updateInvoice(invoiceId: number, data: unknown) {
   })
 
   const totalTaxable = itemRows.reduce((sum, item) => sum + item.taxableAmount, 0)
-  const totalGst = itemRows.reduce((sum, item) => sum + item.gstAmount, 0)
-  const igst = itemRows.reduce((sum, item) => sum + item.igst, 0)
-  const cgst = itemRows.reduce((sum, item) => sum + item.cgst, 0)
-  const sgst = itemRows.reduce((sum, item) => sum + item.sgst, 0)
+  // Transport/freight/loading/installation are part of the value of supply:
+  // taxed at the principal line's rate (composite supply), as quotations do.
+  const chargesTotal = (transportCost || 0) + (freightCharge || 0) + (loadingCharge || 0) + (installationCharge || 0)
+  const chargeTax = chargesTax(chargesTotal, principalGstRate(itemRows.map(item => ({ taxable: item.taxableAmount, gstRate: item.gstRate })), gstRate), resolvedSupplyType === 'INTERSTATE')
+  const totalGst = itemRows.reduce((sum, item) => sum + item.gstAmount, 0) + chargeTax.gst
+  const igst = itemRows.reduce((sum, item) => sum + item.igst, 0) + chargeTax.igst
+  const cgst = itemRows.reduce((sum, item) => sum + item.cgst, 0) + chargeTax.cgst
+  const sgst = itemRows.reduce((sum, item) => sum + item.sgst, 0) + chargeTax.sgst
   const total = totalTaxable + totalGst + (transportCost || 0) + (freightCharge || 0) + (loadingCharge || 0) + (installationCharge || 0)
 
   const paidSoFar = invoice.payments.reduce((sum, p) => sum + p.amount, 0)
@@ -738,7 +803,13 @@ export async function updateInvoice(invoiceId: number, data: unknown) {
     ? invoice.paymentMethod
     : (payments?.[0]?.method || invoice.paymentMethod || 'Cash')
 
-  const updated = await prisma.invoice.update({
+  let updated
+  try {
+    updated = await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM "Invoice" WHERE id = ${invoiceId} FOR UPDATE`
+      const current = await tx.invoice.findUnique({ where: { id: invoiceId }, select: { invoiceStatus: true, heldAt: true } })
+      if (!current || current.invoiceStatus !== 'ACTIVE' || !current.heldAt) throw new Error('This parked bill was finalized or cancelled meanwhile. Refresh and try again.')
+      return tx.invoice.update({
     where: { id: invoiceId },
     data: {
       contactId: contact.id,
@@ -746,6 +817,7 @@ export async function updateInvoice(invoiceId: number, data: unknown) {
       discount: discountAmount,
       discountType,
       gst: totalGst,
+      chargesGst: chargeTax.gst,
       cgst,
       sgst,
       igst,
@@ -788,7 +860,11 @@ export async function updateInvoice(invoiceId: number, data: unknown) {
       },
     },
     include: { items: true },
-  })
+      })
+    })
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Could not update the bill' }
+  }
 
   revalidatePath('/billing')
   return { success: true, data: updated }
@@ -803,39 +879,24 @@ export async function recordPayment(data: unknown) {
 
   const { invoiceId, amount, method, reference, notes } = parsed.data
 
-  const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } })
-  if (!invoice) return { success: false, error: 'Invoice not found' }
-  if (invoice.invoiceStatus !== 'ACTIVE') return { success: false, error: 'Cannot add payment to cancelled/refunded invoice' }
-
-  const maxPayable = invoice.balanceDue
-  if (maxPayable <= 0) return { success: false, error: 'Invoice is already fully paid' }
-
-  const paymentAmount = Math.min(amount, maxPayable)
-  const newAmountPaid = invoice.amountPaid + paymentAmount
-  const newBalanceDue = invoice.total - newAmountPaid
-
-  let paymentStatus: PaymentStatus = 'PARTIAL'
-  if (newBalanceDue <= 0) paymentStatus = 'PAID'
-
-  await prisma.$transaction([
-    prisma.payment.create({
-      data: {
-        invoiceId,
-        amount: paymentAmount,
-        method,
-        reference,
-        notes,
-      },
-    }),
-    prisma.invoice.update({
-      where: { id: invoiceId },
-      data: {
-        amountPaid: newAmountPaid,
-        balanceDue: newBalanceDue,
-        paymentStatus,
-      },
-    }),
-  ])
+  // Locked and re-read: two cashiers paying the same bill used to save both
+  // payments while amountPaid counted only one.
+  try {
+    await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM "Invoice" WHERE id = ${invoiceId} FOR UPDATE`
+      const invoice = await tx.invoice.findUnique({ where: { id: invoiceId } })
+      if (!invoice) throw new Error('Invoice not found')
+      if (invoice.invoiceStatus !== 'ACTIVE') throw new Error('Cannot add payment to cancelled/refunded invoice')
+      if (invoice.heldAt) throw new Error('Finalize the parked bill before taking more payments')
+      if (invoice.balanceDue <= 0) throw new Error('Invoice is already fully paid')
+      const paymentAmount = Math.min(amount, invoice.balanceDue)
+      await tx.payment.create({ data: { invoiceId, amount: paymentAmount, method, reference, notes } })
+      await tx.invoice.update({ where: { id: invoiceId }, data: { amountPaid: { increment: paymentAmount } } })
+      await refreshInvoiceBalance(tx, invoiceId)
+    })
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Could not record the payment' }
+  }
 
   revalidatePath('/billing')
   return { success: true }
@@ -851,6 +912,13 @@ export async function cancelInvoice(invoiceId: number) {
 
   try {
     await prisma.$transaction(async tx => {
+      // A bill with money or credit on it is refunded with a credit note, not
+      // cancelled: cancelling reversed the sale while the payment stayed booked.
+      const [paid, credited] = await Promise.all([
+        tx.payment.aggregate({ where: { invoiceId, amount: { gt: 0 } }, _sum: { amount: true } }),
+        tx.creditNote.count({ where: { invoiceId } }),
+      ])
+      if ((paid._sum.amount || 0) > 0 || credited > 0) throw new Error('This bill has payments or credit notes. Issue a full credit note to refund it instead of cancelling.')
       // Claim the cancellation first so concurrent requests restore stock once.
       const claimed = await tx.invoice.updateMany({ where: { id: invoiceId, invoiceStatus: 'ACTIVE' }, data: { invoiceStatus: 'CANCELLED' } })
       if (claimed.count !== 1) throw new Error('Invoice is already cancelled or refunded')
@@ -873,35 +941,31 @@ export async function createCreditNote(data: unknown) {
 
   const { invoiceId, amount, reason } = parsed.data
 
-  const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId }, include: { items: true } })
-  if (!invoice) return { success: false, error: 'Invoice not found' }
-  if (invoice.invoiceStatus !== 'ACTIVE') return { success: false, error: 'Cannot create credit note for cancelled invoice' }
-  const creditedSoFar = (await prisma.creditNote.aggregate({ where: { invoiceId }, _sum: { amount: true } }))._sum.amount || 0
-  if (amount > invoice.total - creditedSoFar) {
-    return { success: false, error: 'Credit note cannot exceed the remaining invoice value' }
-  }
+  if (!(amount > 0)) return { success: false, error: 'Credit note amount must be greater than zero' }
 
-  // Generate credit note display ID
-  const lastCN = await prisma.creditNote.findFirst({
-    orderBy: { id: 'desc' },
-    select: { displayId: true },
-  })
-  let nextNum = 1
-  if (lastCN?.displayId) {
-    const match = lastCN.displayId.match(/CN-(\d+)/)
-    if (match) nextNum = parseInt(match[1]) + 1
-  }
-  const displayId = `CN-${String(nextNum).padStart(4, '0')}`
+  try {
+    await prisma.$transaction(async tx => {
+      // Checked under a row lock: a double-click used to create two credit
+      // notes and put the goods back into stock twice.
+      await tx.$queryRaw`SELECT id FROM "Invoice" WHERE id = ${invoiceId} FOR UPDATE`
+      const invoice = await tx.invoice.findUnique({ where: { id: invoiceId }, include: { items: true } })
+      if (!invoice) throw new Error('Invoice not found')
+      if (invoice.invoiceStatus !== 'ACTIVE') throw new Error('Cannot create credit note for a cancelled or refunded invoice')
+      if (invoice.heldAt) throw new Error('A parked bill has not been issued yet; cancel it instead')
+      const creditedSoFar = (await tx.creditNote.aggregate({ where: { invoiceId }, _sum: { amount: true } }))._sum.amount || 0
+      if (amount > invoice.total - creditedSoFar) throw new Error('Credit note cannot exceed the remaining invoice value')
 
-  await prisma.$transaction(async tx => {
-    await tx.creditNote.create({ data: { displayId, invoiceId, amount, reason } })
-    const allCredits = await tx.creditNote.findMany({ where: { invoiceId }, select: { amount: true } })
-    const totalCredited = allCredits.reduce((sum, cn) => sum + cn.amount, 0)
-    if (totalCredited >= invoice.total) {
-      await restoreInvoiceInventory(tx, invoice)
-      await tx.invoice.update({ where: { id: invoiceId }, data: { invoiceStatus: 'REFUNDED' } })
-    }
-  })
+      await tx.creditNote.create({ data: { displayId: await nextCreditNoteNumber(tx), invoiceId, amount, reason } })
+      const { credited } = await refreshInvoiceBalance(tx, invoiceId)
+      if (credited >= invoice.total) {
+        // Fully credited = goods returned: claim the status first, then restore once.
+        const claimed = await tx.invoice.updateMany({ where: { id: invoiceId, invoiceStatus: 'ACTIVE' }, data: { invoiceStatus: 'REFUNDED' } })
+        if (claimed.count === 1) await restoreInvoiceInventory(tx, invoice)
+      }
+    })
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Could not create the credit note' }
+  }
 
   revalidatePath('/billing')
   return { success: true }
@@ -918,8 +982,9 @@ export async function finalizeHeldInvoice(invoiceId: number) {
   try {
     const godownId = invoice.godownId || await resolveInvoiceGodownId()
     await prisma.$transaction(async tx => {
-      const released = await tx.invoice.updateMany({ where: { id: invoiceId, heldAt: { not: null } }, data: { heldAt: null } })
-      if (released.count !== 1) throw new Error('This held invoice was already finalized')
+      // Only an active parked bill can be finalized: a cancelled one must never take stock.
+      const released = await tx.invoice.updateMany({ where: { id: invoiceId, heldAt: { not: null }, invoiceStatus: 'ACTIVE' }, data: { heldAt: null } })
+      if (released.count !== 1) throw new Error('This parked bill was already finalized or has been cancelled')
       await consumeInvoiceInventory(tx, invoiceId, invoice.items as InventoryInvoiceLine[], godownId)
     })
   } catch (error) {

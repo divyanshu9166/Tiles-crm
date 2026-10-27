@@ -31,6 +31,7 @@ import { convertQuotationToInvoice, createQuotation, getQuotationStats, getQuota
 import { createSalesOrderFromQuotation } from '@/app/actions/sales-orders'
 import { getProducts } from '@/app/actions/products'
 import { getPricelists, getPricesFor } from '@/app/actions/pricelists'
+import { linePrice } from '@/lib/line-math'
 import { getStoreSettings, updateStoreSettings } from '@/app/actions/settings'
 import { getBillableArea } from '@/lib/units'
 import { getActiveVertical } from '@/lib/brand'
@@ -274,40 +275,14 @@ function getItemDisplayImage(item) {
  *   plus the entered area and resulting box count when a conversion occurred.
  */
 function computeLineAmount(item, product) {
-  const unit = String(item?.unitOfMeasure || product?.unitOfMeasure || 'PCS').toUpperCase()
-  const quantity = Math.max(1, Number(item?.quantity) || 1)
-  const rate = Math.max(0, Number(item?.rate) || 0)
-  const coveragePerBox = Math.max(0, Number(item?.coveragePerBox ?? product?.coveragePerBox) || 0)
-  const area = Math.max(0, Number(item?.area ?? item?.areaInput) || 0)
-  const hasCoverage = coveragePerBox > 0
-
-  if (unit === 'SQFT' || unit === 'SQM' || unit === 'SLAB') {
-    return { amount: getBillableArea(area, quantity, unit) * rate, area, billableArea: getBillableArea(area, quantity, unit) }
-  }
-
-  // Furniture, running-feet profiles and per-piece products use quantity * rate.
-  if (unit !== 'BOX') {
-    return { amount: quantity * rate }
-  }
-
-  if (unit === 'SQFT') {
-    if (hasCoverage) {
-      // Amount is priced per square foot; boxes are derived from the area.
-      const boxes = Math.max(0, Math.ceil(area / coveragePerBox))
-      return { amount: area * rate, boxes, area }
-    }
-    // No coverage defined: use the entered quantity directly, no box conversion.
-    return { amount: quantity * rate }
-  }
-
-  // unit === 'BOX'
-  if (hasCoverage && area > 0) {
-    // Derive the number of boxes from the entered area; price per box.
-    const boxes = Math.max(0, Math.ceil(area / coveragePerBox))
-    return { amount: boxes * rate, boxes, area }
-  }
-  // No area entered (or no coverage): bill the box count, as the server does.
-  return { amount: quantity * rate }
+  // Same rules as the server (lib/line-math): the printed quote matches the saved one.
+  return linePrice({
+    quantity: item?.quantity,
+    rate: Math.round(Number(item?.rate) || 0),
+    unitOfMeasure: item?.unitOfMeasure || product?.unitOfMeasure || 'PCS',
+    areaSqft: item?.area ?? item?.areaInput,
+    coveragePerBox: item?.coveragePerBox ?? product?.coveragePerBox,
+  })
 }
 
 function computeTotals(items, installationPercent, discountType, discountValue, freightCharge, loadingCharge, gstPercent, products = []) {

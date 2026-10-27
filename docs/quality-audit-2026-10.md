@@ -62,22 +62,22 @@ for the cleanup cron; `SESSION_SECRET` (32+ chars) is mandatory.
 
 | # | Sev | Finding | Example |
 |---|---|---|---|
-| M1 ☐ | Critical | POS area lines bill `ceil(area/coverage)` boxes but **deduct the typed qty** from stock | 300 sq.ft of a 15 sq.ft/box tile bills 20 boxes, stock drops by 1 (`invoices.ts:35` vs `:64,96`) |
-| M2 ☐ | Critical | Editing a **percent-discount** invoice reloads the rupee amount as a percent | ₹10,000 −10% stored as 1,000 → edit → 1,000% off → saved ₹0, PAID (`billing/page.js:784`) |
-| M3 ☐ | Critical | SQFT lines: screen and server disagree | qty 1, area 100, ₹50: cashier sees ₹59, invoice saves ₹5,900 (`billing/page.js:203-211` vs `invoices.ts:34`) |
-| M4 ☐ | Critical | Overpayment ("Change") booked as cash received | bill ₹1,180, tendered ₹2,000 → cash +₹2,000, receivable −₹820 (`invoices.ts:462,543`) |
-| M5 ☐ | Critical | **Editing an issued invoice** rewrites lines with no stock movement and the journal keeps the old amount | sell 10 A, edit to 2 B, cancel → A short by 10, B +2 phantom; GL stays at old total (`invoices.ts:594-789`) |
-| M6 ☐ | Critical | Cancelled held bill can still be **finalized** → stock consumed for a cancelled sale | `cancelInvoice` leaves `heldAt`; `finalizeHeldInvoice` ignores status (`invoices.ts:853,919`) |
-| M7 ☐ | Critical | Move cancelled store order to Drafts restores stock a second time | order 5 → cancel → drafts = +5 phantom (`drafts.ts:404-451`) |
-| M8 ☐ | Critical | Quotation already confirmed as SO can be moved to drafts, restored, and confirmed into a **second SO** | `drafts.ts:476-543,1395` |
-| M9 ☐ | Critical | Moving an approved/paid PO to drafts orphans payments, bills and its receipt; restore creates a second receipt | `drafts.ts:689-801` |
-| M10 ☐ | High | Credit notes: never reduce `balanceDue`; double-click restores stock twice; later cancel reverses twice | `invoices.ts:844-906` |
-| M11 ☐ | High | Cancelling an invoice with payments/credit notes drives receivables negative, no refund recorded | `invoices.ts:844` |
-| M12 ☐ | High | Two cashiers paying the same bill: both Payment rows saved, `amountPaid` counts one | `invoices.ts:804-836` |
-| M13 ☐ | High | Production complete/cancel not locked: double submit consumes materials twice; cancel after complete releases slabs | `manufacturing.ts:953-974,1059-1079` |
-| M14 ☐ | High | Vendor bill ignores PO discount → AP and input GST overstated, bill never fully payable | `vendor-bills.ts:136` |
-| M15 ☐ | High | GST on charges: quotation taxes installation/freight/loading, invoice and SO don't | quote ₹1,26,260 vs bill ₹1,25,000 |
-| M16 ☐ | High | Re-invoicing a sales order after cancelling the first invoice loses freight/loading charges | `sales-orders.ts:395,445` |
+| M1 ☑ | Critical | POS area lines bill `ceil(area/coverage)` boxes but **deduct the typed qty** from stock | 300 sq.ft of a 15 sq.ft/box tile bills 20 boxes, stock drops by 1 (`invoices.ts:35` vs `:64,96`) |
+| M2 ☑ | Critical | Editing a **percent-discount** invoice reloads the rupee amount as a percent | ₹10,000 −10% stored as 1,000 → edit → 1,000% off → saved ₹0, PAID (`billing/page.js:784`) |
+| M3 ☑ | Critical | SQFT lines: screen and server disagree | qty 1, area 100, ₹50: cashier sees ₹59, invoice saves ₹5,900 (`billing/page.js:203-211` vs `invoices.ts:34`) |
+| M4 ☑ | Critical | Overpayment ("Change") booked as cash received | bill ₹1,180, tendered ₹2,000 → cash +₹2,000, receivable −₹820 (`invoices.ts:462,543`) |
+| M5 ☑ | Critical | **Editing an issued invoice** rewrites lines with no stock movement and the journal keeps the old amount | sell 10 A, edit to 2 B, cancel → A short by 10, B +2 phantom; GL stays at old total (`invoices.ts:594-789`) |
+| M6 ☑ | Critical | Cancelled held bill can still be **finalized** → stock consumed for a cancelled sale | `cancelInvoice` leaves `heldAt`; `finalizeHeldInvoice` ignores status (`invoices.ts:853,919`) |
+| M7 ☑ | Critical | Move cancelled store order to Drafts restores stock a second time | order 5 → cancel → drafts = +5 phantom (`drafts.ts:404-451`) |
+| M8 ☑ | Critical | Quotation already confirmed as SO can be moved to drafts, restored, and confirmed into a **second SO** | `drafts.ts:476-543,1395` |
+| M9 ☑ | Critical | Moving an approved/paid PO to drafts orphans payments, bills and its receipt; restore creates a second receipt | `drafts.ts:689-801` |
+| M10 ☑ | High | Credit notes: never reduce `balanceDue`; double-click restores stock twice; later cancel reverses twice | `invoices.ts:844-906` |
+| M11 ☑ | High | Cancelling an invoice with payments/credit notes drives receivables negative, no refund recorded | `invoices.ts:844` |
+| M12 ☑ | High | Two cashiers paying the same bill: both Payment rows saved, `amountPaid` counts one | `invoices.ts:804-836` |
+| M13 ☑ | High | Production complete/cancel not locked: double submit consumes materials twice; cancel after complete releases slabs | `manufacturing.ts:953-974,1059-1079` |
+| M14 ☑ | High | Vendor bill ignores PO discount → AP and input GST overstated, bill never fully payable | `vendor-bills.ts:136` |
+| M15 ☑ | High | GST on charges: quotation taxes installation/freight/loading, invoice and SO don't | quote ₹1,26,260 vs bill ₹1,25,000 |
+| M16 ☑ | High | Re-invoicing a sales order after cancelling the first invoice loses freight/loading charges | `sales-orders.ts:395,445` |
 | M17 ☐ | Medium | Applying a physical count erases sales made after counting | `inventory-counts.ts:187` |
 | M18 ☐ | Medium | AVCO wrong when a receipt has the same product twice | `stock-ops.ts:177-212` |
 | M19 ☐ | Medium | PO edit racing approval → receipt loses its PO link → second full receipt | `purchases.ts:367-399` |
@@ -85,8 +85,39 @@ for the cleanup cron; `SESSION_SECRET` (32+ chars) is mandatory.
 | M21 ☐ | Medium | Manufacturing bypasses `adjustStock` (legacy stock wiped, no ledger without godowns, random location) | `manufacturing.ts:95-185` |
 | M22 ☐ | Medium | Staff "Stock Out" skips the batch check; any role can post stock in/out | `staff.ts:596` |
 | M23 ☐ | Medium | Quotations editable / status-changeable after confirmation; double-click "Create invoice" makes two | `quotations.ts:408-674` |
-| M24 ☐ | Medium | Paise truncated instead of rounded; screen vs saved off by ₹1 | `invoices.ts:34`, `quotations/page.js:279` |
+| M24 ◐ | Medium | Paise truncated instead of rounded; screen vs saved off by ₹1 | `invoices.ts:34`, `quotations/page.js:279` |
 | M25 ☐ | Low | Held-invoice delete racing finalize; count line edit after apply; PO approval total re-read; slab moves have no ledger history | various |
+
+---
+
+### Phase 2 result (branch `money-stock-phase-2`)
+
+M1–M16 fixed, each with an integration test in `lib/erp.integration.test.ts` (110 checks pass).
+
+- One set of line rules (`lib/line-math.ts`) for the POS and quotation screens and both servers: the cashier's
+  total is the saved total, a BOX tile sold by area deducts the boxes it bills, amounts round to whole rupees.
+- Percent discounts reload as the rupee amount; issued bills keep their lines and totals (credit note + new bill
+  to change them); parked bills stay editable under a lock.
+- Change handed back is not booked as cash; a cancelled parked bill can't be finalized.
+- Drafts: cancelled store orders don't restore stock twice; confirmed quotations and approved/paid/billed POs
+  can't be deleted; quotations restore under their original number.
+- Credit notes reduce balanceDue, run under a lock (stock returns once), share one numbering lock with order
+  refunds; paid/credited bills can't be cancelled; concurrent payments both count.
+- Production complete/cancel claim the order under a row lock and return errors instead of freezing.
+- Vendor bills apply the PO discount to untaxed amount and GST.
+- Cancelling a sales-order invoice that carried freight/loading/installation re-opens them for the next invoice.
+
+**Open:**
+- **M15 decided (tax them):** transport, freight, loading and installation on POS bills and sales orders now carry GST
+  at the principal line's rate (composite supply), as quotations do. `Invoice.chargesGst` (migration
+  `20261027100000_invoice_charges_gst`) records it; GSTR-1 adds taxed charges to taxable value and to the principal
+  item's HSN row. Bills issued before this change keep their untaxed charges and report as before.
+- M14 follow-up (Phase 3): received stock is still valued at the undiscounted PO price, so the PO discount stays
+  in GRNI until stock valuation applies it.
+- M24: POS and quotation lines now round consistently; other places that truncate paise are Phase 3/4.
+- M17–M23, M25 (medium/low) not started.
+- SQFT-priced products (none in the data today) keep deducting their typed quantity, not boxes for the area;
+  confirm how such products are stocked before changing it.
 
 ---
 

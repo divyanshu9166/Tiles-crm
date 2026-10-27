@@ -32,13 +32,13 @@ export const TILES_UNIT_VALUES = ['PCS', 'SQFT', 'SQM', 'BOX', 'SLAB', 'RFT'] as
 const emptyToUndefined = (v: unknown) => (v === '' || v === null ? undefined : v)
 
 export const createProductSchema = z.object({
-  sku: z.string().min(1, 'SKU is required'),
-  name: z.string().min(1, 'Product name is required'),
-  category: z.string().min(1, 'Category is required'),
-  price: z.number().min(0, 'Price must be positive'),
-  costPrice: z.number().min(0).default(0),
+  sku: z.string().trim().min(1, 'SKU is required'),
+  name: z.string().trim().min(1, 'Product name is required'),
+  category: z.string().trim().min(1, 'Category is required'),
+  price: z.number().int('Price must be a whole rupee amount').min(0, 'Price cannot be negative'),
+  costPrice: z.number().int('Cost must be a whole rupee amount').min(0).default(0),
   stock: z.number().min(0).default(0),
-  reorderLevel: z.number().min(0).default(5),
+  reorderLevel: z.number().int().min(0).default(5),
   material: z.string().optional(),
   brand: z.string().optional(),
   color: z.string().optional(),
@@ -46,9 +46,10 @@ export const createProductSchema = z.object({
   warehouse: z.string().optional(),
   image: z.string().optional(),
   // Accepts PCS (default), plus SQFT / BOX for tiles and existing furniture units.
-  unitOfMeasure: z.string().default('PCS'),
+  unitOfMeasure: z.string().trim().min(1).transform(v => v.toUpperCase()).default('PCS'),
   unitSize: z.number().positive().default(1),
-  godownId: z.number().optional(), // Which godown receives the initial stock
+  godownId: z.number().int().positive().optional(), // Which godown receives the initial stock
+  stockGroupId: z.number().int().positive().nullable().optional(),
 
   // ── Tiles, granite & marble attributes ──
   materialCategory: z.preprocess(emptyToUndefined, z.enum(MATERIAL_CATEGORY_VALUES).optional()),
@@ -76,9 +77,36 @@ export const createProductSchema = z.object({
 })
 
 export const updateStockSchema = z.object({
-  id: z.number(),
-  stock: z.number().min(0),
-  godownId: z.number().optional(), // Which godown to adjust
-})
+  id: z.number().int().positive(),
+  stock: z.number().min(0).optional(), // Backward-compatible absolute location balance
+  quantity: z.number().min(0).optional(),
+  operation: z.enum(['ADD', 'REMOVE', 'SET']).optional(),
+  expectedBalance: z.number().min(0).optional(),
+  batchId: z.number().int().positive().optional(),
+  godownId: z.number().int().positive().optional(),
+  reason: z.string().trim().max(200).optional(),
+  notes: z.string().trim().max(2000).optional(),
+}).refine(v => v.operation ? v.quantity !== undefined && (v.operation === 'SET' || v.quantity > 0) : v.stock !== undefined,
+  { message: 'Enter a valid quantity (positive for adding or removing stock)' })
+
+export const updateProductSchema = createProductSchema.omit({ category: true, warehouse: true, godownId: true, stock: true }).partial().extend({
+  // Zod 4 still applies nested defaults through .partial(). Metadata patches
+  // must never reset an omitted cost, unit, tracking flag or reorder threshold.
+  costPrice: createProductSchema.shape.costPrice.unwrap().optional(),
+  reorderLevel: createProductSchema.shape.reorderLevel.unwrap().optional(),
+  unitOfMeasure: createProductSchema.shape.unitOfMeasure.unwrap().optional(),
+  unitSize: createProductSchema.shape.unitSize.unwrap().optional(),
+  isSlabTracked: createProductSchema.shape.isSlabTracked.unwrap().optional(),
+  bookMatchPair: createProductSchema.shape.bookMatchPair.unwrap().optional(),
+  tileSize: z.string().trim().nullable().optional(),
+  finish: z.enum(FINISH_VALUES).nullable().optional(),
+  coveragePerBox: z.number().positive().nullable().optional(),
+  tilesPerBox: z.number().int().positive().nullable().optional(),
+  surfaceType: z.string().trim().nullable().optional(),
+  applicationArea: z.enum(APPLICATION_AREA_VALUES).nullable().optional(),
+  origin: z.string().trim().nullable().optional(),
+  thicknessMm: z.number().positive().nullable().optional(),
+  qualityGrade: z.string().trim().nullable().optional(),
+}).strict()
 
 export type CreateProductInput = z.infer<typeof createProductSchema>

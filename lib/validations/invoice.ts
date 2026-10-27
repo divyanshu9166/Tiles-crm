@@ -43,6 +43,7 @@ const invoiceBaseSchema = z.object({
   supplyType: z.enum(['INTRASTATE', 'INTERSTATE']).optional(),
   placeOfSupply: z.string().optional(),
   godownId: z.number().int().positive().optional(),
+  pricelistId: z.number().int().positive().nullable().optional(), // pricelist the bill was priced from
 })
 
 export const createInvoiceSchema = invoiceBaseSchema.refine(data => data.isHeld || data.payments.some(payment => payment.amount > 0), {

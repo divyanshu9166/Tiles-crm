@@ -30,8 +30,10 @@ model User {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  accounts Account[]
-  sessions Session[]
+  accounts           Account[]
+  sessions           Session[]
+  assignedActivities RecordActivity[] @relation("ActivityAssignee")
+  assignedCounts     InventoryCount[] @relation("CountAssignee")
 }
 
 model Account {
@@ -71,18 +73,23 @@ model VerificationToken {
 // ─── CONTACT (Unified Customer Identity) ─────────────
 
 model Contact {
-  id              Int      @id @default(autoincrement())
-  name            String
-  phone           String   @unique
-  email           String?
-  address         String?
-  gstNumber       String? // Buyer GSTIN — enables B2B classification in GSTR-1
-  state           String? // State for place of supply (e.g. "Maharashtra")
-  source          String?
-  notes           String?
-  emailSubscribed Boolean  @default(true)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id               Int           @id @default(autoincrement())
+  name             String
+  phone            String        @unique
+  email            String?
+  address          String?
+  gstNumber        String? // Buyer GSTIN — enables B2B classification in GSTR-1
+  state            String? // State for place of supply (e.g. "Maharashtra")
+  source           String?
+  notes            String?
+  emailSubscribed  Boolean       @default(true)
+  pricelistId      Int?
+  pricelist        Pricelist?    @relation(fields: [pricelistId], references: [id], onDelete: SetNull)
+  followUpNextDate DateTime? // next payment follow-up (e.g. promised payment date)
+  followUpNote     String?
+  followUpLogs     FollowUpLog[]
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
 
   leads         Lead[]
   orders        Order[]
@@ -96,6 +103,8 @@ model Contact {
   conversations Conversation[]
   reviews       Review[]
   dailyPayments DailyPayment[]
+  salesOrders   SalesOrder[]
+  pickings      StockPicking[] @relation("PickingContact")
 
   @@index([email])
   @@index([emailSubscribed])
@@ -113,22 +122,25 @@ enum LeadStatus {
 }
 
 model Lead {
-  id           Int        @id @default(autoincrement())
-  contactId    Int
-  contact      Contact    @relation(fields: [contactId], references: [id])
-  interest     String
+  id               Int        @id @default(autoincrement())
+  contactId        Int
+  contact          Contact    @relation(fields: [contactId], references: [id])
+  interest         String
   materialCategory String?
   applicationArea  String?
   areaSqft         Float?
-  budget       String?
-  status       LeadStatus @default(NEW)
-  source       String?
-  date         DateTime   @default(now())
-  notes        String?
-  assignedToId Int?
-  assignedTo   Staff?     @relation(fields: [assignedToId], references: [id])
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  budget           String?
+  status           LeadStatus @default(NEW)
+  source           String?
+  date             DateTime   @default(now())
+  notes            String?
+  assignedToId     Int?
+  assignedTo       Staff?     @relation(fields: [assignedToId], references: [id])
+  teamId           Int?
+  team             SalesTeam? @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  expectedRevenue  Int?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
 
   followUps     FollowUp[]
   indiaMartLead IndiaMartLead?
@@ -153,9 +165,10 @@ model FollowUp {
 // ─── PRODUCTS & INVENTORY ────────────────────────────
 
 model Category {
-  id       Int       @id @default(autoincrement())
-  name     String    @unique
-  products Product[]
+  id             Int             @id @default(autoincrement())
+  name           String          @unique
+  pricelistItems PricelistItem[]
+  products       Product[]
 }
 
 model Warehouse {
@@ -206,6 +219,12 @@ model Product {
   sampleLoans          SampleLoan[]
   dealerOrderItems     DealerOrderItem[]
   dealerPriceListItems DealerPriceListItem[]
+  salesOrderLines      SalesOrderLine[]       @relation("SalesOrderLineProduct")
+  pickingLines         StockPickingLine[]     @relation("PickingLineProduct")
+  reorderRules         ReorderRule[]          @relation("ReorderRuleProduct")
+  vendorPrices         ProductSupplier[]      @relation("ProductSupplierProduct")
+  countLines           InventoryCountLine[]   @relation("CountLineProduct")
+  pricelistItems       PricelistItem[]
 
   // Deep inventory fields
   hsnCode       String?
@@ -244,6 +263,7 @@ model StoneLot {
   productId      Int
   product        Product   @relation(fields: [productId], references: [id])
   supplierId     Int?
+  poId           Int? // purchase order this lot was received against
   supplier       Supplier? @relation(fields: [supplierId], references: [id])
   origin         String?
   purchaseDate   DateTime  @default(now())
@@ -386,6 +406,8 @@ model Quotation {
   displayId           String          @unique
   contactId           Int
   contact             Contact         @relation(fields: [contactId], references: [id])
+  pricelistId         Int?
+  pricelist           Pricelist?      @relation(fields: [pricelistId], references: [id], onDelete: SetNull)
   date                DateTime        @default(now())
   validUntil          DateTime?
   projectName         String?
@@ -411,7 +433,8 @@ model Quotation {
   createdAt           DateTime        @default(now())
   updatedAt           DateTime        @updatedAt
 
-  items QuotationItem[]
+  items      QuotationItem[]
+  salesOrder SalesOrder?
 
   @@index([date])
   @@index([status])
@@ -456,9 +479,9 @@ model Appointment {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([date, time])
   @@index([date])
   @@index([status])
-  @@unique([date, time])
 }
 
 // ─── INVOICES & BILLING ──────────────────────────────
@@ -470,43 +493,47 @@ enum InvoiceStatus {
 }
 
 model Invoice {
-  id            Int           @id @default(autoincrement())
-  displayId     String        @unique
-  contactId     Int
-  contact       Contact       @relation(fields: [contactId], references: [id])
-  subtotal      Int
-  discount      Int           @default(0)
-  discountType  String        @default("none")
-  gst           Int           @default(0)
-  cgst          Int           @default(0)
-  sgst          Int           @default(0)
-  igst          Int           @default(0) // Interstate GST
-  cess          Int           @default(0) // Cess on applicable goods
-  total         Int
-  amountPaid    Int           @default(0)
-  balanceDue    Int           @default(0)
-  paymentMethod String // primary payment method
-  paymentStatus PaymentStatus @default(PENDING)
-  invoiceStatus InvoiceStatus @default(ACTIVE)
-    transportCost Int           @default(0) // Transportation/freight cost added to invoice
-    freightCharge Int           @default(0)
-    loadingCharge Int           @default(0)
-    installationCharge Int      @default(0)
-    roadPermit    String?
-  godownId      Int?
-  godown        Godown?       @relation(fields: [godownId], references: [id], onDelete: SetNull)
-  supplyType    String        @default("INTRASTATE") // INTRASTATE | INTERSTATE | EXPORT | EXEMPT | NIL_RATED
-  placeOfSupply String? // State name, e.g. "Maharashtra"
-  isRCM         Boolean       @default(false) // Reverse Charge Mechanism
-  date          DateTime
-  time          String?
-  dueDate       DateTime?
-  salespersonId Int?
-  salesperson   Staff?        @relation(fields: [salespersonId], references: [id])
-  notes         String?
-  heldAt        DateTime? // non-null = parked/held bill
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  id                 Int           @id @default(autoincrement())
+  displayId          String        @unique
+  contactId          Int
+  contact            Contact       @relation(fields: [contactId], references: [id])
+  pricelistId        Int? // POS: the pricelist the bill was priced from
+  pricelist          Pricelist?    @relation(fields: [pricelistId], references: [id], onDelete: SetNull)
+  subtotal           Int
+  discount           Int           @default(0)
+  discountType       String        @default("none")
+  gst                Int           @default(0)
+  cgst               Int           @default(0)
+  sgst               Int           @default(0)
+  igst               Int           @default(0) // Interstate GST
+  cess               Int           @default(0) // Cess on applicable goods
+  total              Int
+  amountPaid         Int           @default(0)
+  balanceDue         Int           @default(0)
+  paymentMethod      String // primary payment method
+  paymentStatus      PaymentStatus @default(PENDING)
+  invoiceStatus      InvoiceStatus @default(ACTIVE)
+  transportCost      Int           @default(0) // Transportation/freight cost added to invoice
+  freightCharge      Int           @default(0)
+  loadingCharge      Int           @default(0)
+  installationCharge Int           @default(0)
+  roadPermit         String?
+  godownId           Int?
+  godown             Godown?       @relation(fields: [godownId], references: [id], onDelete: SetNull)
+  supplyType         String        @default("INTRASTATE") // INTRASTATE | INTERSTATE | EXPORT | EXEMPT | NIL_RATED
+  placeOfSupply      String? // State name, e.g. "Maharashtra"
+  isRCM              Boolean       @default(false) // Reverse Charge Mechanism
+  date               DateTime
+  time               String?
+  dueDate            DateTime?
+  salespersonId      Int?
+  salesperson        Staff?        @relation(fields: [salespersonId], references: [id])
+  notes              String?
+  salesOrderId       Int?
+  salesOrder         SalesOrder?   @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+  heldAt             DateTime? // non-null = parked/held bill
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
 
   items         InvoiceItem[]
   payments      Payment[]
@@ -524,29 +551,30 @@ model Invoice {
 }
 
 model InvoiceItem {
-  id             Int           @id @default(autoincrement())
-  invoiceId      Int
-  invoice        Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  productId      Int
-  product        Product       @relation(fields: [productId], references: [id])
-  name           String
-  sku            String
-  quantity       Int
-  unitOfMeasure  String        @default("PCS")
-  areaSqft       Float?
-  coveragePerBox Float?
-  price          Int
-  slabId         Int?
-  slab           Slab?         @relation(fields: [slabId], references: [id], onDelete: SetNull)
-  batchId        Int?
-  batch          ProductBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
-  hsnCode        String? // HSN/SAC code for GST
-  gstRate        Float         @default(18) // Per-item GST rate (from HSN)
-  cgst           Int           @default(0) // Per-item CGST
-  sgst           Int           @default(0) // Per-item SGST
-  igst           Int           @default(0) // Per-item IGST (interstate)
-  cess           Int           @default(0) // Per-item cess
-  taxableAmount  Int           @default(0) // price * quantity (pre-tax)
+  id               Int           @id @default(autoincrement())
+  invoiceId        Int
+  invoice          Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  productId        Int
+  product          Product       @relation(fields: [productId], references: [id])
+  name             String
+  sku              String
+  quantity         Int
+  unitOfMeasure    String        @default("PCS")
+  areaSqft         Float?
+  coveragePerBox   Float?
+  price            Int
+  slabId           Int?
+  slab             Slab?         @relation(fields: [slabId], references: [id], onDelete: SetNull)
+  batchId          Int?
+  batch            ProductBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  hsnCode          String? // HSN/SAC code for GST
+  gstRate          Float         @default(18) // Per-item GST rate (from HSN)
+  cgst             Int           @default(0) // Per-item CGST
+  sgst             Int           @default(0) // Per-item SGST
+  igst             Int           @default(0) // Per-item IGST (interstate)
+  cess             Int           @default(0) // Per-item cess
+  taxableAmount    Int           @default(0) // price * quantity (pre-tax)
+  salesOrderLineId Int? // set when invoiced from a Sales Order line
 
   @@index([invoiceId])
 }
@@ -656,25 +684,25 @@ enum WalkinStatus {
 }
 
 model Walkin {
-  id            Int          @id @default(autoincrement())
-  contactId     Int
-  contact       Contact      @relation(fields: [contactId], references: [id])
-  requirement   String
-  roomType      String?
+  id               Int          @id @default(autoincrement())
+  contactId        Int
+  contact          Contact      @relation(fields: [contactId], references: [id])
+  requirement      String
+  roomType         String?
   materialCategory String?
   applicationArea  String?
-  areaSqft      Float?
-  assignedToId  Int?
-  assignedTo    Staff?       @relation("WalkinAssigned", fields: [assignedToId], references: [id])
-  date          DateTime
-  time          String
-  status        WalkinStatus @default(BROWSING)
-  budget        String?
-  notes         String?
-  source        String       @default("Walk-in")
-  visitDuration String?
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
+  areaSqft         Float?
+  assignedToId     Int?
+  assignedTo       Staff?       @relation("WalkinAssigned", fields: [assignedToId], references: [id])
+  date             DateTime
+  time             String
+  status           WalkinStatus @default(BROWSING)
+  budget           String?
+  notes            String?
+  source           String       @default("Walk-in")
+  visitDuration    String?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
 
   @@index([date])
   @@index([status])
@@ -698,40 +726,45 @@ model Staff {
   updatedAt  DateTime @updatedAt
 
   // Payroll fields
-  basicSalary          Int     @default(0)
+  basicSalary          Int        @default(0)
   designation          String?
   panNumber            String?
   bankAccount          String?
   bankName             String?
   ifscCode             String?
-  pfEnrolled           Boolean @default(false)
-  esiEnrolled          Boolean @default(false)
+  pfEnrolled           Boolean    @default(false)
+  esiEnrolled          Boolean    @default(false)
   uanNumber            String? // Universal Account Number (PF)
   pfNumber             String? // PF registration number
   esiNumber            String? // ESI registration number
-  professionalTaxState String  @default("Maharashtra")
-  tdsMonthly           Int     @default(0) // fixed monthly TDS amount
+  professionalTaxState String     @default("Maharashtra")
+  tdsMonthly           Int        @default(0) // fixed monthly TDS amount
+  salesTeamId          Int?
+  salesTeam            SalesTeam? @relation("SalesTeamMembers", fields: [salesTeamId], references: [id], onDelete: SetNull)
+  leadCapacity         Int        @default(0) // max open leads for auto-assignment; 0 = no limit
 
-  user             User?
-  leads            Lead[]
-  invoices         Invoice[]
-  customOrders     CustomOrder[]
-  walkins          Walkin[]          @relation("WalkinAssigned")
-  attendance       Attendance[]
-  activities       StaffActivity[]
-  fieldVisits      FieldVisit[]
-  stockUpdates     StockUpdate[]
-  payslips         Payslip[]
-  loans            StaffLoan[]
-  expenses         Expense[]         @relation("StaffExpenses")
-  productionOrders ProductionOrder[] @relation("ProductionOrderAssignedStaff")
-  receivedPayments DailyPayment[]
-  dealersAssigned  Dealer[]          @relation("DealerAssigned")
-  dealerTasks      DealerTask[]      @relation("DealerTaskAssigned")
-  dealerVisits     DealerVisit[]     @relation("DealerVisitStaff")
-  dealerOrders     DealerOrder[]     @relation("DealerOrderSalesperson")
-  dealerClaims     DealerClaim[]     @relation("DealerClaimAssigned")
+  user                  User?
+  leads                 Lead[]
+  invoices              Invoice[]
+  customOrders          CustomOrder[]
+  walkins               Walkin[]                @relation("WalkinAssigned")
+  attendance            Attendance[]
+  activities            StaffActivity[]
+  fieldVisits           FieldVisit[]
+  stockUpdates          StockUpdate[]
+  payslips              Payslip[]
+  loans                 StaffLoan[]
+  expenses              Expense[]               @relation("StaffExpenses")
+  productionOrders      ProductionOrder[]       @relation("ProductionOrderAssignedStaff")
+  receivedPayments      DailyPayment[]
+  dealersAssigned       Dealer[]                @relation("DealerAssigned")
+  dealerTasks           DealerTask[]            @relation("DealerTaskAssigned")
+  dealerVisits          DealerVisit[]           @relation("DealerVisitStaff")
+  dealerOrders          DealerOrder[]           @relation("DealerOrderSalesperson")
+  dealerClaims          DealerClaim[]           @relation("DealerClaimAssigned")
   dealerTeamAssignments DealerStaffAssignment[] @relation("DealerTeamAssignments")
+  salesOrders           SalesOrder[]            @relation("SalesOrderSalesperson")
+  ledTeams              SalesTeam[]             @relation("SalesTeamLeader")
 
   @@index([email])
 }
@@ -859,9 +892,9 @@ model CallLog {
 
   transcript CallTranscript?
 
+  @@unique([livekitRoomId])
   @@index([date])
   @@index([contactId])
-  @@unique([livekitRoomId])
 }
 
 model CallTranscript {
@@ -993,6 +1026,9 @@ model StoreSettings {
   smtpFromName      String? // "Furniture Store" — display name in From header
   smtpSecure        Boolean  @default(false) // true for port 465 (SSL), false for 587 (STARTTLS)
   smtpConfigured    Boolean  @default(false) // true once test email succeeds
+  // ERP policies (Odoo-style)
+  costingMethod     String   @default("AVCO") // AVCO (weighted average) | LAST (last purchase price)
+  poApprovalLimit   Int      @default(0) // POs above this total need ADMIN approval; 0 = off
   updatedAt         DateTime @updatedAt
 }
 
@@ -1228,6 +1264,11 @@ model Supplier {
   purchaseOrders  PurchaseOrder[]
   purchaseReturns PurchaseReturn[]
   stoneLots       StoneLot[]
+  pickings        StockPicking[]    @relation("PickingSupplier")
+  reorderRules    ReorderRule[]     @relation("ReorderRuleSupplier")
+  vendorPrices    ProductSupplier[] @relation("ProductSupplierSupplier")
+  vendorBills     VendorBill[]
+  landedCosts     LandedCost[]
 }
 
 model PurchaseOrder {
@@ -1259,25 +1300,30 @@ model PurchaseOrder {
   items           PurchaseOrderItem[]
   payments        PurchasePayment[]
   purchaseReturns PurchaseReturn[]
+  pickings        StockPicking[]      @relation("PickingPurchaseOrder")
+  vendorBills     VendorBill[]
 
   @@index([supplierId])
   @@index([status])
 }
 
 model PurchaseOrderItem {
-  id          Int           @id @default(autoincrement())
-  poId        Int
-  po          PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade)
-  productId   Int
-  product     Product       @relation(fields: [productId], references: [id])
-  name        String
-  sku         String
-  hsnCode     String?
-  quantity    Int
-  receivedQty Int           @default(0)
-  unitCost    Int
-  gstRate     Float         @default(18)
-  amount      Int
+  id           Int                @id @default(autoincrement())
+  poId         Int
+  po           PurchaseOrder      @relation(fields: [poId], references: [id], onDelete: Cascade)
+  productId    Int
+  product      Product            @relation(fields: [productId], references: [id])
+  name         String
+  sku          String
+  hsnCode      String?
+  quantity     Int
+  receivedQty  Int                @default(0)
+  billedQty    Int                @default(0) // quantity on posted vendor bills
+  unitCost     Int
+  gstRate      Float              @default(18)
+  amount       Int
+  pickingLines StockPickingLine[] @relation("PickingLinePOItem")
+  billLines    VendorBillLine[]
 
   @@index([poId])
 }
@@ -1319,6 +1365,8 @@ model PurchasePayment {
   id        Int           @id @default(autoincrement())
   poId      Int
   po        PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade)
+  billId    Int?
+  bill      VendorBill?   @relation(fields: [billId], references: [id], onDelete: SetNull)
   amount    Int
   method    String        @default("Bank Transfer") // Cash, UPI, Card, Bank Transfer, Cheque
   reference String?
@@ -1364,6 +1412,10 @@ model Godown {
   orders        Order[]
   invoices      Invoice[]
   slabs         Slab[]
+  salesOrders   SalesOrder[]     @relation("SalesOrderGodown")
+  pickings      StockPicking[]   @relation("PickingGodown")
+  reorderRules  ReorderRule[]    @relation("ReorderRuleGodown")
+  counts        InventoryCount[] @relation("CountGodown")
 
   @@index([branchId])
 }
@@ -1465,6 +1517,7 @@ model ProductBatch {
   createdAt    DateTime  @default(now())
 
   invoiceItems InvoiceItem[]
+  pickingLines StockPickingLine[] @relation("PickingLineBatch")
 
   @@unique([productId, batchNumber])
   @@index([productId])
@@ -2000,6 +2053,8 @@ model JournalEntry {
   totalCredit   Int
   status        String   @default("POSTED")
   createdBy     String?
+  sourceKey     String?  @unique // auto-posted entries: one per source document event, e.g. "INV:12"
+  isAuto        Boolean  @default(false)
   createdAt     DateTime @default(now())
 
   lines JournalLine[]
@@ -2675,13 +2730,13 @@ model Dealer {
   createdAt                DateTime     @default(now())
   updatedAt                DateTime     @updatedAt
 
-  tasks      DealerTask[]
-  orders     DealerOrder[]
-  payments   DealerPayment[]
-  visits     DealerVisit[]
-  claims     DealerClaim[]
-  activities DealerActivity[]
-  priceLists DealerPriceList[]
+  tasks           DealerTask[]
+  orders          DealerOrder[]
+  payments        DealerPayment[]
+  visits          DealerVisit[]
+  claims          DealerClaim[]
+  activities      DealerActivity[]
+  priceLists      DealerPriceList[]
   teamAssignments DealerStaffAssignment[]
 
   @@index([status])
@@ -2696,7 +2751,7 @@ model DealerStaffAssignment {
   dealer    Dealer   @relation(fields: [dealerId], references: [id], onDelete: Cascade)
   staffId   Int
   staff     Staff    @relation("DealerTeamAssignments", fields: [staffId], references: [id], onDelete: Cascade)
-  role      String   // OWNER | SALESPERSON | REGIONAL_MANAGER | COLLECTION_EXECUTIVE | SUPPORT_PERSON
+  role      String // OWNER | SALESPERSON | REGIONAL_MANAGER | COLLECTION_EXECUTIVE | SUPPORT_PERSON
   createdAt DateTime @default(now())
 
   @@unique([dealerId, staffId, role])
@@ -2705,22 +2760,22 @@ model DealerStaffAssignment {
 }
 
 model DealerTask {
-  id             Int              @id @default(autoincrement())
-  dealerId       Int
-  dealer         Dealer           @relation(fields: [dealerId], references: [id], onDelete: Cascade)
+  id              Int              @id @default(autoincrement())
+  dealerId        Int
+  dealer          Dealer           @relation(fields: [dealerId], references: [id], onDelete: Cascade)
   assignedStaffId Int?
   assignedStaff   Staff?           @relation("DealerTaskAssigned", fields: [assignedStaffId], references: [id], onDelete: SetNull)
-  type           String           @default("FOLLOW_UP") // CALL | VISIT | CATALOGUE | PRICE_LIST | PAYMENT_COLLECTION | REPEAT_ORDER | COMPLAINT | OTHER
-  title          String
-  description    String?
-  dueDate        DateTime
-  reminderAt     DateTime?
-  priority       String           @default("MEDIUM") // LOW | MEDIUM | HIGH | URGENT
-  status         DealerTaskStatus @default(PENDING)
-  completedAt    DateTime?
-  notes          String?
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  type            String           @default("FOLLOW_UP") // CALL | VISIT | CATALOGUE | PRICE_LIST | PAYMENT_COLLECTION | REPEAT_ORDER | COMPLAINT | OTHER
+  title           String
+  description     String?
+  dueDate         DateTime
+  reminderAt      DateTime?
+  priority        String           @default("MEDIUM") // LOW | MEDIUM | HIGH | URGENT
+  status          DealerTaskStatus @default(PENDING)
+  completedAt     DateTime?
+  notes           String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
 
   @@index([dealerId, status])
   @@index([assignedStaffId, dueDate])
@@ -2728,12 +2783,12 @@ model DealerTask {
 }
 
 model DealerVisit {
-  id              Int      @id @default(autoincrement())
+  id              Int       @id @default(autoincrement())
   dealerId        Int
-  dealer          Dealer   @relation(fields: [dealerId], references: [id], onDelete: Cascade)
+  dealer          Dealer    @relation(fields: [dealerId], references: [id], onDelete: Cascade)
   staffId         Int?
-  staff           Staff?   @relation("DealerVisitStaff", fields: [staffId], references: [id], onDelete: SetNull)
-  visitDate       DateTime @default(now())
+  staff           Staff?    @relation("DealerVisitStaff", fields: [staffId], references: [id], onDelete: SetNull)
+  visitDate       DateTime  @default(now())
   purpose         String
   personMet       String?
   outcome         String?
@@ -2741,48 +2796,48 @@ model DealerVisit {
   nextFollowUpAt  DateTime?
   nextMeetingAt   DateTime?
   samplesShown    String?
-  priceListShared Boolean  @default(false)
+  priceListShared Boolean   @default(false)
   dealerFeedback  String?
-  photoUrls       String[] @default([])
-  documentUrls    String[] @default([])
+  photoUrls       String[]  @default([])
+  documentUrls    String[]  @default([])
   notes           String?
-  createdAt       DateTime @default(now())
+  createdAt       DateTime  @default(now())
 
   @@index([dealerId, visitDate])
   @@index([staffId, visitDate])
 }
 
 model DealerOrder {
-  id                   Int              @id @default(autoincrement())
-  displayId            String           @unique
+  id                   Int               @id @default(autoincrement())
+  displayId            String            @unique
   dealerId             Int
-  dealer               Dealer           @relation(fields: [dealerId], references: [id], onDelete: Cascade)
+  dealer               Dealer            @relation(fields: [dealerId], references: [id], onDelete: Cascade)
   status               DealerOrderStatus @default(ENQUIRY)
-  orderDate            DateTime         @default(now())
+  orderDate            DateTime          @default(now())
   expectedDispatchDate DateTime?
-  paymentDueDate      DateTime?
+  paymentDueDate       DateTime?
   dispatchDate         DateTime?
   deliveryDate         DateTime?
-  subtotal             Int              @default(0)
-  discount             Int              @default(0)
-  gst                  Int              @default(0)
-  freight              Int              @default(0)
-  loading              Int              @default(0)
-  installation         Int              @default(0)
-  total                Int              @default(0)
-  amountPaid           Int              @default(0)
-  balanceDue           Int              @default(0)
-  estimatedCost        Int              @default(0)
-  marginAmount         Int              @default(0)
-  marginPercent        Float            @default(0)
-  paymentStatus        PaymentStatus    @default(PENDING)
+  subtotal             Int               @default(0)
+  discount             Int               @default(0)
+  gst                  Int               @default(0)
+  freight              Int               @default(0)
+  loading              Int               @default(0)
+  installation         Int               @default(0)
+  total                Int               @default(0)
+  amountPaid           Int               @default(0)
+  balanceDue           Int               @default(0)
+  estimatedCost        Int               @default(0)
+  marginAmount         Int               @default(0)
+  marginPercent        Float             @default(0)
+  paymentStatus        PaymentStatus     @default(PENDING)
   salespersonId        Int?
-  salesperson          Staff?           @relation("DealerOrderSalesperson", fields: [salespersonId], references: [id], onDelete: SetNull)
+  salesperson          Staff?            @relation("DealerOrderSalesperson", fields: [salespersonId], references: [id], onDelete: SetNull)
   deliveryAddress      String?
   allocationNotes      String?
   notes                String?
-  createdAt            DateTime         @default(now())
-  updatedAt            DateTime         @updatedAt
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
 
   items    DealerOrderItem[]
   payments DealerPayment[]
@@ -2818,43 +2873,43 @@ model DealerOrderItem {
 }
 
 model DealerPayment {
-  id            Int         @id @default(autoincrement())
+  id            Int          @id @default(autoincrement())
   dealerId      Int
-  dealer        Dealer      @relation(fields: [dealerId], references: [id], onDelete: Cascade)
+  dealer        Dealer       @relation(fields: [dealerId], references: [id], onDelete: Cascade)
   dealerOrderId Int?
   dealerOrder   DealerOrder? @relation(fields: [dealerOrderId], references: [id], onDelete: SetNull)
   amount        Int
-  method        String      @default("Bank Transfer")
+  method        String       @default("Bank Transfer")
   reference     String?
-  paymentDate   DateTime    @default(now())
+  paymentDate   DateTime     @default(now())
   notes         String?
-  createdAt     DateTime    @default(now())
+  createdAt     DateTime     @default(now())
 
   @@index([dealerId, paymentDate])
   @@index([dealerOrderId])
 }
 
 model DealerClaim {
-  id             Int               @id @default(autoincrement())
-  dealerId       Int
-  dealer         Dealer            @relation(fields: [dealerId], references: [id], onDelete: Cascade)
-  dealerOrderId  Int?
-  dealerOrder    DealerOrder?      @relation(fields: [dealerOrderId], references: [id], onDelete: SetNull)
-  assignedStaffId Int?
-  assignedStaff   Staff?           @relation("DealerClaimAssigned", fields: [assignedStaffId], references: [id], onDelete: SetNull)
-  type           String            @default("DAMAGE") // DAMAGE | SHORTAGE | SHADE_MISMATCH | QUALITY | DELIVERY | PAYMENT | OTHER
-  description    String
-  quantity       Float?
-  claimAmount    Int               @default(0)
-  status         DealerClaimStatus @default(OPEN)
-  resolution     String?
-  replacementStatus String   @default("NOT_REQUIRED") // NOT_REQUIRED | PENDING | APPROVED | DISPATCHED | COMPLETED
+  id                Int               @id @default(autoincrement())
+  dealerId          Int
+  dealer            Dealer            @relation(fields: [dealerId], references: [id], onDelete: Cascade)
+  dealerOrderId     Int?
+  dealerOrder       DealerOrder?      @relation(fields: [dealerOrderId], references: [id], onDelete: SetNull)
+  assignedStaffId   Int?
+  assignedStaff     Staff?            @relation("DealerClaimAssigned", fields: [assignedStaffId], references: [id], onDelete: SetNull)
+  type              String            @default("DAMAGE") // DAMAGE | SHORTAGE | SHADE_MISMATCH | QUALITY | DELIVERY | PAYMENT | OTHER
+  description       String
+  quantity          Float?
+  claimAmount       Int               @default(0)
+  status            DealerClaimStatus @default(OPEN)
+  resolution        String?
+  replacementStatus String            @default("NOT_REQUIRED") // NOT_REQUIRED | PENDING | APPROVED | DISPATCHED | COMPLETED
   replacementNotes  String?
-  openedAt       DateTime          @default(now())
-  resolvedAt     DateTime?
-  notes          String?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  openedAt          DateTime          @default(now())
+  resolvedAt        DateTime?
+  notes             String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
 
   @@index([dealerId, status])
   @@index([assignedStaffId])
@@ -2874,16 +2929,16 @@ model DealerActivity {
 }
 
 model DealerPriceList {
-  id               Int      @id @default(autoincrement())
-  name             String
-  dealerId         Int?
-  dealer           Dealer?  @relation(fields: [dealerId], references: [id], onDelete: Cascade)
-  validFrom        DateTime @default(now())
-  validUntil       DateTime?
-  isActive         Boolean  @default(true)
-  notes            String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id         Int       @id @default(autoincrement())
+  name       String
+  dealerId   Int?
+  dealer     Dealer?   @relation(fields: [dealerId], references: [id], onDelete: Cascade)
+  validFrom  DateTime  @default(now())
+  validUntil DateTime?
+  isActive   Boolean   @default(true)
+  notes      String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
   items DealerPriceListItem[]
 
@@ -2903,4 +2958,491 @@ model DealerPriceListItem {
 
   @@unique([priceListId, productId])
   @@index([productId])
+}
+
+// ============================================================
+// ERP CORE (Odoo-style document flows)
+// ============================================================
+
+// ─── CHATTER & ACTIVITIES (Odoo mail.thread / mail.activity) ───
+// Polymorphic: resModel is the Prisma model name (e.g. "SalesOrder") and
+// resId the record id, so any document can carry a log and scheduled activities.
+
+model RecordMessage {
+  id         Int      @id @default(autoincrement())
+  resModel   String
+  resId      Int
+  kind       String   @default("NOTE") // NOTE | TRACKING | SYSTEM
+  body       String
+  tracking   Json? // [{ field, from, to }]
+  authorId   Int?
+  authorName String?
+  createdAt  DateTime @default(now())
+
+  @@index([resModel, resId, createdAt])
+}
+
+model RecordActivity {
+  id            Int       @id @default(autoincrement())
+  resModel      String
+  resId         Int
+  resName       String? // display label, e.g. "SO-0004 · Sharma Builders"
+  activityType  String    @default("TODO") // TODO | CALL | MEETING | EMAIL | FOLLOW_UP | DOCUMENT
+  summary       String
+  note          String?
+  dueDate       DateTime
+  assignedToId  Int?
+  assignedTo    User?     @relation("ActivityAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  createdById   Int?
+  createdByName String?
+  doneAt        DateTime?
+  doneByName    String?
+  feedback      String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([resModel, resId])
+  @@index([assignedToId, doneAt, dueDate])
+  @@index([doneAt, dueDate])
+}
+
+// ─── SALES ORDERS (Odoo sale.order) ────────────────────
+// Quotation → confirmed Sales Order → Delivery Orders (partial + backorders)
+// → Invoices for delivered (or ordered) quantities.
+
+enum SalesOrderStatus {
+  CONFIRMED
+  DONE
+  CANCELLED
+}
+
+model SalesOrder {
+  id                 Int              @id @default(autoincrement())
+  displayId          String           @unique
+  quotationId        Int?             @unique
+  quotation          Quotation?       @relation(fields: [quotationId], references: [id], onDelete: SetNull)
+  contactId          Int
+  contact            Contact          @relation(fields: [contactId], references: [id])
+  salespersonId      Int?
+  salesperson        Staff?           @relation("SalesOrderSalesperson", fields: [salespersonId], references: [id], onDelete: SetNull)
+  teamId             Int?
+  team               SalesTeam?       @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  godownId           Int
+  godown             Godown           @relation("SalesOrderGodown", fields: [godownId], references: [id])
+  status             SalesOrderStatus @default(CONFIRMED)
+  invoicePolicy      String           @default("DELIVERED") // ORDERED | DELIVERED
+  pricelistId        Int?
+  pricelist          Pricelist?       @relation(fields: [pricelistId], references: [id], onDelete: SetNull)
+  orderDate          DateTime         @default(now())
+  commitmentDate     DateTime?
+  projectName        String?
+  dispatchAddress    String?
+  customerReference  String?
+  supplyType         String           @default("INTRASTATE")
+  placeOfSupply      String?
+  discountType       String           @default("none") // none | percent | flat
+  discountValue      Float            @default(0)
+  freightCharge      Int              @default(0)
+  loadingCharge      Int              @default(0)
+  installationCharge Int              @default(0)
+  chargesInvoiced    Boolean          @default(false)
+  subtotal           Int              @default(0)
+  discountAmount     Int              @default(0)
+  gst                Int              @default(0)
+  total              Int              @default(0)
+  notes              String?
+  createdBy          String?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  lines    SalesOrderLine[]
+  pickings StockPicking[]
+  invoices Invoice[]
+
+  @@index([contactId])
+  @@index([status, orderDate])
+  @@index([salespersonId])
+}
+
+model SalesOrderLine {
+  id             Int        @id @default(autoincrement())
+  orderId        Int
+  order          SalesOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId      Int
+  product        Product    @relation("SalesOrderLineProduct", fields: [productId], references: [id])
+  name           String
+  sku            String
+  hsnCode        String?
+  unitOfMeasure  String     @default("PCS")
+  quantity       Int // stock units (pcs / boxes)
+  qtyDelivered   Int        @default(0)
+  qtyInvoiced    Int        @default(0)
+  deliveredSqft  Float      @default(0) // measured area of slabs actually delivered
+  invoicedSqft   Float      @default(0)
+  areaSqft       Float? // total measured area for SQFT / SQM / BOX lines
+  coveragePerBox Float?
+  price          Int
+  gstRate        Float      @default(18)
+  amount         Int        @default(0)
+  sortOrder      Int        @default(0)
+
+  pickingLines StockPickingLine[]
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+// ─── TRANSFERS (Odoo stock.picking) ────────────────────
+// Receipts (RECEIPT) and Delivery Orders (DELIVERY). Validating moves stock.
+
+model StockPicking {
+  id              Int            @id @default(autoincrement())
+  displayId       String         @unique
+  pickingType     String // RECEIPT | DELIVERY
+  status          String         @default("READY") // READY | DONE | CANCELLED
+  godownId        Int
+  godown          Godown         @relation("PickingGodown", fields: [godownId], references: [id])
+  salesOrderId    Int?
+  salesOrder      SalesOrder?    @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+  purchaseOrderId Int?
+  purchaseOrder   PurchaseOrder? @relation("PickingPurchaseOrder", fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  contactId       Int?
+  contact         Contact?       @relation("PickingContact", fields: [contactId], references: [id], onDelete: SetNull)
+  supplierId      Int?
+  supplier        Supplier?      @relation("PickingSupplier", fields: [supplierId], references: [id], onDelete: SetNull)
+  backorderOfId   Int?
+  backorderOf     StockPicking?  @relation("Backorders", fields: [backorderOfId], references: [id], onDelete: SetNull)
+  backorders      StockPicking[] @relation("Backorders")
+  returnOfId      Int? // customer return: the delivery the goods came back from
+  returnOf        StockPicking?  @relation("Returns", fields: [returnOfId], references: [id], onDelete: SetNull)
+  returns         StockPicking[] @relation("Returns")
+  scheduledDate   DateTime       @default(now())
+  doneAt          DateTime?
+  doneBy          String?
+  vehicleNumber   String?
+  driverName      String?
+  driverPhone     String?
+  deliveryAddress String?
+  notes           String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  lines       StockPickingLine[]
+  landedCosts LandedCost[]       @relation("LandedCostPickings")
+
+  @@index([pickingType, status, scheduledDate])
+  @@index([salesOrderId])
+  @@index([purchaseOrderId])
+}
+
+model StockPickingLine {
+  id                  Int                    @id @default(autoincrement())
+  pickingId           Int
+  picking             StockPicking           @relation(fields: [pickingId], references: [id], onDelete: Cascade)
+  productId           Int
+  product             Product                @relation("PickingLineProduct", fields: [productId], references: [id])
+  salesOrderLineId    Int?
+  salesOrderLine      SalesOrderLine?        @relation(fields: [salesOrderLineId], references: [id], onDelete: SetNull)
+  purchaseOrderItemId Int?
+  purchaseOrderItem   PurchaseOrderItem?     @relation("PickingLinePOItem", fields: [purchaseOrderItemId], references: [id], onDelete: SetNull)
+  batchId             Int?
+  batch               ProductBatch?          @relation("PickingLineBatch", fields: [batchId], references: [id], onDelete: SetNull)
+  name                String
+  sku                 String
+  demandQty           Int
+  doneQty             Int                    @default(0)
+  slabIds             Int[]                  @default([]) // physical slabs moved (serial-tracked stone)
+  unitCost            Int? // receipts: cost used for valuation
+  returnOfLineId      Int? // delivery line this return line reverses
+  landedAllocations   LandedCostAllocation[]
+
+  @@index([pickingId])
+  @@index([productId])
+}
+
+// ─── REPLENISHMENT (Odoo reordering rules + vendor pricelists) ───
+
+model ReorderRule {
+  id            Int       @id @default(autoincrement())
+  productId     Int
+  product       Product   @relation("ReorderRuleProduct", fields: [productId], references: [id], onDelete: Cascade)
+  godownId      Int?
+  godown        Godown?   @relation("ReorderRuleGodown", fields: [godownId], references: [id], onDelete: Cascade)
+  minQty        Float     @default(0)
+  maxQty        Float     @default(0)
+  multipleQty   Float     @default(1)
+  supplierId    Int?
+  supplier      Supplier? @relation("ReorderRuleSupplier", fields: [supplierId], references: [id], onDelete: SetNull)
+  leadDays      Int       @default(7)
+  active        Boolean   @default(true)
+  lastOrderedAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([productId])
+  @@index([active])
+}
+
+model ProductSupplier {
+  id          Int      @id @default(autoincrement())
+  productId   Int
+  product     Product  @relation("ProductSupplierProduct", fields: [productId], references: [id], onDelete: Cascade)
+  supplierId  Int
+  supplier    Supplier @relation("ProductSupplierSupplier", fields: [supplierId], references: [id], onDelete: Cascade)
+  supplierSku String?
+  price       Int      @default(0)
+  minQty      Float    @default(0)
+  leadDays    Int      @default(7)
+  isPreferred Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([productId, supplierId])
+  @@index([supplierId])
+}
+
+// ─── PHYSICAL INVENTORY (Odoo inventory adjustments / cycle counts) ───
+
+model InventoryCount {
+  id            Int       @id @default(autoincrement())
+  displayId     String    @unique
+  name          String?
+  godownId      Int
+  godown        Godown    @relation("CountGodown", fields: [godownId], references: [id])
+  status        String    @default("IN_PROGRESS") // IN_PROGRESS | DONE | CANCELLED
+  assignedToId  Int?
+  assignedTo    User?     @relation("CountAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  scheduledDate DateTime  @default(now())
+  appliedAt     DateTime?
+  appliedBy     String?
+  notes         String?
+  createdBy     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  lines InventoryCountLine[]
+
+  @@index([status])
+  @@index([godownId])
+}
+
+model InventoryCountLine {
+  id           Int            @id @default(autoincrement())
+  countId      Int
+  count        InventoryCount @relation(fields: [countId], references: [id], onDelete: Cascade)
+  productId    Int
+  product      Product        @relation("CountLineProduct", fields: [productId], references: [id])
+  systemQty    Float // on-hand snapshot when the line was added
+  countedQty   Float?
+  appliedDelta Float?
+  unitCost     Int            @default(0)
+  notes        String?
+
+  @@unique([countId, productId])
+}
+
+// ─── VENDOR BILLS (Odoo account.move in_invoice + bill control) ───
+// Bills are matched three ways against the PO: ordered, received and billed.
+
+model VendorBill {
+  id          Int            @id @default(autoincrement())
+  displayId   String         @unique
+  supplierId  Int
+  supplier    Supplier       @relation(fields: [supplierId], references: [id])
+  poId        Int?
+  po          PurchaseOrder? @relation(fields: [poId], references: [id], onDelete: SetNull)
+  vendorRef   String? // supplier's invoice number
+  billDate    DateTime       @default(now())
+  dueDate     DateTime?
+  status      String         @default("DRAFT") // DRAFT | POSTED | CANCELLED
+  matchStatus String         @default("MATCHED") // MATCHED | TO_CHECK
+  supplyType  String         @default("INTRASTATE")
+  subtotal    Int            @default(0)
+  gst         Int            @default(0)
+  cgst        Int            @default(0)
+  sgst        Int            @default(0)
+  igst        Int            @default(0)
+  total       Int            @default(0)
+  notes       String?
+  postedAt    DateTime?
+  createdBy   String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  lines    VendorBillLine[]
+  payments PurchasePayment[]
+
+  @@index([supplierId])
+  @@index([poId])
+  @@index([status, billDate])
+}
+
+model VendorBillLine {
+  id        Int                @id @default(autoincrement())
+  billId    Int
+  bill      VendorBill         @relation(fields: [billId], references: [id], onDelete: Cascade)
+  poItemId  Int?
+  poItem    PurchaseOrderItem? @relation(fields: [poItemId], references: [id], onDelete: SetNull)
+  productId Int?
+  name      String
+  quantity  Int
+  unitCost  Int
+  gstRate   Float              @default(18)
+  amount    Int                @default(0)
+
+  @@index([billId])
+  @@index([poItemId])
+}
+
+// ─── PRICELISTS (Odoo product.pricelist) ────────────────
+// Customer price levels (retail, contractor, builder…). Rules are matched
+// most specific first: product, then category, then all products.
+
+model Pricelist {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  description String?
+  isDefault   Boolean  @default(false)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  items       PricelistItem[]
+  contacts    Contact[]
+  salesOrders SalesOrder[]
+  quotations  Quotation[]
+  invoices    Invoice[]
+}
+
+model PricelistItem {
+  id          Int       @id @default(autoincrement())
+  pricelistId Int
+  pricelist   Pricelist @relation(fields: [pricelistId], references: [id], onDelete: Cascade)
+  appliesTo   String    @default("ALL") // ALL | CATEGORY | PRODUCT
+  categoryId  Int?
+  category    Category? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  productId   Int?
+  product     Product?  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  minQty      Float     @default(0)
+  computeType String    @default("DISCOUNT") // FIXED | DISCOUNT | MARKUP
+  fixedPrice  Int?
+  discountPct Float?
+  markupPct   Float? // on cost price
+  validFrom   DateTime?
+  validTo     DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([pricelistId])
+  @@index([productId])
+  @@index([categoryId])
+}
+
+// ─── SALES TEAMS (Odoo crm.team) ────────────────────────
+
+model SalesTeam {
+  id            Int      @id @default(autoincrement())
+  name          String   @unique
+  leaderId      Int?
+  leader        Staff?   @relation("SalesTeamLeader", fields: [leaderId], references: [id], onDelete: SetNull)
+  monthlyTarget Int      @default(0) // invoiced revenue target per month (₹)
+  color         String?
+  autoAssign    Boolean  @default(false) // round-robin new leads to members
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  members     Staff[]      @relation("SalesTeamMembers")
+  leads       Lead[]
+  salesOrders SalesOrder[]
+}
+
+// ─── PAYMENT FOLLOW-UPS (Odoo account_followup) ─────────
+
+model FollowUpLevel {
+  id        Int      @id @default(autoincrement())
+  name      String
+  days      Int // days after the due date
+  action    String   @default("EMAIL") // EMAIL | CALL | LETTER
+  message   String?
+  createdAt DateTime @default(now())
+
+  logs FollowUpLog[]
+
+  @@unique([days])
+}
+
+model FollowUpLog {
+  id        Int            @id @default(autoincrement())
+  contactId Int
+  contact   Contact        @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  levelId   Int?
+  level     FollowUpLevel? @relation(fields: [levelId], references: [id], onDelete: SetNull)
+  action    String // EMAIL | CALL | LETTER | NOTE | PROMISE
+  note      String?
+  amountDue Int            @default(0)
+  createdBy String?
+  createdAt DateTime       @default(now())
+
+  @@index([contactId, createdAt])
+}
+
+// ─── LANDED COSTS (Odoo stock.landed.cost) ──────────────
+// Freight, customs duty, unloading etc. split over completed receipts and
+// added to stock valuation (the part already sold goes to COGS).
+
+model LandedCost {
+  id          Int       @id @default(autoincrement())
+  displayId   String    @unique
+  status      String    @default("DRAFT") // DRAFT | POSTED | CANCELLED
+  date        DateTime  @default(now())
+  supplierId  Int? // transporter / clearing agent
+  supplier    Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  vendorRef   String?
+  creditTo    String    @default("EXPENSE") // EXPENSE (already booked) | PAYABLE | CASH | BANK
+  notes       String?
+  amountTotal Int       @default(0)
+  postedAt    DateTime?
+  postedBy    String?
+  createdBy   String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  pickings    StockPicking[]         @relation("LandedCostPickings")
+  lines       LandedCostLine[]
+  allocations LandedCostAllocation[]
+
+  @@index([status, date])
+}
+
+model LandedCostLine {
+  id           Int        @id @default(autoincrement())
+  landedCostId Int
+  landedCost   LandedCost @relation(fields: [landedCostId], references: [id], onDelete: Cascade)
+  name         String
+  costType     String     @default("FREIGHT") // FREIGHT | DUTY | INSURANCE | LOADING | OTHER
+  amount       Int
+  splitMethod  String     @default("BY_QUANTITY") // BY_QUANTITY | BY_VALUE | EQUAL
+
+  @@index([landedCostId])
+}
+
+// Frozen at posting: what each received line got and where it went.
+model LandedCostAllocation {
+  id             Int              @id @default(autoincrement())
+  landedCostId   Int
+  landedCost     LandedCost       @relation(fields: [landedCostId], references: [id], onDelete: Cascade)
+  pickingLineId  Int
+  pickingLine    StockPickingLine @relation(fields: [pickingLineId], references: [id], onDelete: Cascade)
+  productId      Int
+  quantity       Int
+  originalValue  Int
+  additionalCost Int
+  inStockQty     Int
+  toStock        Int
+  toCogs         Int
+  costBefore     Int
+  costAfter      Int
+
+  @@index([landedCostId])
+  @@index([pickingLineId])
 }

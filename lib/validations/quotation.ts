@@ -42,6 +42,7 @@ export const createQuotationSchema = z.object({
   bankDetails: quotationBankDetailsSchema.optional(),
   notes: z.string().optional(),
   termsAndConditions: z.array(z.string()).default([]),
+  pricelistId: z.number().int().positive().nullable().optional(), // empty = the customer's pricelist
   items: z.array(quotationItemSchema).min(1, 'At least one item is required'),
 })
 

@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { createLeadSchema, updateLeadStatusSchema, addFollowUpSchema } from '@/lib/validations/lead'
 import type { LeadStatus } from '@prisma/client'
 import { moveLeadToDraft } from './drafts'
+import { autoAssignLead } from '@/lib/erp/sales-team'
 
 const statusMap: Record<string, LeadStatus> = {
   'New': 'NEW',
@@ -96,6 +97,8 @@ export async function createLead(data: unknown) {
       notes,
     },
   })
+  // Sales teams with auto-assignment pick up new leads round-robin.
+  await autoAssignLead(prisma, lead.id)
 
   revalidatePath('/leads')
   return { success: true, data: lead }

@@ -1,6 +1,7 @@
 'use server'
 
 import { prisma } from '@/lib/db'
+import { lockInventoryProducts } from '@/lib/inventory-stock'
 import { revalidatePath } from 'next/cache'
 import { requireRole } from '@/lib/auth-helpers'
 import { syncProductStockFromGodowns } from './godowns'
@@ -44,11 +45,13 @@ async function adjustGodownStockWithTx(tx: any, params: {
   notes?: string
   createdBy?: string
 }) {
+  await lockInventoryProducts(tx, [params.productId])
   const existing = await tx.godownStock.findUnique({
     where: { productId_godownId: { productId: params.productId, godownId: params.godownId } },
   })
   const currentQty = existing?.quantity || 0
-  const newQty = Math.max(0, currentQty + params.quantity)
+  const newQty = currentQty + params.quantity
+  if (newQty < 0) throw new Error('Insufficient stock to restore this document')
 
   await tx.godownStock.upsert({
     where: { productId_godownId: { productId: params.productId, godownId: params.godownId } },
@@ -686,6 +689,7 @@ export async function moveInvoiceToDraft(invoiceId: number) {
 export async function movePurchaseOrderToDraft(poId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const po = await prisma.purchaseOrder.findUnique({
     where: { id: poId },
     include: { supplier: true, items: true, payments: true },
@@ -695,6 +699,7 @@ export async function movePurchaseOrderToDraft(poId: number) {
   const now = new Date()
   const expiresAt = getDraftExpiry(now)
 
+  if (po.items.some(item => item.receivedQty > 0)) return { success: false, error: 'Received purchase orders are inventory history and cannot be moved to drafts. Use a supplier return to reverse received stock.' }
   const receivedItems = po.items.filter(i => i.receivedQty > 0)
   if (receivedItems.length > 0) {
     const productIds = Array.from(new Set(receivedItems.map(i => i.productId)))
@@ -868,6 +873,8 @@ export async function moveExpenseToDraft(expenseId: number) {
 // ─── MOVE PRODUCT TO DRAFT ──────────────────────────
 
 export async function moveProductToDraft(productId: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  if (!Number.isSafeInteger(productId) || productId <= 0) return { success: false, error: 'Invalid product ID' }
   const product = await prisma.product.findUnique({
     where: { id: productId },
     include: { category: true, warehouse: true, stockGroup: true },
@@ -895,6 +902,8 @@ export async function moveProductToDraft(productId: number) {
   if (poUsage > 0 || prUsage > 0) return { success: false, error: 'Cannot delete: product is linked to purchase documents.' }
   if (godownUsage > 0) return { success: false, error: 'Cannot delete: product has godown stock entries.' }
   if (ledgerUsage > 0) return { success: false, error: 'Cannot delete: product has stock ledger history.' }
+
+  if (await prisma.stoneLot.count({ where: { productId } }) > 0 || await prisma.sampleLoan.count({ where: { productId } }) > 0 || await prisma.productBatch.count({ where: { productId } }) > 0) return { success: false, error: 'Cannot delete: this product has lot, sample or batch history.' }
 
   const now = new Date()
   const expiresAt = getDraftExpiry(now)

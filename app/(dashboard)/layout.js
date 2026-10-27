@@ -1,18 +1,18 @@
 import SidebarClient from '@/components/SidebarClient';
 import TopBar from '@/components/TopBar';
-import { SidebarProvider } from '@/components/SidebarContext';
+import { SidebarProvider, SidebarOffset } from '@/components/SidebarContext';
 
 export default function DashboardLayout({ children }) {
   return (
     <SidebarProvider>
       <div className="flex min-h-screen bg-background">
         <SidebarClient />
-        <div className="flex-1 md:ml-[260px] ml-0 min-w-0 transition-all duration-300">
+        <SidebarOffset>
           <TopBar />
-          <main className="p-3.5 md:p-6 overflow-x-hidden pt-5 md:pt-6">
+          <main className="p-3.5 md:p-6 overflow-x-hidden pt-5 md:pt-6 max-w-[1600px]">
             {children}
           </main>
-        </div>
+        </SidebarOffset>
       </div>
     </SidebarProvider>
   );

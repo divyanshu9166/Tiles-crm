@@ -1,11 +1,11 @@
 import { z } from 'zod'
 
 export const createOrderSchema = z.object({
-  customer: z.string().min(1),
-  phone: z.string().min(10),
-  productId: z.number(),
-  quantity: z.number().min(1).default(1),
-  amount: z.number().min(0),
+  customer: z.string().trim().min(1),
+  phone: z.string().trim().min(10),
+  productId: z.number().int().positive(),
+  quantity: z.number().int().min(1).default(1),
+  amount: z.number().int().min(0),
   source: z.enum(['STORE', 'AMAZON', 'FLIPKART', 'SHOPIFY']).default('STORE'),
   godownId: z.number().int().positive().optional(),
   payment: z.enum(['PAID', 'PARTIAL', 'PENDING']).default('PENDING'),
@@ -13,7 +13,7 @@ export const createOrderSchema = z.object({
 })
 
 export const updateOrderStatusSchema = z.object({
-  id: z.number(),
+  id: z.number().int().positive(),
   status: z.enum(['CONFIRMED', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'CANCELLED']),
 })
 

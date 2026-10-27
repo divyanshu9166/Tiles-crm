@@ -55,7 +55,8 @@
   --color-glass-border: #e7e5e4;
   --color-sidebar: #1c1917;
   --color-sidebar-active: rgba(255, 255, 255, 0.1);
-  --font-sans: "Roboto Mono", ui-monospace, monospace;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: var(--font-roboto-mono), ui-monospace, monospace;
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04);
   --shadow-card-hover: 0 4px 12px rgba(0, 0, 0, 0.06);
   --shadow-glow: none;
@@ -300,10 +301,8 @@ body {
 .crm-table thead th {
   padding: 10px 16px;
   text-align: left;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
   color: var(--color-muted);
   border-bottom: 1px solid var(--color-border);
   background: var(--color-surface-light);
@@ -312,7 +311,7 @@ body {
 .crm-table tbody td {
   padding: 12px 16px;
   border-bottom: 1px solid var(--color-border);
-  font-size: 0.78rem;
+  font-size: 0.8125rem;
   transition: background 0.15s;
 }
 
@@ -328,7 +327,7 @@ select {
   border: 1px solid var(--color-border);
   border-radius: 8px;
   padding: 8px 32px 8px 12px;
-  font-size: 0.78rem;
+  font-size: 0.8125rem;
 }
 
 input,
@@ -337,107 +336,7 @@ textarea {
   color: var(--color-foreground);
   border: 1px solid var(--color-border);
   border-radius: 8px;
-  font-size: 0.78rem;
-  transition: border-color 0.15s;
-}
-
-input:focus,
-textarea:focus,
-select:focus {
-  outline: none;
-  border-color: var(--color-accent);
-  box-shadow: 0 0 0 2px var(--color-accent-light);
-}
-
-input::placeholder,
-textarea::placeholder {
-  color: #a8a29e;
-}
-
-/* Hide native number input spinners — app uses custom +/- controls */
-input[type="number"]::-webkit-outer-spin-button,
-input[type="number"]::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-
-input[type="number"] {
-  -moz-appearance: textfield;
-}
-
-::selection {
-  background: var(--color-accent-light);
-  color: var(--color-accent);
-}
-
-/* Hide scrollbar utility */
-.hide-scrollbar {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-
-.hide-scrollbar::-webkit-scrollbar {
-  display: none;
-}
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 10px;
-  border-radius: 9999px;
-  font-size: 0.7rem;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-}
-
-/* Table styles */
-.crm-table {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-}
-
-.crm-table thead th {
-  padding: 10px 16px;
-  text-align: left;
-  font-size: 0.68rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--color-muted);
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface-light);
-}
-
-.crm-table tbody td {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--color-border);
-  font-size: 0.78rem;
-  transition: background 0.15s;
-}
-
-.crm-table tbody tr:hover td {
-  background: var(--color-surface-hover);
-}
-
-/* Form controls — no padding here, Tailwind classes handle it per-component */
-select {
-  appearance: none;
-  background: var(--color-surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2378716c' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 12px center;
-  color: var(--color-foreground);
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  padding: 8px 32px 8px 12px;
-  font-size: 0.78rem;
-}
-
-input,
-textarea {
-  background: var(--color-surface);
-  color: var(--color-foreground);
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  font-size: 0.78rem;
+  font-size: 0.8125rem;
   transition: border-color 0.15s;
 }
 
@@ -558,107 +457,105 @@ button {
    (4.5:1 normal text, 3:1 large text / control boundaries / focus).
    ───────────────────────────────────────────────────────────── */
 [data-brand="homzentic"] {
-  /* ── Homzentic DARK theme (default) ──
-     NeuroBank-inspired: near-black blue canvas, dark cards, royal-blue
-     accent, light text. Light variant applies under data-theme="light". */
-  --color-background: #070a12;
-  --color-foreground: #e8edf6;
-  --color-surface: #0e131e;
-  --color-surface-hover: #161d2b;
-  --color-surface-light: #121826;
-  --color-card: #0e131e;
-  --color-card-foreground: #e8edf6;
-  --color-popover: #0e131e;
-  --color-popover-foreground: #e8edf6;
-
-  --color-primary: #3b6bff;
-  --color-primary-foreground: #ffffff;
-  --color-secondary: #161d2b;
-  --color-secondary-foreground: #e8edf6;
-  --color-input: #1b2433;
-  --color-ring: rgba(59, 107, 255, 0.50);
-  --color-destructive: #f87171;
-  --color-border: #1e2735;
-  --color-border-light: #283447;
-  --color-muted: #8893a7;
-  --color-muted-foreground: #8893a7;
-  --color-accent: #3b6bff;
-  --color-accent-foreground: #ffffff;
-  --color-accent-hover: #5680ff;
-  --color-accent-light: rgba(59, 107, 255, 0.16);
-
-  --color-teal: #2dd4bf;
-  --color-teal-light: rgba(45, 212, 191, 0.14);
-
-  --color-success: #34d399;
-  --color-success-light: rgba(52, 211, 153, 0.14);
-  --color-danger: #f87171;
-  --color-danger-light: rgba(248, 113, 113, 0.14);
-  --color-warning: #fbbf24;
-  --color-warning-light: rgba(251, 191, 36, 0.14);
-  --color-info: #60a5fa;
-  --color-info-light: rgba(96, 165, 250, 0.14);
-  --color-purple: #a78bfa;
-  --color-purple-light: rgba(167, 139, 250, 0.14);
-  --color-pink: #f472b6;
-  --color-pink-light: rgba(244, 114, 182, 0.14);
-
-  --color-glass: #0e131e;
-  --color-glass-border: #1e2735;
-  --color-sidebar: #0a0e17;
-  --color-sidebar-active: rgba(59, 107, 255, 0.20);
-}
-
-/* ── Homzentic LIGHT theme (data-theme="light") ──
-   White-blue: airy off-white canvas, white cards, royal-blue accent,
-   dark ink. Sidebar stays dark for premium contrast. */
-[data-brand="homzentic"][data-theme="light"] {
-  --color-background: #eef2fb;
-  --color-foreground: #0b1220;
+  /* ── Homzentic LIGHT theme (default) ──
+     Odoo-like: neutral grey canvas, white sheets, one blue accent, dark ink.
+     Kept deliberately quiet so data, not chrome, carries the screen. */
+  --color-background: #f4f5f7;
+  --color-foreground: #1f2430;
   --color-surface: #ffffff;
-  --color-surface-hover: #f3f6fd;
-  --color-surface-light: #eef2fb;
+  --color-surface-hover: #f6f7f9;
+  --color-surface-light: #f4f5f7;
   --color-card: #ffffff;
-  --color-card-foreground: #0b1220;
+  --color-card-foreground: #1f2430;
   --color-popover: #ffffff;
-  --color-popover-foreground: #0b1220;
+  --color-popover-foreground: #1f2430;
 
-  --color-primary: #3b6bff;
+  --color-primary: #2f57e0;
   --color-primary-foreground: #ffffff;
-  --color-secondary: #eef2fb;
-  --color-secondary-foreground: #0b1220;
-  --color-input: #e2e8f3;
-  --color-ring: rgba(59, 107, 255, 0.40);
-  --color-destructive: #dc2626;
-  --color-border: #e2e8f3;
-  --color-border-light: #cdd6e6;
-  --color-muted: #5b6677;
-  --color-muted-foreground: #5b6677;
+  --color-secondary: #f4f5f7;
+  --color-secondary-foreground: #1f2430;
+  --color-input: #dfe2e8;
+  --color-ring: rgba(47, 87, 224, 0.30);
+  --color-destructive: #d23f3a;
+  --color-border: #e1e4ea;
+  --color-border-light: #ccd1da;
+  --color-muted: #5d6676;
+  --color-muted-foreground: #5d6676;
   --color-accent: #2f57e0;
   --color-accent-foreground: #ffffff;
-  --color-accent-hover: #2545bd;
-  --color-accent-light: rgba(59, 107, 255, 0.10);
+  --color-accent-hover: #2446c0;
+  --color-accent-light: rgba(47, 87, 224, 0.08);
 
-  --color-teal: #0d9488;
-  --color-teal-light: rgba(13, 148, 136, 0.10);
+  --color-teal: #0d8a80;
+  --color-teal-light: rgba(13, 138, 128, 0.09);
 
-  --color-success: #16834a;
-  --color-success-light: rgba(22, 131, 74, 0.10);
-  --color-danger: #dc2626;
-  --color-danger-light: rgba(220, 38, 38, 0.10);
-  --color-warning: #d97706;
-  --color-warning-light: rgba(217, 119, 6, 0.10);
+  --color-success: #1a7f4b;
+  --color-success-light: rgba(26, 127, 75, 0.09);
+  --color-danger: #d23f3a;
+  --color-danger-light: rgba(210, 63, 58, 0.09);
+  --color-warning: #b86a00;
+  --color-warning-light: rgba(184, 106, 0, 0.10);
   --color-info: #2563eb;
-  --color-info-light: rgba(37, 99, 235, 0.10);
-  --color-purple: #7c3aed;
-  --color-purple-light: rgba(124, 58, 237, 0.10);
-  --color-pink: #db2777;
-  --color-pink-light: rgba(219, 39, 119, 0.10);
+  --color-info-light: rgba(37, 99, 235, 0.09);
+  --color-purple: #6d3fd0;
+  --color-purple-light: rgba(109, 63, 208, 0.09);
+  --color-pink: #c4246c;
+  --color-pink-light: rgba(196, 36, 108, 0.09);
 
   --color-glass: #ffffff;
-  --color-glass-border: #e2e8f3;
-  --color-sidebar: #0a0e17;
-  --color-sidebar-active: rgba(59, 107, 255, 0.20);
+  --color-glass-border: #e1e4ea;
+  --color-sidebar: #ffffff;
+  --color-sidebar-active: rgba(47, 87, 224, 0.08);
+}
+
+/* ── Homzentic DARK theme (data-theme="dark", from the top-bar toggle) ── */
+[data-brand="homzentic"][data-theme="dark"] {
+  --color-background: #0d1117;
+  --color-foreground: #e6e9ef;
+  --color-surface: #151a22;
+  --color-surface-hover: #1c222c;
+  --color-surface-light: #11161d;
+  --color-card: #151a22;
+  --color-card-foreground: #e6e9ef;
+  --color-popover: #151a22;
+  --color-popover-foreground: #e6e9ef;
+
+  --color-primary: #5b7cff;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #1c222c;
+  --color-secondary-foreground: #e6e9ef;
+  --color-input: #262d39;
+  --color-ring: rgba(91, 124, 255, 0.45);
+  --color-destructive: #f07470;
+  --color-border: #262d39;
+  --color-border-light: #323a48;
+  --color-muted: #8d97a8;
+  --color-muted-foreground: #8d97a8;
+  --color-accent: #5b7cff;
+  --color-accent-foreground: #ffffff;
+  --color-accent-hover: #7590ff;
+  --color-accent-light: rgba(91, 124, 255, 0.15);
+
+  --color-teal: #2dc7b6;
+  --color-teal-light: rgba(45, 199, 182, 0.14);
+
+  --color-success: #3ccf8e;
+  --color-success-light: rgba(60, 207, 142, 0.14);
+  --color-danger: #f07470;
+  --color-danger-light: rgba(240, 116, 112, 0.14);
+  --color-warning: #f2b544;
+  --color-warning-light: rgba(242, 181, 68, 0.14);
+  --color-info: #6aa8ff;
+  --color-info-light: rgba(106, 168, 255, 0.14);
+  --color-purple: #ab8cff;
+  --color-purple-light: rgba(171, 140, 255, 0.14);
+  --color-pink: #f27ab6;
+  --color-pink-light: rgba(242, 122, 182, 0.14);
+
+  --color-glass: #151a22;
+  --color-glass-border: #262d39;
+  --color-sidebar: #11161d;
+  --color-sidebar-active: rgba(91, 124, 255, 0.16);
 }
 
 /* Readable-accent remaps (Homzentic only).
@@ -699,84 +596,29 @@ button {
 [data-brand="homzentic"] .glass-card {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 22px;
-  box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.12),
-    0 14px 34px -20px rgba(0, 0, 0, 0.25);
-  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+  transition: border-color 0.15s ease;
 }
 
 [data-brand="homzentic"] .glass-card:hover {
-  transform: translateY(-3px);
-  border-color: color-mix(in oklch, var(--color-accent) 55%, var(--color-border));
-  /* Accent-tinted glow so the lift is clearly visible on the dark canvas
-     (and reads as a soft blue shadow in light mode too). */
-  box-shadow:
-    0 0 0 1px color-mix(in oklch, var(--color-accent) 35%, transparent),
-    0 8px 20px -6px color-mix(in oklch, var(--color-accent) 35%, transparent),
-    0 22px 48px -18px color-mix(in oklch, var(--color-accent) 28%, transparent);
+  border-color: var(--color-border-light);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+  transform: none;
 }
 
-[data-brand="homzentic"] .stat-card {
-  position: relative;
-  overflow: hidden;
-  isolation: isolate;
+/* Lists read like Odoo list views: plain bold headers, no shouting caps. */
+[data-brand="homzentic"] main table thead th {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-muted);
 }
 
-/* Cursor-following spotlight (coords set by the StatCard component) */
-[data-brand="homzentic"] .stat-card::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  opacity: var(--spotlight-opacity, 0);
-  transition: opacity 0.3s ease;
-  background: radial-gradient(240px circle at var(--spotlight-x, 50%) var(--spotlight-y, 0%),
-      color-mix(in oklch, var(--color-accent) 32%, transparent),
-      transparent 60%);
+[data-brand="homzentic"] main table tbody td {
+  font-variant-numeric: tabular-nums;
 }
-
-[data-brand="homzentic"] .stat-card:hover::before {
-  opacity: 1;
-}
-
-/* Gradient top accent line that reveals on hover */
-[data-brand="homzentic"] .stat-card::after {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto 0;
-  height: 2px;
-  z-index: 1;
-  opacity: 0;
-  transition: opacity 0.3s ease;
-  background: linear-gradient(90deg, transparent, var(--color-accent), transparent);
-}
-
-[data-brand="homzentic"] .stat-card:hover::after {
-  opacity: 0.9;
-}
-
-/* Keep card content above the spotlight layer */
-[data-brand="homzentic"] .stat-card>* {
-  position: relative;
-  z-index: 1;
-}
-
-@media (prefers-reduced-motion: reduce) {
-
-  [data-brand="homzentic"] .glass-card,
-  [data-brand="homzentic"] .stat-card::before,
-  [data-brand="homzentic"] .stat-card::after {
-    transition: none;
-  }
-
-  [data-brand="homzentic"] .glass-card:hover {
-    transform: none;
-  }
-}
-
 
 /* ─────────────────────────────────────────────────────────────
    Vendored modern component animations (additive, brand-agnostic)

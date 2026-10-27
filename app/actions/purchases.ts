@@ -1,14 +1,18 @@
 'use server'
 
 import { prisma } from '@/lib/db'
+import { adjustStock, lockInventoryProducts, resolveStockGodown, inventoryError } from '@/lib/inventory-stock'
 import { revalidatePath } from 'next/cache'
 import { requireRole } from '@/lib/auth-helpers'
 import { createSupplierSchema, createPurchaseOrderSchema, createPurchaseReturnSchema } from '@/lib/validations/purchase'
 import { sendEmail } from '@/lib/email'
 import { z } from 'zod'
-import { getOrCreateDefaultGodown, syncProductStockFromGodowns } from './godowns'
+import { getOrCreateDefaultGodown } from './godowns'
 import { syncStoneLotTotals } from '@/lib/stone-inventory'
 import { getBrand } from '@/lib/brand'
+import { ensureReceiptForPurchaseOrder, validatePickingTx, cancelPickingTx } from '@/lib/erp/stock-ops'
+import { logTracking } from '@/lib/erp/chatter'
+import { nextSequence } from '@/lib/erp/sequence'
 
 function escapeHtml(value: string | number | null | undefined) {
   return String(value || '')
@@ -284,6 +288,7 @@ export async function updateSupplier(id: number, data: unknown) {
 // ─── PURCHASE ORDERS ─────────────────────────────────
 
 export async function getPurchaseOrders() {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied', data: [] } }
   const pos = await prisma.purchaseOrder.findMany({
     orderBy: { date: 'desc' },
     include: {
@@ -316,13 +321,11 @@ export async function createPurchaseOrder(data: unknown) {
   const sgst = gst - cgst
   const total = taxable + gst
 
-  // Generate displayId
-  const count = await prisma.purchaseOrder.count()
-  const displayId = `PO-${String(count + 1).padStart(4, '0')}`
-
-  const po = await prisma.purchaseOrder.create({
+  // Sequenced under an advisory lock: count()+1 collided after deletes and
+  // under concurrent creation.
+  const po = await prisma.$transaction(async tx => tx.purchaseOrder.create({
     data: {
-      displayId,
+      displayId: await nextSequence(tx, 'PurchaseOrder'),
       supplierId,
       notes,
       discount: discountAmt,
@@ -350,7 +353,7 @@ export async function createPurchaseOrder(data: unknown) {
       },
     },
     include: { items: true },
-  })
+  }))
 
   revalidatePath('/purchases')
   return { success: true, data: po }
@@ -433,12 +436,30 @@ export async function updatePurchaseOrder(id: number, data: unknown) {
 }
 
 export async function approvePurchaseOrder(id: number) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  let session
+  try { session = await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const po = await prisma.purchaseOrder.findUnique({ where: { id } })
   if (!po) return { success: false, error: 'Purchase order not found' }
   if (po.status !== 'DRAFT') return { success: false, error: 'Only DRAFT orders can be approved' }
 
-  await prisma.purchaseOrder.update({ where: { id }, data: { status: 'APPROVED' } })
+  // Odoo "Order approval" (double validation): large POs need an administrator.
+  const settings = await prisma.storeSettings.findFirst({ where: { id: 1 }, select: { poApprovalLimit: true } })
+  const limit = settings?.poApprovalLimit || 0
+  if (limit > 0 && po.total > limit && session.user.role !== 'ADMIN') {
+    return { success: false, error: `POs above ₹${limit.toLocaleString('en-IN')} need administrator approval` }
+  }
+  const author = { id: Number(session.user.id) || null, name: session.user.name }
+
+  try {
+    await prisma.$transaction(async tx => {
+      const approved = await tx.purchaseOrder.updateMany({ where: { id, status: 'DRAFT' }, data: { status: 'APPROVED' } })
+      if (approved.count !== 1) throw new Error('Only DRAFT orders can be approved')
+      await logTracking(tx, 'PurchaseOrder', id, 'Purchase order approved', [{ field: 'Status', from: 'DRAFT', to: 'APPROVED' }], author)
+      await ensureReceiptForPurchaseOrder(tx, id, author)
+    })
+  } catch (error) {
+    return { success: false, error: inventoryError(error) }
+  }
 
   const notifyResult = await notifySupplierForPurchaseOrder(id, 'approved')
   revalidatePath('/purchases')
@@ -470,8 +491,9 @@ export async function sendPurchaseOrderToSupplier(id: number) {
   return { success: true, message: notifyResult.message }
 }
 
-export async function receivePurchaseOrder(id: number) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+export async function receivePurchaseOrder(id: number, godownId?: number) {
+  let session
+  try { session = await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
   const po = await prisma.purchaseOrder.findUnique({
     where: { id },
@@ -489,93 +511,29 @@ export async function receivePurchaseOrder(id: number) {
   if (pendingItems.some(item => item.product.isSlabTracked)) {
     return { success: false, error: 'This purchase order contains slab-tracked stone. Receive it from Inventory → Lot / Slab Explorer with lot, slab dimensions, shade and photos so physical inventory is not lost.' }
   }
+  const author = { id: Number(session.user.id) || null, name: session.user.name }
 
-  // Use transaction to update stock for each item
-  await prisma.$transaction(async (tx) => {
-    let receivingGodown = await tx.godown.findFirst({ where: { isDefault: true } })
-    if (!receivingGodown) receivingGodown = await tx.godown.findFirst({ orderBy: { id: 'asc' } })
-    if (!receivingGodown) {
-      receivingGodown = await tx.godown.create({ data: { name: 'Main Showroom', type: 'Showroom', isDefault: true } })
-    }
-
-    for (const item of pendingItems) {
-      const pendingQty = Math.max(0, item.quantity - item.receivedQty)
-      if (pendingQty === 0) continue
-
-      const now = new Date()
-
-      await tx.product.update({
-        where: { id: item.productId },
-        data: {
-          costPrice: item.unitCost,
-          lastRestocked: now,
-        },
-      })
-      const existingStock = await tx.godownStock.findUnique({
-        where: { productId_godownId: { productId: item.productId, godownId: receivingGodown.id } },
-      })
-      const balanceAfter = (existingStock?.quantity || 0) + pendingQty
-      await tx.godownStock.upsert({
-        where: { productId_godownId: { productId: item.productId, godownId: receivingGodown.id } },
-        create: { productId: item.productId, godownId: receivingGodown.id, quantity: balanceAfter },
-        update: { quantity: balanceAfter },
-      })
-      await tx.stockLedger.create({
-        data: {
-          productId: item.productId,
-          godownId: receivingGodown.id,
-          entryType: 'IN',
-          quantity: pendingQty,
-          balanceAfter,
-          referenceType: 'PurchaseOrder',
-          referenceId: po.id,
-          notes: `Received against ${po.displayId}`,
-          createdBy: 'Purchases',
-        },
-      })
-      await syncProductStockFromGodowns(item.productId, tx)
-      await tx.purchaseOrderItem.update({
-        where: { id: item.id },
-        data: { receivedQty: item.quantity },
-      })
-      await tx.productBatch.upsert({
-        where: { productId_batchNumber: { productId: item.productId, batchNumber: `PO-${po.displayId}-${item.id}` } },
-        create: {
-          productId: item.productId,
-          batchNumber: `PO-${po.displayId}-${item.id}`,
-          purchaseDate: now,
-          quantity: pendingQty,
-          remainingQty: pendingQty,
-          costPrice: item.unitCost,
-          supplierId: po.supplierId,
-          poId: po.id,
-        },
-        update: {
-          quantity: { increment: pendingQty },
-          remainingQty: { increment: pendingQty },
-          costPrice: item.unitCost,
-        },
-      })
-      // Log stock update
-      await tx.stockUpdate.create({
-        data: {
-          product: item.name,
-          warehouse: 'Main',
-          action: 'Add',
-          quantity: pendingQty,
-          date: now,
-          time: now.toTimeString().split(' ')[0],
-        },
-      })
-    }
-    await tx.purchaseOrder.update({
-      where: { id },
-      data: { status: 'RECEIVED', receivedAt: new Date() },
-    })
-  })
+  // "Receive all" validates the PO's goods receipt (GRN) for every pending
+  // quantity. Partial receipts and backorders run from Operations → Receipts.
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "PurchaseOrder" WHERE id = ${id} FOR UPDATE`
+      const livePo = await tx.purchaseOrder.findUnique({ where: { id }, select: { status: true } })
+      if (!livePo || !['APPROVED', 'PARTIALLY_RECEIVED'].includes(livePo.status)) throw new Error('This order has already been received or its status changed')
+      const receipt = await ensureReceiptForPurchaseOrder(tx, id, author)
+      if (!receipt) throw new Error('All items in this order are already received')
+      if (godownId && godownId !== receipt.godownId) {
+        await resolveStockGodown(tx, godownId)
+        await tx.stockPicking.update({ where: { id: receipt.id }, data: { godownId } })
+      }
+      const lines = await tx.stockPickingLine.findMany({ where: { pickingId: receipt.id } })
+      await validatePickingTx(tx, receipt.id, { lines: lines.map(line => ({ lineId: line.id, doneQty: line.demandQty })), createBackorder: false }, author)
+    }, { timeout: 20000 })
+  } catch (error) { return { success: false, error: inventoryError(error) } }
 
   revalidatePath('/purchases')
   revalidatePath('/inventory')
+  revalidatePath('/operations')
   return { success: true }
 }
 
@@ -588,7 +546,7 @@ const stonePurchaseReceiveSchema = z.object({
   shadeCode: z.string().trim().optional(),
   qualityGrade: z.string().trim().optional(),
   avgThicknessMm: z.number().positive().optional(),
-  costPerSqft: z.number().min(0).default(0),
+  costPerSqft: z.number().int().min(0).optional(),
   notes: z.string().trim().optional(),
   slabs: z.array(z.object({
     slabNumber: z.string().trim().min(1),
@@ -616,19 +574,27 @@ export async function receiveStoneLotFromPurchaseOrder(data: unknown) {
 
   try {
     const result = await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM "PurchaseOrder" WHERE id = ${input.poId} FOR UPDATE`
+      await lockInventoryProducts(tx, [item.productId])
+      const livePo = await tx.purchaseOrder.findUnique({ where: { id: input.poId }, include: { items: true } })
+      const liveItem = livePo?.items.find(row => row.id === input.poItemId)
+      if (!livePo || !liveItem || !['APPROVED', 'PARTIALLY_RECEIVED'].includes(livePo.status)) throw new Error('Purchase order is no longer open for receiving')
+      if (input.slabs.length > liveItem.quantity - liveItem.receivedQty) throw new Error('This PO line has insufficient remaining quantity. Refresh and try again.')
+      if (input.godownId && !await tx.godown.findUnique({ where: { id: input.godownId } })) throw new Error('Location not found')
       const totalSqft = input.slabs.reduce((sum, slab) => sum + (slab.lengthInches * slab.widthInches / 144), 0)
       const lot = await tx.stoneLot.create({
         data: {
           lotNumber: input.lotNumber,
           productId: item.productId,
           supplierId: po.supplierId,
+          poId: po.id,
           origin: input.origin || null,
           shadeCode: input.shadeCode || null,
           qualityGrade: input.qualityGrade || null,
           avgThicknessMm: input.avgThicknessMm ?? item.product.thicknessMm ?? null,
           totalSlabs: input.slabs.length,
           totalSqft,
-          costPerSqft: input.costPerSqft || item.unitCost,
+          costPerSqft: input.costPerSqft ?? item.unitCost,
           notes: input.notes || null,
           slabs: {
             create: input.slabs.map(slab => ({
@@ -645,8 +611,8 @@ export async function receiveStoneLotFromPurchaseOrder(data: unknown) {
         },
       })
       await syncStoneLotTotals(tx, lot.id)
-      const receivedQty = item.receivedQty + input.slabs.length
-      const allReceived = receivedQty >= item.quantity
+      const receivedQty = liveItem.receivedQty + input.slabs.length
+      const allReceived = livePo.items.every(row => row.id === liveItem.id ? receivedQty >= row.quantity : row.receivedQty >= row.quantity)
       await tx.purchaseOrderItem.update({ where: { id: item.id }, data: { receivedQty } })
       await tx.purchaseOrder.update({ where: { id: po.id }, data: { status: allReceived ? 'RECEIVED' : 'PARTIALLY_RECEIVED', receivedAt: allReceived ? new Date() : undefined } })
       return lot
@@ -714,12 +680,30 @@ export async function recordPurchaseOrderPayment(
 }
 
 export async function cancelPurchaseOrder(id: number) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
-  const po = await prisma.purchaseOrder.findUnique({ where: { id } })
+  let session
+  try { session = await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  const po = await prisma.purchaseOrder.findUnique({ where: { id }, include: { items: { select: { receivedQty: true } } } })
   if (!po) return { success: false, error: 'Not found' }
   if (po.status === 'RECEIVED') return { success: false, error: 'Cannot cancel a received order' }
+  if (po.status === 'CANCELLED') return { success: false, error: 'This order is already cancelled' }
+  if (po.items.some(item => item.receivedQty > 0)) {
+    return { success: false, error: 'Goods were already received on this PO. Validate its open receipt with "No backorder" to close it short, or create a purchase return.' }
+  }
+  const author = { id: Number(session.user.id) || null, name: session.user.name }
 
-  await prisma.purchaseOrder.update({ where: { id }, data: { status: 'CANCELLED' } })
+  try {
+    await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM "PurchaseOrder" WHERE id = ${id} FOR UPDATE`
+      const received = await tx.purchaseOrderItem.count({ where: { poId: id, receivedQty: { gt: 0 } } })
+      if (received > 0) throw new Error('Goods were received on this PO meanwhile. Refresh and try again.')
+      const receipts = await tx.stockPicking.findMany({ where: { purchaseOrderId: id, status: 'READY' }, select: { id: true } })
+      for (const receipt of receipts) await cancelPickingTx(tx, receipt.id, author)
+      await tx.purchaseOrder.update({ where: { id }, data: { status: 'CANCELLED' } })
+      await logTracking(tx, 'PurchaseOrder', id, 'Purchase order cancelled', [{ field: 'Status', from: po.status, to: 'CANCELLED' }], author)
+    })
+  } catch (error) {
+    return { success: false, error: inventoryError(error) }
+  }
   revalidatePath('/purchases')
   return { success: true }
 }
@@ -765,82 +749,44 @@ export async function createPurchaseReturn(data: unknown) {
     }
   }
 
-  const count = await prisma.purchaseReturn.count()
-  const displayId = `PRN-${String(count + 1).padStart(4, '0')}`
-
-  // Deduct stock in transaction
   let ret
   try {
-    ret = await prisma.$transaction(async (tx) => {
-      for (const item of items) {
-        const product = productById.get(item.productId)
-        if (!product) throw new Error(`Product ${item.productId} was not found`)
-        let stock = await tx.godownStock.findUnique({
-          where: { productId_godownId: { productId: item.productId, godownId: godown.id } },
-        })
-        if (!stock) {
-          const godownRowCount = await tx.godownStock.count({ where: { productId: item.productId } })
-          if (godownRowCount === 0 && product.stock > 0) {
-            stock = await tx.godownStock.create({ data: { productId: item.productId, godownId: godown.id, quantity: product.stock } })
-            await tx.stockLedger.create({
-              data: {
-                productId: item.productId,
-                godownId: godown.id,
-                entryType: 'OPENING_BALANCE',
-                quantity: product.stock,
-                balanceAfter: product.stock,
-                referenceType: 'PurchaseReturn',
-                notes: 'Legacy product stock migrated to the selected godown before supplier return',
-              },
-            })
-          }
-        }
-        const currentQty = stock?.quantity || 0
-        if (currentQty < item.quantity) {
-          throw new Error(`Insufficient stock for ${product.name} in the selected godown`)
-        }
-        const nextQty = currentQty - item.quantity
-        await tx.godownStock.upsert({
-          where: { productId_godownId: { productId: item.productId, godownId: godown.id } },
-          create: { productId: item.productId, godownId: godown.id, quantity: nextQty },
-          update: { quantity: nextQty },
-        })
-        await tx.stockLedger.create({
-          data: {
-            productId: item.productId,
-            godownId: godown.id,
-            entryType: 'OUT',
-            quantity: -item.quantity,
-            balanceAfter: nextQty,
-            referenceType: 'PurchaseReturn',
-            notes: 'Stock returned to supplier',
-          },
-        })
-        await syncProductStockFromGodowns(item.productId, tx)
+    ret = await prisma.$transaction(async tx => {
+      await lockInventoryProducts(tx, productIds)
+      if (poId) {
+        const po = await tx.purchaseOrder.findUnique({ where: { id: poId } })
+        if (!po || po.supplierId !== supplierId) throw new Error('Selected purchase order does not belong to this supplier')
       }
-      return tx.purchaseReturn.create({
-        data: {
-          displayId,
-          supplierId,
-          poId,
-          reason,
-          notes,
-          totalAmount,
-          items: {
-            create: items.map(i => ({
-              productId: i.productId,
-              name: i.name,
-              sku: i.sku,
-              quantity: i.quantity,
-              unitCost: i.unitCost,
-            })),
-          },
-        },
-      })
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(82463104)::text`
+      const lastReturn = await tx.purchaseReturn.findFirst({ orderBy: { id: 'desc' }, select: { displayId: true } })
+      const nextNumber = Number(lastReturn?.displayId.match(/(\d+)$/)?.[1] || 0) + 1
+      const created = await tx.purchaseReturn.create({ data: {
+        displayId: `PRN-${String(nextNumber).padStart(4, '0')}`, supplierId, poId, reason, notes, totalAmount,
+        items: { create: items.map(item => ({ productId: item.productId, name: item.name, sku: item.sku, quantity: item.quantity, unitCost: item.unitCost })) },
+      } })
+      for (const item of items) {
+        const product = await tx.product.findUniqueOrThrow({ where: { id: item.productId } })
+        if (product.isSlabTracked) throw new Error('Return physical slabs through their serialized inventory workflow')
+        const batches = await tx.productBatch.findMany({ where: { productId: item.productId, remainingQty: { gt: 0 } }, orderBy: [{ purchaseDate: 'asc' }, { id: 'asc' }] })
+        const unassigned = Math.max(0, product.stock - batches.reduce((sum, batch) => sum + batch.remainingQty, 0))
+        let remaining = item.quantity
+        const details: string[] = []
+        for (const batch of batches.filter(batch => batch.supplierId === supplierId && (!poId || batch.poId === poId))) {
+          const quantity = Math.min(remaining, batch.remainingQty)
+          if (!quantity) break
+          await tx.productBatch.update({ where: { id: batch.id }, data: { remainingQty: { decrement: quantity } } })
+          remaining -= quantity
+          details.push(`${batch.batchNumber}: ${quantity}`)
+        }
+        if (remaining > unassigned) throw new Error('Return quantity exceeds this supplier’s available batches and unassigned stock')
+        await adjustStock(tx, item.productId, godown.id, -item.quantity, 'OUT', {
+          referenceType: 'PurchaseReturn', referenceId: created.id,
+          notes: ['Stock returned to supplier', ...details].join(' · '),
+        })
+      }
+      return created
     })
-  } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : 'Could not create purchase return' }
-  }
+  } catch (error) { return { success: false, error: inventoryError(error) } }
 
   revalidatePath('/purchases')
   revalidatePath('/inventory')

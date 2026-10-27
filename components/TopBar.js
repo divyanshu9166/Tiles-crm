@@ -13,6 +13,8 @@ import {
   markNotificationRead,
   markAllAlertNotificationsRead,
 } from '@/app/actions/notifications';
+import { getActivityBadge } from '@/app/actions/chatter';
+import Link from 'next/link';
 
 export default function TopBar() {
   const brand = getBrand();
@@ -28,24 +30,25 @@ export default function TopBar() {
     overdueInvoices: 0,
     items: [],
   });
+  const [activityDue, setActivityDue] = useState(0);
   const { setSidebarOpen } = useSidebarContext();
   const { data: session } = useSession();
   const router = useRouter();
   const menuRef = useRef(null);
   const notificationsRef = useRef(null);
 
-  // Light/dark theme toggle (Homzentic vertical only). Dark is the default;
-  // the saved choice is restored after hydration to keep the root layout
-  // free of inline script warnings in Next.js development.
+  // Light/dark theme toggle (Homzentic vertical only). Light is the default
+  // (Odoo-like); the saved choice is restored after hydration to keep the root
+  // layout free of inline script warnings in Next.js development.
   const isHomzentic = brand.brandAttribute === 'homzentic';
-  const [theme, setTheme] = useState('dark');
+  const [theme, setTheme] = useState('light');
   useEffect(() => {
     if (typeof document === 'undefined') return;
-    let current = 'dark';
+    let current = 'light';
     try {
-      current = localStorage.getItem('homzentic-theme') === 'light' ? 'light' : 'dark';
+      current = localStorage.getItem('homzentic-theme') === 'dark' ? 'dark' : 'light';
     } catch { /* ignore unavailable storage */ }
-    if (current === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    if (current === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
     else document.documentElement.removeAttribute('data-theme');
     setTheme(current);
   }, []);
@@ -53,7 +56,7 @@ export default function TopBar() {
     const next = theme === 'light' ? 'dark' : 'light';
     setTheme(next);
     const el = document.documentElement;
-    if (next === 'light') el.setAttribute('data-theme', 'light');
+    if (next === 'dark') el.setAttribute('data-theme', 'dark');
     else el.removeAttribute('data-theme');
     try { localStorage.setItem('homzentic-theme', next); } catch { /* ignore */ }
   };
@@ -73,6 +76,7 @@ export default function TopBar() {
   useEffect(() => {
     const tick = () => {
       refreshNotifications().catch(() => { });
+      getActivityBadge().then(res => res?.success && setActivityDue(res.data.due)).catch(() => { });
     };
 
     queueMicrotask(tick);
@@ -207,6 +211,21 @@ export default function TopBar() {
               : <Sun className="w-[18px] h-[18px] text-muted" />}
           </button>
         )}
+
+        {/* Activities due today or overdue (Odoo activity systray) */}
+        <Link
+          href="/activities"
+          className="relative p-2 rounded-lg hover:bg-surface-hover transition-colors"
+          aria-label="My activities"
+          title="My activities"
+        >
+          <CalendarClock className="w-[18px] h-[18px] text-muted" />
+          {activityDue > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-white text-[10px] font-semibold leading-4 text-center">
+              {activityDue > 99 ? '99+' : activityDue}
+            </span>
+          )}
+        </Link>
 
         {/* Notifications */}
         <div className="relative" ref={notificationsRef}>

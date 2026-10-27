@@ -13,6 +13,7 @@ import {
   getPurchaseReturns, createPurchaseReturn, getPurchaseStats, recordPurchaseOrderPayment,
   updatePurchaseOrder
 } from '@/app/actions/purchases'
+import { createBillFromPurchaseOrder } from '@/app/actions/vendor-bills'
 import { getProducts, createProduct } from '@/app/actions/products'
 import { getGodowns } from '@/app/actions/godowns'
 import { getStoreSettings } from '@/app/actions/settings'
@@ -601,8 +602,23 @@ export default function PurchasesPage() {
 
   const handleReceivePO = async (id) => {
     const res = await receivePurchaseOrder(id)
-    if (res.success) loadData()
-    else alert(res.error)
+    if (res.success) {
+      notify('All pending quantities received into stock', { variant: 'success' })
+      loadData()
+    } else notify(res.error, { variant: 'danger' })
+  }
+
+  // Partial receipts, backorders and the receiving location live on the
+  // goods receipt (GRN) in Inventory → Operations.
+  // Odoo bill control: bill what was received, matched against the PO.
+  const handleCreateBill = async (po) => {
+    const res = await createBillFromPurchaseOrder(po.id)
+    if (!res.success) return notify(res.error, { variant: 'danger' })
+    window.location.href = `/vendor-bills/${res.data.id}`
+  }
+
+  const openReceipt = (po) => {
+    window.location.href = `/operations?type=RECEIPT&status=READY&search=${encodeURIComponent(po.displayId)}`
   }
 
   const openStoneReceive = (po) => {
@@ -963,7 +979,7 @@ export default function PurchasesPage() {
                         </>
                       )}
                       {po.status === 'DRAFT' && <button onClick={() => handleApprovePO(po.id)} className="p-1.5 rounded-lg hover:bg-emerald-500/10 text-muted hover:text-emerald-400" title="Approve"><CheckCircle className="w-4 h-4" /></button>}
-                      {(po.status === 'APPROVED' || po.status === 'PARTIALLY_RECEIVED') && <button onClick={() => handleReceivePO(po.id)} className="p-1.5 rounded-lg hover:bg-blue-500/10 text-muted hover:text-blue-400" title="Receive"><ArrowDownCircle className="w-4 h-4" /></button>}
+                      {(po.status === 'APPROVED' || po.status === 'PARTIALLY_RECEIVED') && <button onClick={() => openReceipt(po)} className="p-1.5 rounded-lg hover:bg-blue-500/10 text-muted hover:text-blue-400" title="Receive (GRN: partial quantities, backorders, location)"><ArrowDownCircle className="w-4 h-4" /></button>}
                       {po.status !== 'CANCELLED' && po.balanceDue > 0 && (
                         <button onClick={() => openPaymentModal(po)} className="p-1.5 rounded-lg hover:bg-purple-500/10 text-muted hover:text-purple-400" title="Record Payment">
                           <span className="text-sm font-bold">₹</span>
@@ -1188,7 +1204,23 @@ export default function PurchasesPage() {
                     }}
                     className="px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-400 text-xs font-medium hover:bg-blue-500/20"
                   >
-                    Mark Received
+                    Receive all
+                  </button>
+                )}
+                {(selectedPO.status === 'APPROVED' || selectedPO.status === 'PARTIALLY_RECEIVED') && (
+                  <button
+                    onClick={() => openReceipt(selectedPO)}
+                    className="px-3 py-1.5 rounded-lg border border-blue-500/30 text-blue-400 text-xs font-medium hover:bg-blue-500/10"
+                  >
+                    Partial receipt (GRN)
+                  </button>
+                )}
+                {(selectedPO.status === 'PARTIALLY_RECEIVED' || selectedPO.status === 'RECEIVED') && selectedPO.items?.some(item => item.receivedQty > (item.billedQty || 0)) && (
+                  <button
+                    onClick={() => handleCreateBill(selectedPO)}
+                    className="px-3 py-1.5 rounded-lg border border-emerald-500/30 text-emerald-400 text-xs font-medium hover:bg-emerald-500/10"
+                  >
+                    Create vendor bill
                   </button>
                 )}
                 {(selectedPO.status === 'APPROVED' || selectedPO.status === 'PARTIALLY_RECEIVED') && selectedPO.items?.some(item => item.product?.isSlabTracked && item.receivedQty < item.quantity) && (

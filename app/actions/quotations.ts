@@ -10,6 +10,7 @@ import type { Quotation, QuotationItem, QuotationStatus, Contact, Product } from
 type QuotationWithRelations = Quotation & {
   contact: Contact
   items: (QuotationItem & { product: Product | null })[]
+  salesOrder?: { id: number; displayId: string; status: string } | null
 }
 
 const statusDisplay: Record<QuotationStatus, string> = {
@@ -164,6 +165,7 @@ function formatQuotation(quotation: QuotationWithRelations) {
   return {
     id: quotation.displayId,
     dbId: quotation.id,
+    pricelistId: quotation.pricelistId,
     customer: quotation.contact.name,
     phone: quotation.contact.phone,
     email: quotation.emailId || quotation.contact.email || null,
@@ -191,6 +193,8 @@ function formatQuotation(quotation: QuotationWithRelations) {
     termsAndConditions: quotation.termsAndConditions,
     status: statusDisplay[quotation.status],
     statusKey: quotation.status,
+    // A cancelled order no longer blocks confirming the quotation again.
+    salesOrder: quotation.salesOrder && quotation.salesOrder.status !== 'CANCELLED' ? { id: quotation.salesOrder.id, displayId: quotation.salesOrder.displayId } : null,
     items: sortedItems,
   }
 }
@@ -200,6 +204,7 @@ export async function getQuotations() {
     include: {
       contact: true,
       items: { include: { product: true } },
+      salesOrder: { select: { id: true, displayId: true, status: true } },
     },
     orderBy: { date: 'desc' },
   })
@@ -247,6 +252,7 @@ export async function createQuotation(data: unknown) {
     bankDetails,
     notes,
     termsAndConditions,
+    pricelistId,
     items,
   } = parsed.data
 
@@ -362,6 +368,7 @@ export async function createQuotation(data: unknown) {
     data: {
       displayId,
       contactId: contact.id,
+      pricelistId: pricelistId ?? contact.pricelistId ?? null,
       date: date ? new Date(date) : new Date(),
       validUntil: validUntil ? new Date(validUntil) : null,
       projectName,
@@ -423,6 +430,7 @@ export async function updateQuotation(data: unknown) {
     bankDetails,
     notes,
     termsAndConditions,
+    pricelistId,
     items,
   } = parsed.data
 
@@ -538,6 +546,7 @@ export async function updateQuotation(data: unknown) {
     where: { id },
     data: {
       contactId: contact.id,
+      pricelistId: pricelistId ?? contact.pricelistId ?? null,
       date: date ? new Date(date) : existing.date,
       validUntil: validUntil ? new Date(validUntil) : null,
       projectName,
@@ -602,6 +611,8 @@ export async function convertQuotationToInvoice(quotationId: number) {
   })
 
   if (!quotation) return { success: false, error: 'Quotation not found' }
+  const salesOrder = await prisma.salesOrder.findUnique({ where: { quotationId }, select: { displayId: true, status: true } })
+  if (salesOrder && salesOrder.status !== 'CANCELLED') return { success: false, error: `This quotation is confirmed as sales order ${salesOrder.displayId}; invoice it from the order` }
   if (quotation.status === 'DRAFT' || quotation.status === 'REJECTED') {
     return { success: false, error: 'Only sent or approved quotations can be converted to an invoice' }
   }
@@ -633,6 +644,7 @@ export async function convertQuotationToInvoice(quotationId: number) {
     phone: quotation.contact.phone,
     address: quotation.dispatchAddress || quotation.contact.address || undefined,
     gstNumber: quotation.contact.gstNumber || undefined,
+    pricelistId: quotation.pricelistId ?? undefined,
     items: quotation.items.map(item => ({
       productId: item.productId as number,
       name: item.name,

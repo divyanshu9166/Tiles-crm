@@ -2,15 +2,17 @@
 
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
-import { requireRole } from '@/lib/auth-helpers'
+import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { z } from 'zod'
+import { inventoryError } from '@/lib/inventory-stock'
 
 const createStockGroupSchema = z.object({
-  name: z.string().min(1, 'Name is required'),
-  parentId: z.number().optional(),
+  name: z.string().trim().min(1, 'Name is required'),
+  parentId: z.number().int().positive().optional(),
 })
 
 export async function getStockGroups() {
+  await requireAuth()
   const groups = await prisma.stockGroup.findMany({
     orderBy: { name: 'asc' },
     include: {
@@ -29,7 +31,9 @@ export async function createStockGroup(data: unknown) {
   const existing = await prisma.stockGroup.findUnique({ where: { name: parsed.data.name } })
   if (existing) return { success: false, error: 'Stock group with this name already exists' }
 
-  const group = await prisma.stockGroup.create({ data: parsed.data })
-  revalidatePath('/inventory')
-  return { success: true, data: group }
+  try {
+    const group = await prisma.stockGroup.create({ data: parsed.data })
+    revalidatePath('/inventory')
+    return { success: true, data: group }
+  } catch (error) { return { success: false, error: inventoryError(error) } }
 }

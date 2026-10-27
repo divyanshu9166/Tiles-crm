@@ -12,16 +12,16 @@ import { notifyManagers } from '@/lib/notify'
  */
 export async function GET(req: NextRequest) {
   const apiSecret = req.headers.get('x-api-secret')
-  if (apiSecret !== process.env.CRM_API_SECRET) {
+  if (!process.env.CRM_API_SECRET || apiSecret !== process.env.CRM_API_SECRET) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
   try {
     // 1. Get all products and filter low stock (Prisma can't compare two columns)
     const products = await prisma.product.findMany({
-      select: { id: true, name: true, sku: true, stock: true, reorderLevel: true },
+      select: { id: true, name: true, sku: true, stock: true, reorderLevel: true, isSlabTracked: true, stoneLots: { select: { slabs: { where: { status: 'AVAILABLE' }, select: { id: true } } } } },
     })
-    const lowStockProducts = products.filter(p => p.stock <= p.reorderLevel)
+    const lowStockProducts = products.map(p => ({ ...p, stock: p.isSlabTracked ? p.stoneLots.reduce((sum, lot) => sum + lot.slabs.length, 0) : p.stock })).filter(p => p.stock <= p.reorderLevel)
 
     if (lowStockProducts.length === 0) {
       return NextResponse.json({ success: true, alertsSent: 0, message: 'All stock levels OK' })
@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
 
     const recentProductIds = new Set(
       recentAlerts
-        .map(a => (a.metadata as Record<string, unknown>)?.productId)
+        .flatMap(a => { const metadata = a.metadata as Record<string, unknown> | null; return [metadata?.productId, ...(Array.isArray(metadata?.productIds) ? metadata.productIds : [])] })
         .filter(Boolean)
     )
 

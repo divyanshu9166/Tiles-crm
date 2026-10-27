@@ -12,6 +12,7 @@ import { updateAccountCredentials } from '@/app/actions/auth';
 import { useSession } from '@/components/AuthProvider';
 import { getBrand } from '@/lib/brand';
 import IndiaMartIntegrationSettings from './IndiaMartIntegrationSettings';
+import ErpPoliciesSettings from './ErpPoliciesSettings';
 
 const channelDefinitions = [
   {
@@ -538,6 +539,7 @@ export default function SettingsPage() {
     { key: 'email', label: 'Email Setup', icon: Mail },
     { key: 'notifications', label: 'Notifications', icon: Bell },
     { key: 'ai', label: 'AI Settings', icon: Bot },
+    { key: 'erp', label: 'ERP Policies', icon: Package },
   ];
 
   if (loading) {
@@ -1573,6 +1575,8 @@ export default function SettingsPage() {
               </div>
             </div>
           )}
+
+          {activeTab === 'erp' && <ErpPoliciesSettings />}
 
           {activeTab === 'ai' && (
             <div className="glass-card p-4 sm:p-6">

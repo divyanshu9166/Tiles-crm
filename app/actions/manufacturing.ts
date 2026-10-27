@@ -1,10 +1,13 @@
 'use server'
 
 import { prisma } from '@/lib/db'
+import { lockInventoryProducts } from '@/lib/inventory-stock'
 import { revalidatePath } from 'next/cache'
 import { unstable_noStore } from 'next/cache'
 import { requireRole } from '@/lib/auth-helpers'
 import { syncStoneLotTotals } from '@/lib/stone-inventory'
+import { computeForecast } from '@/lib/erp/forecast'
+import { componentRequirement } from '@/lib/erp/mrp'
 import { z } from 'zod'
 import type { CustomOrderStatus } from '@prisma/client'
 import {
@@ -95,6 +98,7 @@ async function adjustManufacturingStockWithTx(tx: any, productId: number, quanti
   notes?: string
   createdBy?: string
 }) {
+  await lockInventoryProducts(tx, [productId])
   const qty = roundQty(quantity)
   if (qty === 0) return
 
@@ -519,19 +523,31 @@ export async function getMRPAnalysis(bomId: number, qty: number) {
   })
   if (!bom) return { success: false, error: 'BOM not found' }
 
+  // Odoo MRP: plan against forecasted availability — on hand minus what open
+  // deliveries and other production orders already reserved, plus incoming.
+  const forecast = await computeForecast(prisma, { productIds: bom.items.map(item => item.rawMaterialId) })
   const requirements = bom.items.map(item => {
     const effectiveUnitCost = item.unitCost > 0 ? item.unitCost : item.rawMaterial.costPrice
-    const required = item.quantity * qty * (1 + item.wastagePercent / 100)
-    const available = item.rawMaterial.stock
-    const shortage = Math.max(0, required - available)
+    const required = componentRequirement(item.quantity, qty, item.wastagePercent)
+    const row = forecast.get(item.rawMaterialId)
+    const onHand = row?.onHand ?? item.rawMaterial.stock
+    const reserved = row?.reserved ?? 0
+    const incoming = row?.incoming ?? 0
+    const available = Math.round((onHand - reserved) * 100) / 100
+    const shortage = Math.max(0, required - Math.max(0, available))
+    const shortageAfterIncoming = Math.max(0, required - Math.max(0, available + incoming))
     return {
       materialId: item.rawMaterialId,
       materialName: item.rawMaterial.name,
       sku: item.rawMaterial.sku,
       unitOfMeasure: item.unitOfMeasure || item.rawMaterial.unitOfMeasure,
       required: Math.ceil(required * 100) / 100,
+      onHand,
+      reserved: Math.round(reserved * 100) / 100,
+      incoming,
       available,
       shortage: Math.ceil(shortage * 100) / 100,
+      shortageAfterIncoming: Math.ceil(shortageAfterIncoming * 100) / 100,
       canProduce: shortage === 0,
       unitCost: effectiveUnitCost,
       estimatedCost: Math.round(required * effectiveUnitCost),
@@ -1550,4 +1566,28 @@ export async function staffUpdateProductionProgress(staffId: number, orderId: nu
   revalidatePath('/staff-portal')
   revalidatePath('/manufacturing')
   return { success: true }
+}
+
+// MRP "Order": draft POs for every component still short after incoming
+// supply, from each material's preferred (or cheapest) vendor.
+export async function orderMrpShortages(bomId: number, qty: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  const analysis = await getMRPAnalysis(bomId, qty)
+  if (!analysis.success || !analysis.data) return { success: false, error: analysis.error || 'MRP analysis failed' }
+  const short = analysis.data.requirements.filter(row => row.shortageAfterIncoming > 0)
+  if (short.length === 0) return { success: false, error: 'Nothing to order: every component is covered by stock or incoming purchases' }
+  const vendors = await prisma.productSupplier.findMany({
+    where: { productId: { in: short.map(row => row.materialId) } },
+    orderBy: [{ isPreferred: 'desc' }, { price: 'asc' }],
+  })
+  const items = short.flatMap(row => {
+    const vendor = vendors.find(entry => entry.productId === row.materialId)
+    return vendor ? [{ productId: row.materialId, supplierId: vendor.supplierId, quantity: Math.ceil(row.shortageAfterIncoming), unitCost: vendor.price || undefined }] : []
+  })
+  const noVendor = short.filter(row => !vendors.some(entry => entry.productId === row.materialId)).map(row => row.materialName)
+  if (items.length === 0) return { success: false, error: `Add a vendor price for ${noVendor.join(', ')} in Replenishment → Vendor pricelists first` }
+  const { orderReplenishment } = await import('./replenishment')
+  const result = await orderReplenishment({ items })
+  if (!result.success) return result
+  return { success: true, data: { pos: result.data, noVendor } }
 }

@@ -30,6 +30,7 @@ import { getStaff } from '@/app/actions/staff';
 import { getStoreSettings } from '@/app/actions/settings';
 import { getStoneLots } from '@/app/actions/stone-inventory';
 import { getGodowns } from '@/app/actions/godowns';
+import { getPricelists, getPricesFor } from '@/app/actions/pricelists';
 import { getBillableArea } from '@/lib/units';
 import { getActiveVertical } from '@/lib/brand';
 
@@ -210,12 +211,12 @@ function computeLineAmount(item, product) {
   }
 
   // unit === 'BOX'
-  if (hasCoverage) {
+  if (hasCoverage && area > 0) {
     // Derive the number of boxes from the entered area; price per box.
     const boxes = Math.max(0, Math.ceil(area / coveragePerBox));
     return { amount: boxes * rate, boxes, area };
   }
-  // No coverage defined: use the entered quantity directly, no box conversion.
+  // No area entered (or no coverage): bill the box count, as the server does.
   return { amount: quantity * rate };
 }
 
@@ -317,6 +318,9 @@ export default function BillingPage() {
   const [posPlaceOfSupply, setPosPlaceOfSupply] = useState('');
   const [posPlaceOfSupplyCustom, setPosPlaceOfSupplyCustom] = useState('');
   const [posGodownId, setPosGodownId] = useState('');
+  const [pricelists, setPricelists] = useState([]);
+  const [posPricelistId, setPosPricelistId] = useState('');
+  const [posPricedFrom, setPosPricedFrom] = useState(null);
   const [productSearch, setProductSearch] = useState('');
   const [showProductDropdown, setShowProductDropdown] = useState(false);
   // Mobile-only: full-screen checkout sheet toggle (no effect on md+ layout)
@@ -351,6 +355,7 @@ export default function BillingPage() {
     if (stoneRes.success) setStoneLots(stoneRes.data);
     if (godownRes.success) setGodowns(godownRes.data);
     setLoading(false);
+    getPricelists().then(res => res.success && setPricelists(res.data.filter(list => list.active)));
   }, []);
 
   useEffect(() => {
@@ -413,6 +418,7 @@ export default function BillingPage() {
     });
     setShowCustomerDropdown(false);
     setCustomerSuggestions([]);
+    if (!posPricelistId) void repricePOS(posItems.filter(item => !item.slabId), { phone: contact.phone });
     setCustomerProfileLoading(true);
     const profileRes = await getCustomerProfile(contact.phone, contact.id);
     setCustomerProfileLoading(false);
@@ -504,6 +510,21 @@ export default function BillingPage() {
     return match ? match.gstRate : undefined;
   };
 
+  // Odoo pricelists at the till: the chosen list, else the customer's (by
+  // phone), else the default. Manual price edits stay until the next reprice.
+  const repricePOS = async (lines, { phone = posCustomer.phone, pricelistId = posPricelistId } = {}) => {
+    if (pricelists.length === 0 || lines.length === 0) return;
+    const res = await getPricesFor({
+      pricelistId: pricelistId ? Number(pricelistId) : null,
+      phone: phone?.trim() || null,
+      lines: lines.map(line => ({ productId: line.productId, quantity: line.qty || 1 })),
+    });
+    if (!res.success) return notify(res.error, { variant: 'danger' });
+    setPosPricedFrom(res.data.pricelist?.name || null);
+    const byId = new Map(lines.map((line, index) => [line.id, res.data.prices[index]?.price]));
+    setPosItems(current => current.map(item => (byId.get(item.id) != null ? { ...item, price: byId.get(item.id) } : item)));
+  };
+
   const addToPOS = (product) => {
     if (product.isSlabTracked) {
       notify('Select the exact physical slab from the slab explorer before billing.', { variant: 'info' });
@@ -528,6 +549,7 @@ export default function BillingPage() {
          batches: product.batches || [],
          batchId: product.batches?.length === 1 ? product.batches[0].id : undefined,
       }]);
+      void repricePOS([{ id: product.id, productId: product.id, qty: 1 }]);
     }
     setProductSearch('');
     setShowProductDropdown(false);
@@ -604,6 +626,8 @@ export default function BillingPage() {
     setPosPlaceOfSupply('');
     setPosPlaceOfSupplyCustom('');
     setPosGodownId('');
+    setPosPricelistId('');
+    setPosPricedFrom(null);
   };
 
   // Split payment management
@@ -685,6 +709,7 @@ export default function BillingPage() {
         supplyType: posSupplyType,
         placeOfSupply: placeOfSupplyValue || undefined,
         godownId: posGodownId ? parseInt(posGodownId) : undefined,
+        pricelistId: posPricelistId ? Number(posPricelistId) : undefined,
         isHeld,
       };
 
@@ -2054,6 +2079,30 @@ export default function BillingPage() {
                     className="w-full pl-9 pr-4 py-3 bg-surface border border-border rounded-xl text-sm placeholder:text-muted focus:outline-none focus:border-accent/50"
                   />
                 </div>
+                {pricelists.length > 0 && (
+                  <div>
+                    <label className="block text-xs font-medium text-muted mb-1.5">Pricelist</label>
+                    <div className="flex gap-2">
+                      <select
+                        value={posPricelistId}
+                        onChange={e => setPosPricelistId(e.target.value)}
+                        className="w-full px-4 py-3 bg-surface border border-border rounded-xl text-sm focus:outline-none focus:border-accent/50"
+                      >
+                        <option value="">Customer&apos;s pricelist / default</option>
+                        {pricelists.map(list => <option key={list.id} value={list.id}>{list.name}{list.isDefault ? ' (default)' : ''}</option>)}
+                      </select>
+                      <button
+                        type="button"
+                        disabled={posItems.length === 0}
+                        onClick={() => repricePOS(posItems.filter(item => !item.slabId))}
+                        className="px-3 py-3 rounded-xl text-sm border border-border text-foreground whitespace-nowrap hover:bg-surface-hover disabled:opacity-50"
+                      >
+                        Apply prices
+                      </button>
+                    </div>
+                    {posPricedFrom && <p className="text-[11px] text-muted mt-1">Cart priced from {posPricedFrom}</p>}
+                  </div>
+                )}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-medium text-muted mb-1.5">Supply Type</label>

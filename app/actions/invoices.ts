@@ -1,6 +1,7 @@
 'use server'
 
 import { prisma } from '@/lib/db'
+import { lockInventoryProducts } from '@/lib/inventory-stock'
 import { requireRole } from '@/lib/auth-helpers'
 import { revalidatePath } from 'next/cache'
 import { createInvoiceSchema, updateInvoiceSchema, recordPaymentSchema, createCreditNoteSchema } from '@/lib/validations/invoice'
@@ -56,6 +57,7 @@ async function syncProductStockInTransaction(tx: any, productId: number) {
 }
 
 async function consumeInvoiceInventory(tx: any, invoiceId: number, items: InventoryInvoiceLine[], godownId: number) {
+  await lockInventoryProducts(tx, items.map(item => item.productId))
   const standardQty = new Map<number, number>()
   for (const item of items) {
     if (item.slabId) continue
@@ -120,10 +122,24 @@ async function consumeInvoiceInventory(tx: any, invoiceId: number, items: Invent
     if (batch.remainingQty < quantity) throw new Error(`Insufficient quantity in batch ${batch.batchNumber}`)
     await tx.productBatch.update({ where: { id: batch.id }, data: { remainingQty: { decrement: quantity } } })
   }
+  for (const productId of standardQty.keys()) {
+    const product = await tx.product.findUnique({ where: { id: productId }, select: { stock: true } })
+    const batches = await tx.productBatch.aggregate({ where: { productId }, _sum: { remainingQty: true } })
+    if ((batches._sum.remainingQty || 0) > (product?.stock || 0)) throw new Error('Select the batch/shade for this sale; the quantity exceeds unassigned stock')
+  }
 }
 
 async function restoreInvoiceInventory(tx: any, invoice: any) {
   if (invoice.heldAt) return
+  if (invoice.salesOrderId) {
+    // Stock left through the sales order's delivery orders; cancelling the
+    // invoice only re-opens its quantity for invoicing (Odoo behaviour).
+    for (const item of invoice.items) {
+      if (item.salesOrderLineId) await tx.salesOrderLine.updateMany({ where: { id: item.salesOrderLineId, qtyInvoiced: { gte: item.quantity } }, data: { qtyInvoiced: { decrement: item.quantity }, invoicedSqft: { decrement: Number(item.areaSqft) || 0 } } })
+    }
+    return
+  }
+  await lockInventoryProducts(tx, invoice.items.map((item: any) => item.productId))
   const godownId = invoice.godownId || await resolveInvoiceGodownId()
   const standardQty = new Map<number, number>()
   for (const item of invoice.items) {
@@ -280,6 +296,7 @@ export async function getInvoice(id: number) {
 // ─── CREATE INVOICE ────────────────────────────────────
 
 export async function createInvoice(data: unknown) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createInvoiceSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -304,6 +321,7 @@ export async function createInvoice(data: unknown) {
     godownId,
     supplyType,
     placeOfSupply,
+    pricelistId,
   } = parsed.data
 
   const gstNumberValue = typeof gstNumber === 'string'
@@ -472,6 +490,7 @@ export async function createInvoice(data: unknown) {
         data: {
       displayId,
       contactId: contact.id,
+      pricelistId: pricelistId ?? contact.pricelistId ?? null,
       subtotal,
       discount: discountAmount,
       discountType,
@@ -609,6 +628,7 @@ export async function updateInvoice(invoiceId: number, data: unknown) {
   })
   if (!invoice) return { success: false, error: 'Invoice not found' }
   if (invoice.invoiceStatus !== 'ACTIVE') return { success: false, error: 'Only active invoices can be edited' }
+  if (invoice.salesOrderId) return { success: false, error: 'This invoice belongs to a sales order. Cancel it and invoice again from the order so delivered and invoiced quantities stay in sync.' }
 
   // Replacing serialized slabs after sale would orphan the physical inventory trail.
   // Use a credit note and a fresh invoice for a slab substitution instead.
@@ -775,6 +795,7 @@ export async function updateInvoice(invoiceId: number, data: unknown) {
 // ─── RECORD ADDITIONAL PAYMENT ─────────────────────────
 
 export async function recordPayment(data: unknown) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = recordPaymentSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -821,14 +842,21 @@ export async function recordPayment(data: unknown) {
 // ─── CANCEL INVOICE ────────────────────────────────────
 
 export async function cancelInvoice(invoiceId: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId }, include: { items: true } })
   if (!invoice) return { success: false, error: 'Invoice not found' }
   if (invoice.invoiceStatus !== 'ACTIVE') return { success: false, error: 'Invoice is already cancelled or refunded' }
 
-  await prisma.$transaction(async tx => {
-    await restoreInvoiceInventory(tx, invoice)
-    await tx.invoice.update({ where: { id: invoiceId }, data: { invoiceStatus: 'CANCELLED' } })
-  })
+  try {
+    await prisma.$transaction(async tx => {
+      // Claim the cancellation first so concurrent requests restore stock once.
+      const claimed = await tx.invoice.updateMany({ where: { id: invoiceId, invoiceStatus: 'ACTIVE' }, data: { invoiceStatus: 'CANCELLED' } })
+      if (claimed.count !== 1) throw new Error('Invoice is already cancelled or refunded')
+      await restoreInvoiceInventory(tx, invoice)
+    })
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Could not cancel invoice' }
+  }
 
   revalidatePath('/billing')
   return { success: true }
@@ -837,6 +865,7 @@ export async function cancelInvoice(invoiceId: number) {
 // ─── CREATE CREDIT NOTE ────────────────────────────────
 
 export async function createCreditNote(data: unknown) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createCreditNoteSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -879,6 +908,7 @@ export async function createCreditNote(data: unknown) {
 // ─── FINALIZE HELD BILL ────────────────────────────────
 
 export async function finalizeHeldInvoice(invoiceId: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId }, include: { items: true } })
   if (!invoice) return { success: false, error: 'Invoice not found' }
   if (!invoice.heldAt) return { success: false, error: 'Invoice is not held' }

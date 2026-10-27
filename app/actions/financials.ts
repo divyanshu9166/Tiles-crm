@@ -149,7 +149,7 @@ export async function getProfitAndLoss(fromDate: string, toDate: string, compare
     if (!range) return null
     const { from, to } = range
 
-    const [invoiceAgg, creditNoteAgg, invoiceItems, purchaseAgg, payrollAgg, employerPayroll] = await Promise.all([
+    const [invoiceAgg, creditNoteAgg, invoiceItems, purchaseAgg, payrollAgg, employerPayroll, expenseRows] = await Promise.all([
       // Gross sales from invoices
       prisma.invoice.aggregate({
         where: { date: { gte: from, lte: to }, invoiceStatus: 'ACTIVE', heldAt: null },
@@ -182,7 +182,21 @@ export async function getProfitAndLoss(fromDate: string, toDate: string, compare
         where: { status: { in: ['APPROVED', 'PAID'] }, period: { gte: fd.substring(0, 7), lte: td.substring(0, 7) } },
         _sum: { employerContributions: true },
       }),
+      // Approved operating expenses (rent, freight, electricity, ...) by category
+      prisma.expense.groupBy({
+        by: ['categoryId'],
+        where: { date: { gte: from, lte: to }, status: 'Approved' },
+        _sum: { amount: true },
+      }),
     ])
+    const expenseCategories = expenseRows.length
+      ? await prisma.expenseCategory.findMany({ where: { id: { in: expenseRows.map(row => row.categoryId) } }, select: { id: true, name: true } })
+      : []
+    const categoryName = new Map(expenseCategories.map(category => [category.id, category.name]))
+    const expenseLines = expenseRows
+      .map(row => ({ category: categoryName.get(row.categoryId) || 'Other', amount: row._sum.amount || 0 }))
+      .sort((a, b) => b.amount - a.amount)
+    const otherExpenses = expenseLines.reduce((sum, line) => sum + line.amount, 0)
 
     // Revenue
     const grossSales = invoiceAgg._sum.total || 0
@@ -199,7 +213,7 @@ export async function getProfitAndLoss(fromDate: string, toDate: string, compare
     // Operating expenses
     const salaryExpense = payrollAgg._sum.totalGross || 0  // use gross (employee cost to employer)
     const employerPFESI = employerPayroll._sum.employerContributions || 0
-    const totalOpEx = salaryExpense + employerPFESI
+    const totalOpEx = salaryExpense + employerPFESI + otherExpenses
 
     const operatingProfit = grossProfit - totalOpEx
     const netProfit = operatingProfit  // no interest/tax in this simplified model
@@ -220,6 +234,8 @@ export async function getProfitAndLoss(fromDate: string, toDate: string, compare
       operatingExpenses: {
         salary: salaryExpense,
         employerPFESI,
+        expenses: otherExpenses,
+        expenseLines,
         total: totalOpEx,
       },
       operatingProfit, opMarginPct,

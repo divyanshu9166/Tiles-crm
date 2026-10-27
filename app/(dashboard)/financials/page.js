@@ -449,6 +449,9 @@ export default function FinancialsPage() {
               <h4 className="text-xs font-bold text-muted uppercase tracking-wider mb-2">Operating Expenses</h4>
               <PnLRow label="Gross Salary (employee cost)" cur={cur.operatingExpenses?.salary} cmp={cmp?.operatingExpenses?.salary} indent />
               <PnLRow label="Employer PF / ESI / Bonus" cur={cur.operatingExpenses?.employerPFESI} cmp={cmp?.operatingExpenses?.employerPFESI} indent />
+              {(cur.operatingExpenses?.expenseLines || []).map(line => (
+                <PnLRow key={line.category} label={line.category} cur={line.amount} cmp={cmp?.operatingExpenses?.expenseLines?.find(other => other.category === line.category)?.amount} indent />
+              ))}
               <PnLRow label="Total Operating Expenses" cur={cur.operatingExpenses?.total} cmp={cmp?.operatingExpenses?.total} bold />
             </div>
 

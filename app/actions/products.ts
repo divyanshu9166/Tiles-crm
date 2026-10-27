@@ -2,8 +2,10 @@
 
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
-import { createProductSchema, updateStockSchema } from '@/lib/validations/product'
+import { createProductSchema, updateProductSchema, updateStockSchema } from '@/lib/validations/product'
 import { moveProductToDraft } from './drafts'
+import { requireRole, requireAuth } from '@/lib/auth-helpers'
+import { adjustStock, stockBalance, resolveStockGodown, lockInventoryProducts, inventoryError } from '@/lib/inventory-stock'
 
 export interface BulkRawMaterialRow {
   name: string
@@ -21,8 +23,8 @@ export interface BulkRawMaterialRow {
 }
 
 const toNumber = (value: unknown, fallback = 0) => {
-  const n = Number(value)
-  return Number.isFinite(n) ? n : fallback
+  if (value === undefined || value === null || String(value).trim() === '') return fallback
+  return toRequiredNumber(value)
 }
 
 const toRequiredNumber = (value: unknown) => {
@@ -33,6 +35,7 @@ const toRequiredNumber = (value: unknown) => {
 }
 
 export async function getProducts() {
+  await requireAuth()
   const products = await prisma.product.findMany({
     include: {
       category: true,
@@ -40,7 +43,7 @@ export async function getProducts() {
       stoneLots: {
         select: {
           availableSqft: true,
-          slabs: { select: { status: true } },
+          slabs: { select: { status: true, sqft: true } },
         },
       },
       batches: {
@@ -60,6 +63,7 @@ export async function getProducts() {
       name: p.name,
       category: p.category.name,
       categoryId: p.categoryId,
+      stockGroupId: p.stockGroupId,
       isRawMaterial: p.category.name === 'Raw Material',
       price: p.price,
       costPrice: p.costPrice,
@@ -91,7 +95,7 @@ export async function getProducts() {
       // Serialized stone is intentionally not copied into Product.stock. Expose
       // its live sellable balance separately so inventory screens do not show
       // a stocked lot as "out of stock" or permit quantity adjustments.
-      availableStoneSqft: p.stoneLots.reduce((sum, lot) => sum + (lot.availableSqft || 0), 0),
+      availableStoneSqft: p.stoneLots.reduce((sum, lot) => sum + lot.slabs.filter(slab => slab.status === 'AVAILABLE').reduce((area, slab) => area + slab.sqft, 0), 0),
       availableStoneSlabs: p.stoneLots.reduce((sum, lot) => sum + lot.slabs.filter(slab => slab.status === 'AVAILABLE').length, 0),
       allocatedStoneSlabs: p.stoneLots.reduce((sum, lot) => sum + lot.slabs.filter(slab => ['RESERVED', 'IN_PROCESSING'].includes(slab.status)).length, 0),
       batches: p.batches.map(batch => ({
@@ -107,6 +111,7 @@ export async function getProducts() {
 }
 
 export async function getProduct(id: number) {
+  await requireAuth()
   const product = await prisma.product.findUnique({
     where: { id },
     include: { category: true, warehouse: true },
@@ -117,97 +122,29 @@ export async function getProduct(id: number) {
 }
 
 export async function createProduct(data: unknown) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createProductSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
-
-  const { category, warehouse, unitOfMeasure, unitSize, godownId, ...rest } = parsed.data
-
-  // Slab-tracked products must be stocked through StoneLot/Slab records so
-  // Product.stock never becomes a misleading aggregate quantity.
-  if (rest.isSlabTracked && (Number(rest.stock) || 0) > 0) {
-    return { success: false, error: 'Create the stone product with zero stock, then receive slabs into a Stone Lot.' }
-  }
-
-  // Find or create category
-  const cat = await prisma.category.upsert({
-    where: { name: category },
-    create: { name: category },
-    update: {},
-  })
-
-  // Find or create warehouse if provided
-  let warehouseId: number | undefined
-  if (warehouse) {
-    const wh = await prisma.warehouse.upsert({
-      where: { name: warehouse },
-      create: { name: warehouse },
-      update: {},
-    })
-    warehouseId = wh.id
-  }
-
-  // Check for duplicate SKU before creating
-  const existingSku = await prisma.product.findUnique({ where: { sku: rest.sku } })
-  if (existingSku) {
-    return { success: false, error: `A product with SKU "${rest.sku}" already exists. Please use a unique SKU.` }
-  }
-
-  // Create the product with stock = 0 initially (sync engine will set it)
-  const normalizedUnitSize = Number(unitSize) > 0 ? Number(unitSize) : 1
-  const initialStockQty = rest.stock || 0
-  const initialStock = initialStockQty * normalizedUnitSize
-  let product
+  const { category, warehouse, godownId, ...rest } = parsed.data
+  if (rest.isSlabTracked && rest.stock > 0) return { success: false, error: 'Create the stone product with zero stock, then receive slabs into a Stone Lot.' }
   try {
-    product = await prisma.product.create({
-      data: {
-        ...rest,
-        stock: 0, // Will be set by sync engine
-        unitOfMeasure: unitOfMeasure || 'PCS',
-        unitSize: normalizedUnitSize,
-        categoryId: cat.id,
-        warehouseId,
-      },
+    const product = await prisma.$transaction(async tx => {
+      // Location and opening stock belong to the same transaction as the product.
+      const godown = (rest.stock > 0 || godownId) ? await resolveStockGodown(tx, godownId) : null
+      const cat = await tx.category.upsert({ where: { name: category }, create: { name: category }, update: {} })
+      const wh = warehouse?.trim() ? await tx.warehouse.upsert({ where: { name: warehouse.trim() }, create: { name: warehouse.trim() }, update: {} }) : null
+      const created = await tx.product.create({ data: { ...rest, stock: 0, categoryId: cat.id, warehouseId: wh?.id } })
+      if (rest.stock > 0 && godown) await adjustStock(tx, created.id, godown.id, rest.stock * rest.unitSize, 'IN', { referenceType: 'Manual', notes: 'Initial stock on product creation' })
+      return tx.product.findUniqueOrThrow({ where: { id: created.id } })
     })
-  } catch (err: any) {
-    if (err.code === 'P2002') {
-      return { success: false, error: `A product with SKU "${rest.sku}" already exists. Please use a unique SKU.` }
-    }
-    return { success: false, error: err.message || 'Failed to create product' }
-  }
-
-  // Allocate initial stock to the selected godown (like Odoo's stock.move on receipt)
-  if (initialStock > 0) {
-    const { adjustGodownStock, getOrCreateDefaultGodown } = await import('./godowns')
-    const godownCount = await prisma.godown.count()
-
-    if (godownCount > 0) {
-      // Use selected godown, or fall back to default
-      let targetGodownId = godownId
-      if (!targetGodownId) {
-        const defaultGodown = await getOrCreateDefaultGodown()
-        targetGodownId = defaultGodown.id
-      }
-
-      await adjustGodownStock(product.id, targetGodownId, initialStock, 'IN', {
-        referenceType: 'Manual',
-        notes: `Initial stock on product creation`,
-        createdBy: 'Admin',
-      })
-    } else {
-      // No godowns exist — set stock directly (legacy)
-      await prisma.product.update({
-        where: { id: product.id },
-        data: { stock: initialStock },
-      })
-    }
-  }
-
-  revalidatePath('/inventory')
-  revalidatePath('/godowns')
-  return { success: true, data: product }
+    revalidatePath('/inventory')
+    revalidatePath('/godowns')
+    return { success: true, data: product }
+  } catch (error) { return { success: false, error: inventoryError(error) } }
 }
 
 export async function bulkImportRawMaterials(rows: BulkRawMaterialRow[]) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   if (!rows || rows.length === 0) return { success: false, error: 'No raw materials to import' }
 
   const validRows = rows
@@ -218,13 +155,13 @@ export async function bulkImportRawMaterials(rows: BulkRawMaterialRow[]) {
       sizeLabel: String(r.size ?? '').trim(),
       costPrice: toNumber(r.costPrice, 0),
       stockQuantity: toRequiredNumber(r.instock ?? r.stockQuantity),
-      unitSize: Math.max(1, toNumber(r.unitSize, 1)),
+      unitSize: toNumber(r.unitSize, 1),
       unitOfMeasure: String(r.unitOfMeasure || '').trim().toUpperCase() || 'PCS',
-      reorderLevel: Math.max(0, toNumber(r.reorderLevel, 5)),
+      reorderLevel: toNumber(r.reorderLevel, 5),
       description: String(r.description || '').trim(),
       image: String(r.image || '').trim(),
     }))
-    .filter(r => r.name && Number.isFinite(r.stockQuantity))
+
 
   if (validRows.length === 0) {
     return { success: false, error: 'No valid rows found. Product name, size, and in-stock are required.' }
@@ -236,16 +173,18 @@ export async function bulkImportRawMaterials(rows: BulkRawMaterialRow[]) {
 
   let created = 0
   let skipped = 0
+  const errors: { row: number; message: string }[] = []
 
   let counter = (await prisma.product.count({ where: { category: { name: 'Raw Material' } } })) + 1
 
   const makeUniqueSku = (preferredSku: string) => {
     const baseSku = String(preferredSku || '').trim()
+    if (baseSku) { existingSkus.add(baseSku); return baseSku }
     let candidate = baseSku || `RM-${String(counter).padStart(3, '0')}`
     let suffix = 1
 
     while (existingSkus.has(candidate)) {
-      candidate = baseSku ? `${baseSku}-${suffix++}` : `RM-${String((counter + suffix - 1)).padStart(3, '0')}`
+      candidate = baseSku ? `${baseSku}-${suffix++}` : `RM-${String((counter + suffix++)).padStart(3, '0')}`
     }
 
     existingSkus.add(candidate)
@@ -261,8 +200,8 @@ export async function bulkImportRawMaterials(rows: BulkRawMaterialRow[]) {
       sku,
       category: 'Raw Material',
       price: 0,
-      costPrice: Math.max(0, row.costPrice),
-      stock: Math.max(0, row.stockQuantity),
+      costPrice: row.costPrice,
+      stock: row.stockQuantity,
       unitOfMeasure: row.unitOfMeasure || 'PCS',
       unitSize: row.unitSize,
       reorderLevel: row.reorderLevel,
@@ -274,6 +213,7 @@ export async function bulkImportRawMaterials(rows: BulkRawMaterialRow[]) {
       created++
     } else {
       skipped++
+      errors.push({ row: created + skipped, message: res.error || 'Invalid row' })
     }
 
     counter++
@@ -283,12 +223,9 @@ export async function bulkImportRawMaterials(rows: BulkRawMaterialRow[]) {
   revalidatePath('/inventory')
 
   return {
-    success: true,
-    data: {
-      total: validRows.length,
-      created,
-      skipped,
-    },
+    success: created > 0,
+    error: created === 0 ? errors[0]?.message || 'No products imported' : undefined,
+    data: { total: rows.length, created, skipped, errors },
   }
 }
 
@@ -303,9 +240,20 @@ export interface BulkProductRow {
   color?: string
   reorderLevel?: number | string
   warehouse?: string
+  costPrice?: number | string
+  unitOfMeasure?: string
+  unitSize?: number | string
+  brand?: string
+  tileSize?: string
+  finish?: string
+  coveragePerBox?: number | string
+  tilesPerBox?: number | string
+  materialCategory?: string
+  godownId?: number
 }
 
 export async function bulkImportProducts(rows: BulkProductRow[]) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   if (!rows || rows.length === 0) return { success: false, error: 'No products to import' }
 
   const validRows = rows
@@ -318,10 +266,15 @@ export async function bulkImportProducts(rows: BulkProductRow[]) {
       description: String(r.description || '').trim(),
       material: String(r.material || '').trim(),
       color: String(r.color || '').trim(),
-      reorderLevel: Math.max(0, toNumber(r.reorderLevel, 5)),
+      reorderLevel: toNumber(r.reorderLevel, 5),
       warehouse: String(r.warehouse || '').trim(),
+      costPrice: toNumber(r.costPrice, 0), unitOfMeasure: String(r.unitOfMeasure || 'PCS').trim().toUpperCase(),
+      unitSize: toNumber(r.unitSize, 1), brand: r.brand, tileSize: r.tileSize, finish: r.finish,
+      coveragePerBox: r.coveragePerBox === undefined || r.coveragePerBox === '' ? undefined : toRequiredNumber(r.coveragePerBox),
+      tilesPerBox: r.tilesPerBox === undefined || r.tilesPerBox === '' ? undefined : toRequiredNumber(r.tilesPerBox),
+      materialCategory: r.materialCategory, godownId: r.godownId,
     }))
-    .filter(r => r.name && Number.isFinite(r.price) && Number.isFinite(r.instock))
+
 
   if (validRows.length === 0) {
     return { success: false, error: 'No valid rows found. Product name, price, and in-stock quantity are required.' }
@@ -333,16 +286,18 @@ export async function bulkImportProducts(rows: BulkProductRow[]) {
 
   let created = 0
   let skipped = 0
+  const errors: { row: number; message: string }[] = []
 
   let counter = (await prisma.product.count()) + 1
 
   const makeUniqueSku = (preferredSku: string) => {
     const baseSku = String(preferredSku || '').trim()
+    if (baseSku) { existingSkus.add(baseSku); return baseSku }
     let candidate = baseSku || `PRD-${String(counter).padStart(4, '0')}`
     let suffix = 1
 
     while (existingSkus.has(candidate)) {
-      candidate = baseSku ? `${baseSku}-${suffix++}` : `PRD-${String((counter + suffix - 1)).padStart(4, '0')}`
+      candidate = baseSku ? `${baseSku}-${suffix++}` : `PRD-${String((counter + suffix++)).padStart(4, '0')}`
     }
 
     existingSkus.add(candidate)
@@ -356,22 +311,23 @@ export async function bulkImportProducts(rows: BulkProductRow[]) {
       name: row.name,
       sku,
       category: row.category,
-      price: Math.max(0, row.price as number),
-      costPrice: 0,
-      stock: Math.max(0, row.instock as number),
+      price: row.price,
+      costPrice: row.costPrice,
+      stock: row.instock,
       reorderLevel: row.reorderLevel,
       description: row.description || undefined,
       material: row.material || undefined,
       color: row.color || undefined,
       warehouse: row.warehouse || undefined,
-      unitOfMeasure: 'PCS',
-      unitSize: 1,
+      unitOfMeasure: row.unitOfMeasure, unitSize: row.unitSize, brand: row.brand, tileSize: row.tileSize, finish: row.finish,
+      coveragePerBox: row.coveragePerBox, tilesPerBox: row.tilesPerBox, materialCategory: row.materialCategory, godownId: row.godownId,
     })
 
     if (res.success) {
       created++
     } else {
       skipped++
+      errors.push({ row: created + skipped, message: res.error || 'Invalid row' })
     }
 
     counter++
@@ -380,119 +336,93 @@ export async function bulkImportProducts(rows: BulkProductRow[]) {
   revalidatePath('/inventory')
 
   return {
-    success: true,
-    data: { total: validRows.length, created, skipped },
+    success: created > 0,
+    error: created === 0 ? errors[0]?.message || 'No products imported' : undefined,
+    data: { total: rows.length, created, skipped, errors },
   }
 }
 
-export async function updateProduct(id: number, data: Partial<{
-  name: string; price: number; stock: number; reorderLevel: number;
-  material: string; brand: string; color: string; description: string; image: string; unitSize: number; unitOfMeasure: string;
-  materialCategory: string; isSlabTracked: boolean; origin: string; thicknessMm: number;
-  qualityGrade: string; bookMatchPair: boolean; tileSize: string; finish: string;
-  coveragePerBox: number; tilesPerBox: number; surfaceType: string; applicationArea: string;
-}>) {
-  const existing = await prisma.product.findUnique({
-    where: { id },
-    select: { isSlabTracked: true, stock: true },
-  })
-  if (!existing) return { success: false, error: 'Product not found' }
-  if (existing.isSlabTracked && 'stock' in data) {
-    return { success: false, error: 'Slab-tracked stone stock must be managed through Lot / Slab Explorer' }
-  }
-  if (data.isSlabTracked === false) {
-    const slabCount = await prisma.slab.count({ where: { lot: { productId: id } } })
-    if (slabCount > 0) return { success: false, error: 'Remove or archive the product lots before disabling slab tracking' }
-  }
-  if (data.isSlabTracked === true && (existing.stock > 0 || Number(data.stock) > 0)) {
-    return { success: false, error: 'Create the stone stock through Lot / Slab Explorer before enabling slab tracking' }
-  }
-  const product = await prisma.product.update({
-    where: { id },
-    data,
-  })
-
-  revalidatePath('/inventory')
-  return { success: true, data: product }
+export async function updateProduct(id: number, data: unknown) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  if (!Number.isSafeInteger(id) || id <= 0) return { success: false, error: 'Invalid product ID' }
+  const parsed = updateProductSchema.safeParse(data)
+  if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
+  try {
+    const product = await prisma.$transaction(async tx => {
+      await lockInventoryProducts(tx, [id])
+      const existing = await tx.product.findUnique({ where: { id } })
+      if (!existing) throw new Error('Product not found')
+      const input = parsed.data
+      const hasHistory = existing.stock > 0 || existing.sold > 0 || await tx.stockLedger.count({ where: { productId: id } }) > 0 || await tx.productBatch.count({ where: { productId: id } }) > 0 || await tx.stoneLot.count({ where: { productId: id } }) > 0
+      if (hasHistory && ((input.unitOfMeasure !== undefined && input.unitOfMeasure !== existing.unitOfMeasure) || (input.unitSize !== undefined && input.unitSize !== existing.unitSize))) throw new Error('Units cannot change after stock or inventory history exists. Create a separate product for the new unit.')
+      if (input.isSlabTracked !== undefined && input.isSlabTracked !== existing.isSlabTracked && hasHistory) throw new Error('Stock tracking cannot change after inventory history exists')
+      return tx.product.update({ where: { id }, data: input })
+    })
+    revalidatePath('/inventory')
+    return { success: true, data: product }
+  } catch (error) { return { success: false, error: inventoryError(error) } }
 }
 
 export async function updateStock(data: unknown) {
+  let session
+  try { session = await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = updateStockSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
-
-  const { adjustGodownStock, getOrCreateDefaultGodown } = await import('./godowns')
-
-  // Check if godowns exist
-  const godownCount = await prisma.godown.count()
-
-  if (godownCount > 0) {
-    // Route through godown sync engine
-    const product = await prisma.product.findUnique({ where: { id: parsed.data.id } })
-    if (!product) return { success: false, error: 'Product not found' }
-    if (product.isSlabTracked) {
-      return { success: false, error: 'Slab-tracked stone stock must be managed through Lot / Slab Explorer' }
-    }
-
-    // Determine target godown: user-selected or default
-    let targetGodownId = parsed.data.godownId
-    if (!targetGodownId) {
-      const defaultGodown = await getOrCreateDefaultGodown()
-      targetGodownId = defaultGodown.id
-    }
-
-    // Get current stock at this specific godown
-    const godownStock = await prisma.godownStock.findUnique({
-      where: { productId_godownId: { productId: parsed.data.id, godownId: targetGodownId } },
+  const input = parsed.data
+  try {
+    const product = await prisma.$transaction(async tx => {
+      await lockInventoryProducts(tx, [input.id])
+      const godown = await resolveStockGodown(tx, input.godownId)
+      const current = await stockBalance(tx, input.id, godown.id)
+      const operation = input.operation || 'SET'
+      if (operation === 'SET' && input.expectedBalance !== undefined && Math.abs(current - input.expectedBalance) > 0.000001) throw new Error('Stock has changed since this screen loaded. Refresh before setting its balance.')
+      const quantity = input.quantity ?? input.stock!
+      const productRow = await tx.product.findUniqueOrThrow({ where: { id: input.id } })
+      const setBalance = !input.operation && !input.godownId ? productRow.stock : current
+      const delta = operation === 'ADD' ? quantity : operation === 'REMOVE' ? -quantity : quantity - setBalance
+      // Batch records describe real stock. Quantity corrections must not leave
+      // more units assigned to batches than are physically available.
+      if (input.batchId && delta !== 0) {
+        if (!Number.isInteger(delta)) throw new Error('Batch quantities must be whole units')
+        const batch = await tx.productBatch.findUnique({ where: { id: input.batchId } })
+        if (!batch || batch.productId !== input.id) throw new Error('Selected batch does not belong to this product')
+        if (batch.remainingQty + delta < 0) throw new Error('Insufficient quantity in the selected batch')
+        await tx.productBatch.update({ where: { id: batch.id }, data: {
+          remainingQty: { increment: delta },
+          ...(delta > 0 ? { quantity: { increment: delta } } : {}),
+        } })
+      }
+      const batchTotal = await tx.productBatch.aggregate({ where: { productId: input.id }, _sum: { remainingQty: true } })
+      if (productRow.stock + delta < (batchTotal._sum.remainingQty || 0)) throw new Error('This stock is assigned to batches. Adjust the batch through its purchase/sale workflow first.')
+      await adjustStock(tx, input.id, godown.id, delta, 'ADJUSTMENT', { referenceType: 'Manual', notes: [input.reason, input.notes].filter(Boolean).join(' — ') || 'Manual stock adjustment', createdBy: session.user.name })
+      return tx.product.findUniqueOrThrow({ where: { id: input.id } })
     })
-    const currentGodownQty = godownStock?.quantity || 0
-    const diff = parsed.data.stock - currentGodownQty
-
-    if (diff === 0) return { success: true, data: product }
-
-    const entryType = diff > 0 ? 'IN' : 'OUT'
-    await adjustGodownStock(parsed.data.id, targetGodownId, diff, entryType, {
-      referenceType: 'Manual',
-      notes: `Stock adjusted at godown (${currentGodownQty} → ${parsed.data.stock})`,
-      createdBy: 'Admin',
-    })
-    await prisma.product.update({
-      where: { id: parsed.data.id },
-      data: { lastRestocked: diff > 0 ? new Date() : undefined },
-    })
-  } else {
-    const product = await prisma.product.findUnique({ where: { id: parsed.data.id }, select: { isSlabTracked: true } })
-    if (product?.isSlabTracked) {
-      return { success: false, error: 'Slab-tracked stone stock must be managed through Lot / Slab Explorer' }
-    }
-    // No godowns — direct update (legacy behavior)
-    await prisma.product.update({
-      where: { id: parsed.data.id },
-      data: { stock: parsed.data.stock, lastRestocked: new Date() },
-    })
-  }
-
-  revalidatePath('/inventory')
-  revalidatePath('/godowns')
-  return { success: true, data: await prisma.product.findUnique({ where: { id: parsed.data.id } }) }
+    revalidatePath('/inventory')
+    revalidatePath('/godowns')
+    return { success: true, data: product }
+  } catch (error) { return { success: false, error: inventoryError(error) } }
 }
 
 export async function getCategories() {
+  await requireAuth()
   return prisma.category.findMany({ orderBy: { name: 'asc' } })
 }
 
 export async function getWarehouses() {
+  await requireAuth()
   return prisma.warehouse.findMany({ orderBy: { name: 'asc' } })
 }
 
 export async function getLowStockProducts() {
+  await requireAuth()
   const products = await prisma.product.findMany({
     where: {},
-    include: { category: true },
+    include: { category: true, stoneLots: { select: { slabs: { select: { status: true } } } } },
     orderBy: { stock: 'asc' },
   })
 
   // Filter in JS since Prisma can't compare two columns directly
-  return products.filter(p => !p.isSlabTracked && p.stock <= p.reorderLevel).map(p => ({
+  return products.map(p => ({ ...p, stock: p.isSlabTracked ? p.stoneLots.reduce((sum, lot) => sum + lot.slabs.filter(slab => slab.status === 'AVAILABLE').length, 0) : p.stock })).filter(p => p.stock <= p.reorderLevel).map(p => ({
     id: p.id,
     name: p.name,
     sku: p.sku,
@@ -507,39 +437,8 @@ export async function deleteProduct(id: number) {
 }
 
 export async function deleteRawMaterial(id: number) {
-  try {
-    // Get the product
-    const product = await prisma.product.findUnique({
-      where: { id },
-      include: { category: true },
-    })
-
-    if (!product) {
-      return { success: false, error: 'Product not found' }
-    }
-
-    // Only allow deletion for raw materials
-    if (product.category.name !== 'Raw Material') {
-      return { success: false, error: 'Only raw materials can be deleted using this function' }
-    }
-
-    // Delete in transaction:
-    // 1. Delete stock ledger entries
-    // 2. Delete godown stock entries
-    // 3. Delete other potential dependencies (batches, BOM items)
-    // 4. Delete the product itself
-    await prisma.$transaction([
-      prisma.stockLedger.deleteMany({ where: { productId: id } }),
-      prisma.godownStock.deleteMany({ where: { productId: id } }),
-      prisma.productBatch.deleteMany({ where: { productId: id } }),
-      prisma.bomItem.deleteMany({ where: { rawMaterialId: id } }),
-      prisma.product.delete({ where: { id } }),
-    ])
-
-    revalidatePath('/manufacturing')
-    return { success: true }
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : 'Failed to delete raw material'
-    return { success: false, error: errMsg }
-  }
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  const product = await prisma.product.findUnique({ where: { id }, include: { category: true } })
+  if (!product || product.category.name !== 'Raw Material') return { success: false, error: 'Raw material not found' }
+  return moveProductToDraft(id)
 }

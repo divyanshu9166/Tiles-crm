@@ -15,6 +15,8 @@ const publicPaths = [
   '/api/appointments/check-slot',
   '/api/appointments/create',
   '/api/whatsapp/webhook',
+  // Secret-checked (x-api-secret = CRM_API_SECRET) inside the route
+  '/api/cron/accounting',
 ]
 
 // Role-based route restrictions
@@ -27,6 +29,17 @@ const routePermissions: Record<string, string[]> = {
   '/drafts': ['ADMIN', 'MANAGER'],
   '/whatsapp-marketing': ['ADMIN', 'MANAGER'],
   '/email-marketing': ['ADMIN', 'MANAGER'],
+  // ERP documents (Odoo-style flows) and modules that were only hidden in the nav
+  '/sales-orders': ['ADMIN', 'MANAGER'],
+  '/pricelists': ['ADMIN', 'MANAGER'],
+  '/operations': ['ADMIN', 'MANAGER'],
+  '/replenishment': ['ADMIN', 'MANAGER'],
+  '/purchases': ['ADMIN', 'MANAGER'],
+  '/vendor-bills': ['ADMIN', 'MANAGER'],
+  '/landed-costs': ['ADMIN', 'MANAGER'],
+  '/financials': ['ADMIN'],
+  '/accounting': ['ADMIN', 'MANAGER'],
+  '/accounts': ['ADMIN', 'MANAGER'],
 }
 
 export async function middleware(req: NextRequest) {

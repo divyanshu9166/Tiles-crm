@@ -1,0 +1,7 @@
+-- AlterTable
+ALTER TABLE "SalesOrderLine" ADD COLUMN     "deliveredSqft" DOUBLE PRECISION NOT NULL DEFAULT 0,
+ADD COLUMN     "invoicedSqft" DOUBLE PRECISION NOT NULL DEFAULT 0;
+
+-- AlterTable
+ALTER TABLE "StockPickingLine" ADD COLUMN     "slabIds" INTEGER[] DEFAULT ARRAY[]::INTEGER[];
+

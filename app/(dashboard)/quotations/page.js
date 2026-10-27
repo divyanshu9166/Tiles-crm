@@ -22,12 +22,15 @@ import {
   Trash2,
   User,
   X,
+  ClipboardList,
 } from 'lucide-react'
 import { moveQuotationToDraft } from '@/app/actions/drafts'
 import Modal from '@/components/Modal'
 import { useAlertToast } from '@/components/AlertToastProvider'
 import { convertQuotationToInvoice, createQuotation, getQuotationStats, getQuotations, updateQuotation, updateQuotationStatus } from '@/app/actions/quotations'
+import { createSalesOrderFromQuotation } from '@/app/actions/sales-orders'
 import { getProducts } from '@/app/actions/products'
+import { getPricelists, getPricesFor } from '@/app/actions/pricelists'
 import { getStoreSettings, updateStoreSettings } from '@/app/actions/settings'
 import { getBillableArea } from '@/lib/units'
 import { getActiveVertical } from '@/lib/brand'
@@ -126,6 +129,8 @@ const createInitialForm = () => ({
   bankDetails: createBlankBankDetails(), // will be replaced with saved on open
   notes: '',
   termsText: defaultTerms.join('\n'),
+  pricelistId: '',
+  pricedFrom: null,
   items: [createBlankItem()],
 })
 
@@ -166,6 +171,8 @@ function buildFormFromQuotation(quotation) {
     : [createBlankItem()]
 
   return {
+    pricelistId: quotation?.pricelistId || '',
+    pricedFrom: null,
     customer: quotation?.customer || '',
     phone: quotation?.phone || '',
     email: quotation?.email || '',
@@ -294,12 +301,12 @@ function computeLineAmount(item, product) {
   }
 
   // unit === 'BOX'
-  if (hasCoverage) {
+  if (hasCoverage && area > 0) {
     // Derive the number of boxes from the entered area; price per box.
     const boxes = Math.max(0, Math.ceil(area / coveragePerBox))
     return { amount: boxes * rate, boxes, area }
   }
-  // No coverage defined: use the entered quantity directly, no box conversion.
+  // No area entered (or no coverage): bill the box count, as the server does.
   return { amount: quantity * rate }
 }
 
@@ -766,14 +773,18 @@ export default function QuotationsPage() {
   const [uploadingIndex, setUploadingIndex] = useState(null)
   const [uploadingPaymentQr, setUploadingPaymentQr] = useState(false)
   const [form, setForm] = useState(createInitialForm())
+  const [pricelists, setPricelists] = useState([])
 
   const loadData = useCallback(async () => {
-    const [qRes, pRes, sRes, statRes] = await Promise.all([
+    const [qRes, pRes, sRes, statRes, plRes] = await Promise.all([
       getQuotations(),
       getProducts(),
       getStoreSettings(),
       getQuotationStats(),
+      getPricelists(),
     ])
+
+    if (plRes.success) setPricelists(plRes.data.filter(list => list.active))
 
     if (qRes.success) setQuotations(qRes.data)
     if (pRes.success) setProducts(pRes.data)
@@ -892,6 +903,28 @@ export default function QuotationsPage() {
     }))
   }
 
+  // Odoo pricelists: rates come from the chosen pricelist, else the customer's
+  // (matched by phone), else the default list. Quantity breaks apply.
+  const priceLines = async (items, indices) => {
+    const targets = indices.filter(index => items[index]?.productId)
+    if (targets.length === 0) return
+    const res = await getPricesFor({
+      pricelistId: form.pricelistId ? Number(form.pricelistId) : null,
+      phone: form.phone.trim() || null,
+      lines: targets.map(index => ({ productId: Number(items[index].productId), quantity: Number(items[index].quantity) || 1 })),
+    })
+    if (!res.success) return notify(res.error, { variant: 'danger' })
+    setForm(prev => ({
+      ...prev,
+      pricedFrom: res.data.pricelist?.name || null,
+      items: prev.items.map((item, index) => {
+        const at = targets.indexOf(index)
+        const price = at > -1 ? res.data.prices[at]?.price : null
+        return price != null && String(item.productId) === String(items[index].productId) ? { ...item, rate: price } : item
+      }),
+    }))
+  }
+
   const handleProductSelect = (index, productIdValue) => {
     const selection = String(productIdValue || '')
 
@@ -944,6 +977,7 @@ export default function QuotationsPage() {
       imageSource: product.image ? 'PRODUCT' : 'REFERENCE',
       isCustom: false,
     })
+    if (pricelists.length > 0) void priceLines(form.items.map((item, idx) => (idx === index ? { ...item, productId: product.id } : item)), [index])
   }
 
   const handlePaymentQrUpload = async files => {
@@ -1084,6 +1118,7 @@ export default function QuotationsPage() {
       },
       notes: form.notes.trim(),
       termsAndConditions,
+      pricelistId: form.pricelistId ? Number(form.pricelistId) : null,
       items: computed.normalizedItems.map(item => ({
         productId: item.productId || undefined,
         name: item.name.trim(),
@@ -1141,6 +1176,26 @@ export default function QuotationsPage() {
         if (updated) setSelectedQuotation(updated)
       }
     }
+  }
+
+  // Odoo flow: an accepted quotation is confirmed into a Sales Order, which
+  // plans the delivery orders and invoices what is actually delivered.
+  const handleConfirmSalesOrder = async (quotation) => {
+    if (!quotation?.dbId) return
+    if (quotation.salesOrder) {
+      window.location.href = `/sales-orders/${quotation.salesOrder.id}`
+      return
+    }
+    const confirmed = window.confirm(`Confirm quotation ${quotation.id} as a sales order? A delivery order is planned from the default location.`)
+    if (!confirmed) return
+    const result = await createSalesOrderFromQuotation({ quotationId: quotation.dbId })
+    if (!result.success) {
+      notify(result.error || 'Unable to confirm the quotation', { variant: 'danger' })
+      return
+    }
+    if (result.data.warnings?.length) notify(`${result.data.displayId} confirmed with stock warnings: ${result.data.warnings.join('; ')}`, { variant: 'warning' })
+    else notify(`Sales order ${result.data.displayId} confirmed`, { variant: 'success' })
+    window.location.href = `/sales-orders/${result.data.id}`
   }
 
   const handleConvertToInvoice = async (quotation) => {
@@ -1627,6 +1682,29 @@ export default function QuotationsPage() {
                     required
                   />
                 </div>
+                {pricelists.length > 0 && (
+                  <div className="md:col-span-2">
+                    <label className="block text-xs font-medium text-muted mb-1.5">Pricelist</label>
+                    <div className="flex gap-2">
+                      <select
+                        value={form.pricelistId}
+                        onChange={e => setForm(prev => ({ ...prev, pricelistId: e.target.value }))}
+                        className="w-full px-3 py-2.5 rounded-xl text-sm"
+                      >
+                        <option value="">Customer&apos;s pricelist / default</option>
+                        {pricelists.map(list => <option key={list.id} value={list.id}>{list.name}{list.isDefault ? ' (default)' : ''}</option>)}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => priceLines(form.items, form.items.map((_, idx) => idx))}
+                        className="px-3 py-2.5 rounded-xl text-sm border border-border text-foreground whitespace-nowrap hover:bg-surface-hover"
+                      >
+                        Apply prices
+                      </button>
+                    </div>
+                    {form.pricedFrom && <p className="text-[11px] text-muted mt-1">Rates priced from {form.pricedFrom}. Edit a rate to override it.</p>}
+                  </div>
+                )}
                 <div>
                   <label className="block text-xs font-medium text-muted mb-1.5">Email</label>
                   <input
@@ -2228,7 +2306,15 @@ export default function QuotationsPage() {
                 >
                   <Trash2 className="w-3.5 h-3.5" /> Move to Draft
                 </button>
-                {(selectedQuotation.statusKey === 'SENT' || selectedQuotation.statusKey === 'APPROVED') && (
+                {selectedQuotation.statusKey !== 'REJECTED' && (
+                  <button
+                    onClick={() => handleConfirmSalesOrder(selectedQuotation)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-accent text-white text-xs hover:bg-accent-hover"
+                  >
+                    <ClipboardList className="w-3.5 h-3.5" /> {selectedQuotation.salesOrder ? `Open ${selectedQuotation.salesOrder.displayId}` : 'Confirm → Sales Order'}
+                  </button>
+                )}
+                {(selectedQuotation.statusKey === 'SENT' || selectedQuotation.statusKey === 'APPROVED') && !selectedQuotation.salesOrder && (
                   <button
                     onClick={() => handleConvertToInvoice(selectedQuotation)}
                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-accent text-white text-xs hover:bg-accent-hover"

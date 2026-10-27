@@ -33,16 +33,16 @@ export const createPurchaseOrderSchema = z.object({
 })
 
 export const createPurchaseReturnSchema = z.object({
-  supplierId: z.number(),
-  poId: z.number().optional(),
+  supplierId: z.number().int().positive(),
+  poId: z.number().int().positive().optional(),
   godownId: z.number().int().positive().optional(),
-  reason: z.string().min(1, 'Reason is required'),
+  reason: z.string().trim().min(1, 'Reason is required'),
   notes: z.string().optional(),
   items: z.array(z.object({
-    productId: z.number(),
+    productId: z.number().int().positive(),
     name: z.string(),
     sku: z.string(),
-    quantity: z.number().min(1),
-    unitCost: z.number().min(0),
+    quantity: z.number().int().min(1),
+    unitCost: z.number().int().min(0),
   })).min(1),
 })

@@ -1,6 +1,7 @@
 /** Shared serialized-stone inventory invariants used by server actions. */
 
 export async function syncStoneLotTotals(tx: any, lotId: number) {
+  await tx.$queryRaw`SELECT id FROM "StoneLot" WHERE id = ${lotId} FOR UPDATE`
   const [totals, available, allocated] = await Promise.all([
     tx.slab.aggregate({
       where: { lotId },

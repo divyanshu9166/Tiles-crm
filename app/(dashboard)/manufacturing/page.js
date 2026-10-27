@@ -20,7 +20,7 @@ import {
   getProductionOrders, getAssignableStaff, createProductionOrder, startProduction,
   holdProduction, cancelProductionOrder, deleteProductionOrder,
   completeProduction, recordQualityCheck,
-  getMRPAnalysis, getManufacturingStats, updateProductionStep,
+  getMRPAnalysis, getManufacturingStats, updateProductionStep, orderMrpShortages,
   getManufacturingCustomOrders, getScrapInventory, updateScrapInventoryStatus, getCustomOrderInventory,
 } from '@/app/actions/manufacturing'
 import { getStoneLots, createStoneOffcut } from '@/app/actions/stone-inventory'
@@ -455,6 +455,17 @@ export default function ManufacturingPage() {
     setMrpLoading(false)
   }
 
+  // Draft POs for components still short after incoming purchases.
+  const handleOrderShortages = async () => {
+    setMrpLoading(true)
+    const res = await orderMrpShortages(Number(mrpBomId), Number(mrpQty))
+    setMrpLoading(false)
+    if (!res.success) return alert(res.error)
+    const pos = res.data.pos.map(po => po.displayId).join(', ')
+    alert(`Draft PO ${pos} ready for approval in Purchases.${res.data.noVendor.length ? ` No vendor price for: ${res.data.noVendor.join(', ')}.` : ''}`)
+    handleRunMRP()
+  }
+
   const handleQCSubmit = async () => {
     if (!qcTarget) return
     setSubmitting(true)
@@ -798,7 +809,7 @@ export default function ManufacturingPage() {
       brand: rmEditForm.brand || undefined,
       unitOfMeasure: rmEditForm.unitOfMeasure || 'PCS',
       unitSize: Number(rmEditForm.unitSize) || 1,
-      reorderLevel: Number(rmEditForm.reorderLevel) || 5,
+      reorderLevel: Number(rmEditForm.reorderLevel ?? 5),
       description: rmEditForm.description || undefined,
       image: imageUrl || undefined,
     })
@@ -812,7 +823,7 @@ export default function ManufacturingPage() {
     const currentQty = Number(rmEditForm.currentStockQuantity ?? 0)
     const enteredQty = Math.max(0, Number(rmEditForm.stockQuantity) || 0)
     const newQty = rmEditForm.stockAction === 'ADD' ? currentQty + enteredQty : enteredQty
-    const stockRes = await updateStock({ id, stock: newQty * unitSize })
+    const stockRes = await updateStock(rmEditForm.stockAction === 'ADD' ? { id, operation: 'ADD', quantity: enteredQty * unitSize } : { id, stock: newQty * unitSize })
     if (!stockRes.success) {
       alert(stockRes.error)
       setSubmitting(false)
@@ -1271,7 +1282,12 @@ export default function ManufacturingPage() {
 
                 {/* Material requirements table */}
                 <div>
-                  <h5 className="text-xs font-medium text-muted uppercase tracking-wide mb-2 flex items-center gap-1.5"><Package className="w-3.5 h-3.5" /> Material Requirements</h5>
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <h5 className="text-xs font-medium text-muted uppercase tracking-wide flex items-center gap-1.5"><Package className="w-3.5 h-3.5" /> Material Requirements <span className="normal-case tracking-normal">(available = on hand − reserved by deliveries &amp; other production orders)</span></h5>
+                    {mrpResult.requirements.some(r => r.shortageAfterIncoming > 0) && (
+                      <button onClick={handleOrderShortages} disabled={mrpLoading} className="px-3 py-1.5 rounded-lg bg-accent text-white text-xs font-medium hover:bg-accent/90 disabled:opacity-50">Order shortages</button>
+                    )}
+                  </div>
                   {/* Mobile cards */}
                   <div className="md:hidden space-y-2">
                     {mrpResult.requirements.map((r, i) => (
@@ -1297,7 +1313,7 @@ export default function ManufacturingPage() {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-border">
-                          {['Material', 'SKU', 'Required', 'Available', 'Shortage', 'Unit Cost', 'Est. Cost', 'Status'].map(h => (
+                          {['Material', 'SKU', 'Required', 'On hand', 'Reserved', 'Available', 'Incoming', 'Shortage', 'Unit Cost', 'Est. Cost', 'Status'].map(h => (
                             <th key={h} className="px-3 py-2 text-left text-xs font-medium text-muted">{h}</th>
                           ))}
                         </tr>
@@ -1308,9 +1324,12 @@ export default function ManufacturingPage() {
                             <td className="px-3 py-2 text-foreground font-medium">{r.materialName}</td>
                             <td className="px-3 py-2 text-muted font-mono text-xs">{r.sku}</td>
                             <td className="px-3 py-2 text-foreground">{r.required} {r.unitOfMeasure}</td>
+                            <td className="px-3 py-2 text-muted">{r.onHand ?? '—'}</td>
+                            <td className="px-3 py-2 text-muted">{r.reserved ?? 0}</td>
                             <td className="px-3 py-2 text-foreground">{r.available} {r.unitOfMeasure}</td>
+                            <td className="px-3 py-2 text-blue-400">{r.incoming ?? 0}</td>
                             <td className="px-3 py-2">
-                              {r.shortage > 0 ? <span className="text-red-400 font-semibold">{r.shortage} {r.unitOfMeasure}</span> : <span className="text-emerald-400">—</span>}
+                              {r.shortage > 0 ? <span className="text-red-400 font-semibold">{r.shortage} {r.unitOfMeasure}{r.incoming > 0 && <span className="block text-[10px] text-muted font-normal">{r.shortageAfterIncoming > 0 ? `${r.shortageAfterIncoming} after incoming` : 'covered by incoming'}</span>}</span> : <span className="text-emerald-400">—</span>}
                             </td>
                             <td className="px-3 py-2 text-muted text-xs">₹{r.unitCost}/unit</td>
                             <td className="px-3 py-2 text-foreground">₹{r.estimatedCost.toLocaleString('en-IN')}</td>

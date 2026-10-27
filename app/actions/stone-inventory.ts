@@ -1,10 +1,11 @@
 'use server'
 
 import { prisma } from '@/lib/db'
-import { requireRole } from '@/lib/auth-helpers'
+import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { syncStoneLotTotals } from '@/lib/stone-inventory'
+import { inventoryError, lockInventoryProducts } from '@/lib/inventory-stock'
 
 const slabStatus = z.enum(['AVAILABLE', 'RESERVED', 'SOLD', 'DAMAGED', 'IN_PROCESSING'])
 
@@ -17,7 +18,7 @@ const createLotSchema = z.object({
   shadeCode: z.string().trim().optional(),
   qualityGrade: z.string().trim().optional(),
   avgThicknessMm: z.number().positive().optional(),
-  costPerSqft: z.number().min(0).default(0),
+  costPerSqft: z.number().int().min(0).default(0),
   notes: z.string().trim().optional(),
   photos: z.array(z.string()).default([]),
   slabs: z.array(z.object({
@@ -46,7 +47,7 @@ const updateSlabSchema = z.object({
   qcGrade: z.string().trim().nullable().optional(),
   photo: z.string().trim().nullable().optional(),
   reservedForCustomId: z.number().int().positive().nullable().optional(),
-  soldPrice: z.number().min(0).nullable().optional(),
+  soldPrice: z.number().int().min(0).nullable().optional(),
 })
 
 const sampleLoanSchema = z.object({
@@ -85,9 +86,11 @@ const stoneOffcutSchema = z.object({
 })
 
 export async function getStoneLots(filters?: { query?: string; status?: string; godownId?: number }) {
+  await requireAuth()
   const query = filters?.query?.trim()
   const lots = await prisma.stoneLot.findMany({
     where: {
+      ...(filters?.godownId ? { slabs: { some: { godownId: filters.godownId } } } : {}),
       ...(filters?.status && filters.status !== 'ALL' ? { status: filters.status } : {}),
       ...(query ? {
         OR: [
@@ -113,6 +116,8 @@ export async function getStoneLots(filters?: { query?: string; status?: string; 
     success: true,
     data: lots.map(lot => ({
       ...lot,
+      totalSlabs: lot.slabs.length,
+      totalSqft: lot.slabs.reduce((sum, slab) => sum + slab.sqft, 0),
       availableSlabs: lot.slabs.filter(s => s.status === 'AVAILABLE').length,
       availableSqft: Math.round(lot.slabs.filter(s => s.status === 'AVAILABLE').reduce((sum, slab) => sum + slab.sqft, 0) * 100) / 100,
       reservedSlabs: lot.slabs.filter(s => s.status === 'RESERVED' || s.status === 'IN_PROCESSING').length,
@@ -140,6 +145,9 @@ export async function createStoneLot(data: unknown) {
 
   try {
     const lot = await prisma.$transaction(async tx => {
+      await lockInventoryProducts(tx, [input.productId])
+      const liveProduct = await tx.product.findUnique({ where: { id: input.productId } })
+      if (!liveProduct?.isSlabTracked) throw new Error('Product is no longer configured for slab tracking')
       const created = await tx.stoneLot.create({
         data: {
           lotNumber: input.lotNumber,
@@ -183,66 +191,30 @@ export async function updateSlab(data: unknown) {
   const parsed = updateSlabSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
   const input = parsed.data
-
-  const slab = await prisma.slab.findUnique({
-    where: { id: input.slabId },
-    select: {
-      id: true,
-      lotId: true,
-      status: true,
-      godownId: true,
-      reservedForCustomId: true,
-      sampleLoans: { where: { status: 'OUT' }, select: { id: true }, take: 1 },
-    },
-  })
-  if (!slab) return { success: false, error: 'Slab not found' }
-  if (input.status === 'SOLD') return { success: false, error: 'Mark a slab sold only through the invoice or fabrication delivery workflow' }
-
-  const nextStatus = input.status ?? slab.status
-  const statusChanged = input.status !== undefined && input.status !== slab.status
-  if (slab.sampleLoans.length > 0 && statusChanged && nextStatus !== 'RESERVED') {
-    return { success: false, error: 'Close the active sample loan before changing this slab status' }
-  }
-  if (slab.status === 'SOLD' && statusChanged) return { success: false, error: 'Sold slabs cannot be reopened from the inventory screen' }
-  if (slab.status === 'DAMAGED' && statusChanged && nextStatus !== 'DAMAGED') {
-    return { success: false, error: 'Damaged slabs cannot be reopened without a new QC workflow' }
-  }
-  if (['RESERVED', 'IN_PROCESSING'].includes(nextStatus) && !input.reservedForCustomId && !slab.reservedForCustomId && slab.sampleLoans.length === 0) {
-    return { success: false, error: 'Allocate a slab through a fabrication job or issue it as a sample' }
-  }
-  if (slab.reservedForCustomId && statusChanged && nextStatus !== slab.status && !input.reservedForCustomId) {
-    return { success: false, error: 'This slab is allocated to a fabrication job. Use that job to move or release it.' }
-  }
-  if (input.godownId !== undefined && input.godownId !== slab.godownId && ['RESERVED', 'IN_PROCESSING', 'SOLD'].includes(slab.status)) {
-    return { success: false, error: 'Allocated or sold slabs cannot be moved from the inventory screen' }
-  }
-  if (input.reservedForCustomId && nextStatus !== 'RESERVED' && nextStatus !== 'IN_PROCESSING') {
-    return { success: false, error: 'A fabrication allocation can only be attached to a reserved or in-process slab' }
-  }
-  if (input.reservedForCustomId) {
-    const customOrder = await prisma.customOrder.findUnique({ where: { id: input.reservedForCustomId }, select: { id: true } })
-    if (!customOrder) return { success: false, error: 'Fabrication job not found' }
-  }
-
-  const updated = await prisma.$transaction(async tx => {
-    const next = await tx.slab.update({
-      where: { id: slab.id },
-      data: {
-        ...(input.status ? { status: input.status, soldAt: input.status === 'SOLD' ? new Date() : undefined } : {}),
+  if (input.reservedForCustomId !== undefined || input.soldPrice !== undefined) return { success: false, error: 'Change allocations and sale prices through their fabrication or invoice workflow' }
+  try {
+    const updated = await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM "Slab" WHERE id = ${input.slabId} FOR UPDATE`
+      const slab = await tx.slab.findUnique({ where: { id: input.slabId }, include: { sampleLoans: { where: { status: 'OUT' }, select: { id: true } } } })
+      if (!slab) throw new Error('Slab not found')
+      const statusChanged = input.status !== undefined && input.status !== slab.status
+      const locationChanged = input.godownId !== undefined && input.godownId !== slab.godownId
+      if ((statusChanged || locationChanged) && (slab.status !== 'AVAILABLE' || slab.reservedForCustomId || slab.reservedForOrderId || slab.sampleLoans.length)) throw new Error('Only unallocated available slabs can be moved or written off from inventory')
+      if (statusChanged && input.status !== 'DAMAGED') throw new Error('Allocate, sell or release slabs through their fabrication, invoice or sample workflow')
+      if (input.godownId && !await tx.godown.findUnique({ where: { id: input.godownId } })) throw new Error('Location not found')
+      const next = await tx.slab.update({ where: { id: slab.id }, data: {
+        ...(input.status ? { status: input.status } : {}),
         ...(input.godownId !== undefined ? { godownId: input.godownId } : {}),
         ...(input.qcGrade !== undefined ? { qcGrade: input.qcGrade } : {}),
         ...(input.photo !== undefined ? { photo: input.photo } : {}),
-        ...(input.reservedForCustomId !== undefined ? { reservedForCustomId: input.reservedForCustomId } : {}),
-        ...(input.soldPrice !== undefined ? { soldPrice: input.soldPrice } : {}),
-        ...(statusChanged && nextStatus !== 'RESERVED' && nextStatus !== 'IN_PROCESSING' ? { reservedForCustomId: null } : {}),
-      },
+      } })
+      await syncStoneLotTotals(tx, slab.lotId)
+      return next
     })
-    await syncStoneLotTotals(tx, slab.lotId)
-    return next
-  })
-  revalidatePath('/inventory')
-  revalidatePath('/custom-orders')
-  return { success: true, data: updated }
+    revalidatePath('/inventory')
+    revalidatePath('/custom-orders')
+    return { success: true, data: updated }
+  } catch (error) { return { success: false, error: inventoryError(error) } }
 }
 
 export async function createStoneOffcut(data: unknown) {
@@ -255,12 +227,14 @@ export async function createStoneOffcut(data: unknown) {
   let offcut
   try {
     offcut = await prisma.$transaction(async tx => {
+    await tx.$queryRaw`SELECT id FROM "Slab" WHERE id = ${input.sourceSlabId} FOR UPDATE`
     const source = await tx.slab.findUnique({
       where: { id: input.sourceSlabId },
       select: {
         id: true,
         lotId: true,
         sqft: true,
+        lengthInches: true, widthInches: true,
         status: true,
         reservedForCustomId: true,
         photo: true,
@@ -278,6 +252,8 @@ export async function createStoneOffcut(data: unknown) {
       const customOrder = await tx.customOrder.findUnique({ where: { id: input.sourceCustomOrderId }, select: { id: true } })
       if (!customOrder) throw new Error('Fabrication job not found')
     }
+    const fits = (input.lengthInches <= source.lengthInches && input.widthInches <= source.widthInches) || (input.widthInches <= source.lengthInches && input.lengthInches <= source.widthInches)
+    if (!fits || areaSqft <= 0) throw new Error('Offcut dimensions must fit inside the physical source slab')
     if (areaSqft > source.sqft + 0.01) {
       throw new Error('Offcut dimensions cannot exceed the source slab area')
     }
@@ -327,33 +303,32 @@ export async function pairSlabs(data: unknown) {
   const parsed = bookMatchSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
   const { slabId, partnerId } = parsed.data
-  const slab = await prisma.slab.findUnique({ where: { id: slabId }, select: { lotId: true, bookMatchPairId: true, status: true } })
-  if (!slab) return { success: false, error: 'Slab not found' }
-  if (['SOLD', 'DAMAGED', 'RESERVED', 'IN_PROCESSING'].includes(slab.status)) return { success: false, error: 'Only available slabs can be paired or unpaired' }
   if (partnerId === slabId) return { success: false, error: 'A slab cannot be paired with itself' }
-  if (partnerId) {
-    const partner = await prisma.slab.findUnique({ where: { id: partnerId }, select: { lotId: true, bookMatchPairId: true, status: true } })
-    if (!partner || partner.lotId !== slab.lotId) return { success: false, error: 'Book-match slabs must come from the same lot' }
-    if (['SOLD', 'DAMAGED', 'RESERVED', 'IN_PROCESSING'].includes(partner.status)) return { success: false, error: 'Only available slabs can be paired' }
-  }
-  await prisma.$transaction(async tx => {
-    if (partnerId) {
-      const partner = await tx.slab.findUnique({ where: { id: partnerId }, select: { bookMatchPairId: true } })
-      if (partner?.bookMatchPairId && partner.bookMatchPairId !== slabId) {
-        await tx.slab.update({ where: { id: partner.bookMatchPairId }, data: { bookMatchPairId: null } })
+  try {
+    await prisma.$transaction(async tx => {
+      const original = await tx.slab.findUnique({ where: { id: slabId }, select: { lotId: true } })
+      if (!original) throw new Error('Slab not found')
+      // Lock all slabs in stable order, so pairs and previous partners cannot change.
+      await tx.$queryRaw`SELECT id FROM "Slab" WHERE "lotId" = ${original.lotId} ORDER BY id FOR UPDATE`
+      const slabs = await tx.slab.findMany({ where: { lotId: original.lotId } })
+      const slab = slabs.find(row => row.id === slabId)!
+      const partner = partnerId ? slabs.find(row => row.id === partnerId) : undefined
+      if (partnerId && !partner) throw new Error('Book-match slabs must come from the same lot')
+      const affectedIds = [...new Set([slabId, partnerId, slab.bookMatchPairId, partner?.bookMatchPairId].filter((id): id is number => !!id))]
+      if (slabs.some(row => affectedIds.includes(row.id) && (row.status !== 'AVAILABLE' || row.reservedForCustomId || row.reservedForOrderId))) throw new Error('All affected book-match slabs must be available and unallocated')
+      await tx.slab.updateMany({ where: { id: { in: affectedIds } }, data: { bookMatchPairId: null } })
+      if (partnerId) {
+        await tx.slab.update({ where: { id: slabId }, data: { bookMatchPairId: partnerId } })
+        await tx.slab.update({ where: { id: partnerId }, data: { bookMatchPairId: slabId } })
       }
-    }
-    if (slab.bookMatchPairId && slab.bookMatchPairId !== partnerId) {
-      await tx.slab.update({ where: { id: slab.bookMatchPairId }, data: { bookMatchPairId: null } })
-    }
-    await tx.slab.update({ where: { id: slabId }, data: { bookMatchPairId: partnerId } })
-    if (partnerId) await tx.slab.update({ where: { id: partnerId }, data: { bookMatchPairId: slabId } })
-  })
-  revalidatePath('/inventory')
-  return { success: true }
+    })
+    revalidatePath('/inventory')
+    return { success: true }
+  } catch (error) { return { success: false, error: inventoryError(error) } }
 }
 
 export async function getSampleLoans() {
+  await requireAuth()
   const loans = await prisma.sampleLoan.findMany({
     include: {
       contact: { select: { name: true, phone: true } },
@@ -370,15 +345,6 @@ export async function createSampleLoan(data: unknown) {
   const parsed = sampleLoanSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
   const input = parsed.data
-
-  let contactId = input.contactId
-  if (!contactId) {
-    const contact = await prisma.contact.findFirst({ where: { phone: input.customerPhone } })
-    contactId = contact?.id || (await prisma.contact.create({
-      data: { name: input.customerName!, phone: input.customerPhone! },
-      select: { id: true },
-    })).id
-  }
 
   let sampleProductId = input.productId
   if (input.productId) {
@@ -399,6 +365,14 @@ export async function createSampleLoan(data: unknown) {
   let loan
   try {
     loan = await prisma.$transaction(async tx => {
+      if (input.slabId) await tx.$queryRaw`SELECT id FROM "Slab" WHERE id = ${input.slabId} FOR UPDATE`
+      let contactId = input.contactId
+      if (contactId) {
+        if (!await tx.contact.findUnique({ where: { id: contactId } })) throw new Error('Customer not found')
+      } else {
+        const contact = await tx.contact.findFirst({ where: { phone: input.customerPhone } })
+        contactId = contact?.id || (await tx.contact.create({ data: { name: input.customerName!, phone: input.customerPhone! } })).id
+      }
       const created = await tx.sampleLoan.create({
         data: {
           contactId,
@@ -410,7 +384,7 @@ export async function createSampleLoan(data: unknown) {
       })
       if (input.slabId) {
         const reserved = await tx.slab.updateMany({
-          where: { id: input.slabId, status: 'AVAILABLE' },
+          where: { id: input.slabId, status: 'AVAILABLE', reservedForCustomId: null, reservedForOrderId: null },
           data: { status: 'RESERVED' },
         })
         if (reserved.count !== 1) throw new Error('That slab is no longer available for sample issue')
@@ -433,27 +407,26 @@ export async function updateSampleLoanStatus(data: unknown) {
   if (parsed.data.status === 'CONVERTED_TO_SALE') {
     return { success: false, error: 'Create the customer invoice first. A sample loan is converted automatically only through the invoice workflow.' }
   }
-  const loan = await prisma.sampleLoan.findUnique({ where: { id: parsed.data.id }, select: { slabId: true, status: true, slab: { select: { lotId: true } } } })
-  if (!loan) return { success: false, error: 'Sample loan not found' }
-  if (loan.status !== 'OUT') return { success: false, error: 'This sample loan has already been closed' }
-
-  await prisma.$transaction(async tx => {
-    await tx.sampleLoan.update({
-      where: { id: parsed.data.id },
-      data: { status: parsed.data.status, returnedDate: new Date() },
-    })
-    if (loan.slabId) {
-      // A converted slab must be sold through an invoice so price, tax and stock stay linked.
-      // It remains reserved for the customer until that invoice is generated.
-      if (parsed.data.status !== 'CONVERTED_TO_SALE') {
-        await tx.slab.update({
-          where: { id: loan.slabId },
+  try {
+    await prisma.$transaction(async tx => {
+      const original = await tx.sampleLoan.findUnique({ where: { id: parsed.data.id }, select: { slabId: true } })
+      if (!original) throw new Error('Sample loan not found')
+      // Invoicing locks the slab before closing its loan; preserve that order.
+      if (original.slabId) await tx.$queryRaw`SELECT id FROM "Slab" WHERE id = ${original.slabId} FOR UPDATE`
+      const loan = await tx.sampleLoan.findUnique({ where: { id: parsed.data.id }, include: { slab: true } })
+      if (!loan || loan.status !== 'OUT') throw new Error('This sample loan has already been closed')
+      const closed = await tx.sampleLoan.updateMany({ where: { id: loan.id, status: 'OUT' }, data: { status: parsed.data.status, returnedDate: new Date() } })
+      if (closed.count !== 1) throw new Error('This sample loan has already been closed')
+      if (loan.slabId) {
+        const released = await tx.slab.updateMany({
+          where: { id: loan.slabId, status: 'RESERVED', reservedForCustomId: null, reservedForOrderId: null },
           data: { status: parsed.data.status === 'RETURNED' ? 'AVAILABLE' : 'DAMAGED' },
         })
+        if (released.count !== 1) throw new Error('This slab was sold or allocated elsewhere. Refresh before closing the loan.')
       }
-    }
-    if (loan.slab?.lotId) await syncStoneLotTotals(tx, loan.slab.lotId)
-  })
-  revalidatePath('/inventory')
-  return { success: true }
+      if (loan.slab?.lotId) await syncStoneLotTotals(tx, loan.slab.lotId)
+    })
+    revalidatePath('/inventory')
+    return { success: true }
+  } catch (error) { return { success: false, error: inventoryError(error) } }
 }

@@ -6,6 +6,7 @@ import { createStaffSchema, updateStaffSchema } from '@/lib/validations/staff'
 import { requireAuth, requireRole } from '@/lib/auth-helpers'
 import bcrypt from 'bcryptjs'
 import type { Prisma, UserRole } from '@prisma/client'
+import { adjustStock, inventoryError, lockInventoryProducts, resolveStockGodown } from '@/lib/inventory-stock'
 
 // ─── IST helpers ─────────────────────────────────────────────────────────────
 // All attendance dates/times must be in IST (Asia/Kolkata, UTC+5:30)
@@ -567,47 +568,55 @@ export async function staffStockUpdate(data: {
   quantity: number
 }) {
   const { staffId, productId, action, quantity } = data
+  let session
+  try { session = await requireAuth() } catch { return { success: false, error: 'Unauthorized' } }
+  // Staff can only post movements as themselves.
+  if (session.user.role === 'STAFF' && session.user.staffId !== staffId) return { success: false, error: 'You can only record stock updates for yourself' }
+  if (!Number.isInteger(quantity) || quantity <= 0) return { success: false, error: 'Enter a whole quantity greater than zero' }
 
   const product = await prisma.product.findUnique({
     where: { id: productId },
     include: { warehouse: true },
   })
   if (!product) return { success: false, error: 'Product not found' }
+  if (product.isSlabTracked) return { success: false, error: 'Slab-tracked stone is moved from Inventory → Lot / Slab Explorer' }
 
   // Determine stock delta
   let delta = 0
   if (action === 'Received') delta = quantity
   else if (action === 'Stock Out' || action === 'Dispatched') delta = -quantity
 
-  const newStock = product.stock + delta
-  if (newStock < 0) return { success: false, error: `Cannot reduce stock below 0. Current stock: ${product.stock}` }
-
   const now = new Date()
   const time = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
+  let newStock = product.stock
 
-  // Update product stock (skip for Low Stock Alert — it's informational)
-  if (delta !== 0) {
-    await prisma.product.update({
-      where: { id: productId },
-      data: {
-        stock: { increment: delta },
-        ...(action === 'Received' ? { lastRestocked: now } : {}),
-      },
+  // Movements go through the location ledger so godown balances, the stock
+  // total and the movement history stay in step (Low Stock Alert is informational).
+  try {
+    await prisma.$transaction(async tx => {
+      if (delta !== 0) {
+        await lockInventoryProducts(tx, [productId])
+        const godown = await resolveStockGodown(tx)
+        const result = await adjustStock(tx, productId, godown.id, delta, delta > 0 ? 'IN' : 'OUT', {
+          referenceType: 'StaffPortal', referenceId: staffId, notes: `Staff portal: ${action}`, createdBy: session.user.name,
+        })
+        newStock = result.totalStock
+      }
+      await tx.stockUpdate.create({
+        data: {
+          staffId,
+          product: product.name,
+          warehouse: product.warehouse?.name || 'Unassigned',
+          action,
+          quantity,
+          date: now,
+          time,
+        },
+      })
     })
+  } catch (error) {
+    return { success: false, error: inventoryError(error) }
   }
-
-  // Log the stock update
-  await prisma.stockUpdate.create({
-    data: {
-      staffId,
-      product: product.name,
-      warehouse: product.warehouse?.name || 'Unassigned',
-      action,
-      quantity,
-      date: now,
-      time,
-    },
-  })
 
   revalidatePath('/inventory')
   revalidatePath('/staff-portal')
@@ -618,7 +627,7 @@ export async function staffStockUpdate(data: {
     data: {
       productName: product.name,
       previousStock: product.stock,
-      newStock: delta !== 0 ? newStock : product.stock,
+      newStock,
       action,
       quantity,
     },

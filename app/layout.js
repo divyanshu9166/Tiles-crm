@@ -1,10 +1,11 @@
-import { Roboto_Mono } from 'next/font/google';
+import { Inter, Roboto_Mono } from 'next/font/google';
 import './globals.css';
 import AuthProvider from '@/components/AuthProvider';
 import AlertToastProvider from '@/components/AlertToastProvider';
 import { getBrand } from '@/lib/brand';
 
-const robotoMono = Roboto_Mono({ subsets: ['latin'], variable: '--font-roboto-mono', weight: ['300', '400', '500', '600', '700'] });
+const inter = Inter({ subsets: ['latin'], variable: '--font-inter', display: 'swap' });
+const robotoMono = Roboto_Mono({ subsets: ['latin'], variable: '--font-roboto-mono', weight: ['400', '500'] });
 
 export function generateMetadata() {
   const brand = getBrand();
@@ -18,8 +19,9 @@ export function generateMetadata() {
 export default function RootLayout({ children }) {
   const brand = getBrand();
   return (
-    <html lang="en" data-brand={brand.brandAttribute ?? undefined} suppressHydrationWarning>
-      <body suppressHydrationWarning className={`${robotoMono.variable} font-sans antialiased`}>
+    // Font variables live on <html> because --font-sans (declared on :root) refers to them.
+    <html lang="en" data-brand={brand.brandAttribute ?? undefined} className={`${inter.variable} ${robotoMono.variable}`} suppressHydrationWarning>
+      <body suppressHydrationWarning className="font-sans antialiased">
         <AuthProvider>
           <AlertToastProvider>
             {children}

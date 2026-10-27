@@ -2,23 +2,25 @@
 
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
-import { requireRole } from '@/lib/auth-helpers'
+import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { z } from 'zod'
+import { lockInventoryProducts, inventoryError } from '@/lib/inventory-stock'
 
 const createBatchSchema = z.object({
-  productId: z.number(),
-  batchNumber: z.string().min(1, 'Batch number is required'),
+  productId: z.number().int().positive(),
+  batchNumber: z.string().trim().min(1, 'Batch number is required'),
   purchaseDate: z.string().optional(),
   expiryDate: z.string().optional(),
-  quantity: z.number().min(1),
-  remainingQty: z.number().min(0),
-  costPrice: z.number().min(0).default(0),
-  supplierId: z.number().optional(),
-  poId: z.number().optional(),
+  quantity: z.number().int().min(1),
+  remainingQty: z.number().int().min(0),
+  costPrice: z.number().int().min(0).default(0),
+  supplierId: z.number().int().positive().optional(),
+  poId: z.number().int().positive().optional(),
   shadeCode: z.string().trim().optional(),
-})
+}).refine(v => v.remainingQty <= v.quantity, { message: 'Remaining quantity cannot exceed received quantity' })
 
 export async function getBatches(productId?: number) {
+  await requireAuth()
   const batches = await prisma.productBatch.findMany({
     where: productId ? { productId } : undefined,
     include: {
@@ -35,18 +37,30 @@ export async function createBatch(data: unknown) {
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
   const { purchaseDate, expiryDate, ...rest } = parsed.data
-  const batch = await prisma.productBatch.create({
-    data: {
-      ...rest,
-      purchaseDate: purchaseDate ? new Date(purchaseDate) : new Date(),
-      expiryDate: expiryDate ? new Date(expiryDate) : undefined,
-    },
-  })
-  revalidatePath('/inventory')
-  return { success: true, data: batch }
+  const received = purchaseDate ? new Date(purchaseDate) : new Date()
+  const expires = expiryDate ? new Date(expiryDate) : undefined
+  if (Number.isNaN(received.getTime()) || (expires && Number.isNaN(expires.getTime()))) return { success: false, error: 'Enter valid batch dates' }
+  if (received > new Date()) return { success: false, error: 'Received stock cannot have a future purchase date' }
+  if (expires && expires < received) return { success: false, error: 'Expiry cannot precede the purchase date' }
+  try {
+    const batch = await prisma.$transaction(async tx => {
+      await lockInventoryProducts(tx, [rest.productId])
+      const product = await tx.product.findUnique({ where: { id: rest.productId } })
+      if (!product) throw new Error('Product not found')
+      if (product.isSlabTracked) throw new Error('Receive serialized stone through a Stone Lot, not a quantity batch')
+      if (rest.poId) throw new Error('Receive purchase-order batches through the Purchases section')
+      if (rest.supplierId && !await tx.supplier.findUnique({ where: { id: rest.supplierId } })) throw new Error('Supplier not found')
+      const existing = await tx.productBatch.aggregate({ where: { productId: rest.productId }, _sum: { remainingQty: true } })
+      if ((existing._sum.remainingQty || 0) + rest.remainingQty > product.stock) throw new Error('Batch quantity exceeds unassigned stock. Receive or add physical stock first.')
+      return tx.productBatch.create({ data: { ...rest, purchaseDate: received, expiryDate: expires } })
+    })
+    revalidatePath('/inventory')
+    return { success: true, data: batch }
+  } catch (error) { return { success: false, error: inventoryError(error) } }
 }
 
 export async function getAgingAnalysis() {
+  await requireAuth()
   const batches = await prisma.productBatch.findMany({
     where: { remainingQty: { gt: 0 } },
     include: { product: { select: { name: true, sku: true, category: { select: { name: true } } } } },

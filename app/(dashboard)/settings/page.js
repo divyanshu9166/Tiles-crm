@@ -412,7 +412,7 @@ export default function SettingsPage() {
           smtpHost: settingsRes.data.smtpHost || '',
           smtpPort: settingsRes.data.smtpPort || 587,
           smtpUser: settingsRes.data.smtpUser || '',
-          smtpPass: settingsRes.data.smtpPass || '',
+          smtpPass: '',
           smtpFromName: settingsRes.data.smtpFromName || settingsRes.data.storeName || '',
           smtpSecure: settingsRes.data.smtpSecure || false,
         });
@@ -1403,7 +1403,7 @@ export default function SettingsPage() {
                     <div>
                       <label className="block text-xs font-medium text-muted mb-1.5">App Password *</label>
                       <div className="relative">
-                        <input type={showSmtpPass ? 'text' : 'password'} placeholder="App-specific password" value={smtpForm.smtpPass}
+                        <input type={showSmtpPass ? 'text' : 'password'} placeholder={storeSettings?.smtpPassSet ? 'Saved — leave blank to keep' : 'App-specific password'} value={smtpForm.smtpPass}
                           onChange={e => setSmtpForm(f => ({ ...f, smtpPass: e.target.value }))}
                           className="w-full px-4 py-2.5 pr-10 bg-surface border border-border rounded-xl text-sm focus:outline-none focus:border-accent/50" />
                         <button type="button" onClick={() => setShowSmtpPass(!showSmtpPass)}
@@ -1446,7 +1446,7 @@ export default function SettingsPage() {
                         setSmtpTestResult(res);
                         setSmtpTesting(false);
                       }}
-                      disabled={smtpTesting || !smtpForm.smtpHost || !smtpForm.smtpUser || !smtpForm.smtpPass}
+                      disabled={smtpTesting || !smtpForm.smtpHost || !smtpForm.smtpUser || !(smtpForm.smtpPass || storeSettings?.smtpPassSet)}
                       className="px-4 py-2.5 border border-border rounded-xl text-sm font-medium text-foreground hover:bg-surface-hover transition-colors disabled:opacity-50 flex items-center gap-2">
                       {smtpTesting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Link2 className="w-4 h-4" />}
                       Test Connection
@@ -1465,7 +1465,7 @@ export default function SettingsPage() {
                           setSmtpSendResult(res);
                           setSmtpSending(false);
                         }}
-                        disabled={smtpSending || !smtpTestEmail || !smtpForm.smtpHost || !smtpForm.smtpUser || !smtpForm.smtpPass}
+                        disabled={smtpSending || !smtpTestEmail || !smtpForm.smtpHost || !smtpForm.smtpUser || !(smtpForm.smtpPass || storeSettings?.smtpPassSet)}
                         className="px-4 py-2.5 border border-border rounded-xl text-sm font-medium text-foreground hover:bg-surface-hover transition-colors disabled:opacity-50 flex items-center gap-2 whitespace-nowrap">
                         {smtpSending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                         Send Test
@@ -1478,12 +1478,13 @@ export default function SettingsPage() {
                         setSmtpSaving(true);
                         const res = await updateStoreSettings({ ...smtpForm, smtpConfigured: true });
                         if (res.success) {
-                          setStoreSettings(prev => ({ ...prev, ...smtpForm, smtpConfigured: true }));
+                          setStoreSettings(prev => ({ ...prev, ...smtpForm, smtpPass: undefined, smtpPassSet: prev?.smtpPassSet || Boolean(smtpForm.smtpPass), smtpConfigured: true }));
+                          setSmtpForm(f => ({ ...f, smtpPass: '' }));
                           alert('SMTP settings saved!');
                         } else alert(res.error);
                         setSmtpSaving(false);
                       }}
-                      disabled={smtpSaving || !smtpForm.smtpHost || !smtpForm.smtpUser || !smtpForm.smtpPass}
+                      disabled={smtpSaving || !smtpForm.smtpHost || !smtpForm.smtpUser || !(smtpForm.smtpPass || storeSettings?.smtpPassSet)}
                       className="px-5 py-2.5 bg-accent hover:bg-accent-hover text-white rounded-xl text-sm font-semibold transition-all disabled:opacity-50 flex items-center gap-2 whitespace-nowrap">
                       {smtpSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                       Save Settings

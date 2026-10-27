@@ -1,7 +1,14 @@
 import { cookies } from 'next/headers'
 
-const SESSION_SECRET = process.env.SESSION_SECRET || 'default-secret-at-least-32-chars-long'
 const COOKIE_NAME = 'session'
+
+// Never fall back to a default: a known secret lets anyone forge an ADMIN
+// cookie. Read lazily so builds without the env var still compile.
+export function sessionSecret() {
+  const secret = process.env.SESSION_SECRET
+  if (!secret || secret.length < 32) throw new Error('SESSION_SECRET must be set to at least 32 characters')
+  return secret
+}
 
 export interface SessionPayload {
   id: string
@@ -56,7 +63,7 @@ async function sign(payload: string, secret: string) {
 
 export async function encrypt(payload: SessionPayload) {
   const data = b64urlEncode(JSON.stringify(payload))
-  const signature = await sign(data, SESSION_SECRET)
+  const signature = await sign(data, sessionSecret())
   return `${data}.${signature}`
 }
 
@@ -76,7 +83,7 @@ export async function decrypt(session: string | undefined): Promise<SessionPaylo
   const [data, signature] = session.split('.')
   if (!data || !signature) return null
 
-  const expectedSignature = await sign(data, SESSION_SECRET)
+  const expectedSignature = await sign(data, sessionSecret())
 
   if (!timingSafeEqualEdge(signature, expectedSignature)) {
     return null

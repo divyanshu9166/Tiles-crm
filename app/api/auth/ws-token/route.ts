@@ -19,10 +19,8 @@
  */
 
 import { NextResponse } from 'next/server'
-import { getSession } from '@/lib/session'
+import { getSession, sessionSecret } from '@/lib/session'
 import { SignJWT } from 'jose'
-
-const SESSION_SECRET = process.env.SESSION_SECRET ?? ''
 
 export async function GET() {
   const session = await getSession()
@@ -33,7 +31,7 @@ export async function GET() {
   // Sign a compact JWT with the session user's id embedded.
   // `jose` is already a transitive dependency via @supabase/* and works
   // in the edge runtime too. HS256 keeps it symmetric — same secret.
-  const secret = new TextEncoder().encode(SESSION_SECRET)
+  const secret = new TextEncoder().encode(sessionSecret())
   const token = await new SignJWT({ id: session.id, email: session.email })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()

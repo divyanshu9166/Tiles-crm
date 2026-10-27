@@ -2,7 +2,7 @@
 
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
-import { requireRole } from '@/lib/auth-helpers'
+import { requireRole, requireAuth } from '@/lib/auth-helpers';
 import { syncIndiaMartPullLeadsCore } from '@/lib/indiamart-sync'
 
 const VALID_LEAD_STATUSES = new Set(['NEW', 'CONTACTED', 'SHOWROOM_VISIT', 'QUOTATION', 'WON', 'LOST'])
@@ -148,6 +148,7 @@ async function ensureIndiaMartConfig() {
 }
 
 export async function getIndiaMartConfig() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } }
   try {
     const [config, totalSynced, totalImported] = await Promise.all([
       ensureIndiaMartConfig(),
@@ -227,6 +228,7 @@ export async function saveIndiaMartConfig(input) {
 }
 
 export async function getIndiaMartLeads(limit = 100) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } }
   try {
     if (!hasIndiaMartPrismaModels()) {
       return { success: false, error: PRISMA_INDIAMART_SCHEMA_ERROR }

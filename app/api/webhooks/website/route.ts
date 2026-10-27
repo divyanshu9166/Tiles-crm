@@ -63,19 +63,23 @@ export async function POST(req: NextRequest) {
     })
   } catch (error: any) {
     console.error('Website webhook error:', error)
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ error: 'Could not process the message' }, { status: 500 })
   }
 }
 
-// GET — Poll for new replies (used by website chat widget)
+// GET — Poll for new replies (used by website chat widget).
+// Public route: the visitor must present the sessionId they chat with, and only
+// their own Website conversation is returned (ids are sequential, so an id
+// alone would expose every WhatsApp/Instagram/website chat).
 export async function GET(req: NextRequest) {
-  const conversationId = req.nextUrl.searchParams.get('conversationId')
-  if (!conversationId) {
-    return NextResponse.json({ error: 'conversationId required' }, { status: 400 })
+  const conversationId = Number(req.nextUrl.searchParams.get('conversationId'))
+  const sessionId = req.nextUrl.searchParams.get('sessionId')
+  if (!Number.isSafeInteger(conversationId) || conversationId <= 0 || !sessionId) {
+    return NextResponse.json({ error: 'conversationId and sessionId required' }, { status: 400 })
   }
 
-  const conversation = await prisma.conversation.findUnique({
-    where: { id: parseInt(conversationId) },
+  const conversation = await prisma.conversation.findFirst({
+    where: { id: conversationId, channel: 'Website', externalId: sessionId },
   })
   if (!conversation) {
     return NextResponse.json({ error: 'Conversation not found' }, { status: 404 })

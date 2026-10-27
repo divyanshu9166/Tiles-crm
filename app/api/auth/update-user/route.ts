@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import bcrypt from 'bcryptjs'
 import { getSession, createSession } from '@/lib/session'
 import { prisma } from '@/lib/db'
+import { passwordLimiter, tooManyAttemptsMessage } from '@/lib/password-limit'
 
 export async function POST(request: Request) {
   const session = await getSession()
@@ -10,7 +11,7 @@ export async function POST(request: Request) {
   }
 
   const body = (await request.json().catch(() => null)) as
-    | { email?: string; password?: string }
+    | { email?: string; password?: string; currentPassword?: string }
     | null
 
   const nextEmailRaw = body?.email
@@ -39,6 +40,18 @@ export async function POST(request: Request) {
   if (!Number.isFinite(userId)) {
     return NextResponse.json({ error: 'Invalid session' }, { status: 401 })
   }
+
+  // Changing the login email or password needs the current password, so a
+  // stolen or left-open session cannot take the account over.
+  const key = `update-user|${userId}`
+  const wait = passwordLimiter.retryAfter(key)
+  if (wait) return NextResponse.json({ error: tooManyAttemptsMessage(wait) }, { status: 429, headers: { 'Retry-After': String(wait) } })
+  const current = await prisma.user.findUnique({ where: { id: userId }, select: { hashedPassword: true } })
+  if (!current || !body?.currentPassword || !(await bcrypt.compare(String(body.currentPassword), current.hashedPassword))) {
+    passwordLimiter.fail(key)
+    return NextResponse.json({ error: 'Current password is incorrect' }, { status: 401 })
+  }
+  passwordLimiter.succeed(key)
 
   if (updates.email) {
     const existing = await prisma.user.findUnique({ where: { email: updates.email } })

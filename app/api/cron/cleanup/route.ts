@@ -1,14 +1,20 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
+import { timingSafeEqual } from 'node:crypto'
 
 export async function GET(request: Request) {
   try {
-    // Basic security: if CRON_SECRET is set in .env, require it in the Authorization header.
-    // If not set, allow execution (useful for local VPS cron scripts calling this endpoint).
-    const authHeader = request.headers.get('authorization')
+    // This deletes WhatsApp history, so it never runs without CRON_SECRET
+    // (it used to run for anyone when the variable was missing).
+    const authHeader = request.headers.get('authorization') || ''
     const secret = process.env.CRON_SECRET
-    
-    if (secret && authHeader !== `Bearer ${secret}`) {
+    if (!secret) {
+      console.error('[cron/cleanup] CRON_SECRET is not set; refusing to run')
+      return NextResponse.json({ error: 'Cron is not configured' }, { status: 503 })
+    }
+    const expected = Buffer.from(`Bearer ${secret}`)
+    const given = Buffer.from(authHeader)
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 

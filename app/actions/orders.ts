@@ -4,10 +4,11 @@ import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { createOrderSchema, updateOrderStatusSchema } from '@/lib/validations/order'
 import type { OrderSource, PaymentStatus } from '@prisma/client'
-import { requireRole } from '@/lib/auth-helpers'
+import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { adjustStock, resolveStockGodown, lockInventoryProducts, inventoryError } from '@/lib/inventory-stock'
 
 export async function getOrders(source?: string) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const where = source && source !== 'All'
     ? { source: source.toUpperCase() as OrderSource }
     : {}
@@ -37,6 +38,7 @@ export async function getOrders(source?: string) {
 }
 
 export async function getOrder(id: number) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const order = await prisma.order.findUnique({
     where: { id },
     include: { contact: true, product: true },
@@ -110,6 +112,7 @@ export async function updateOrderStatus(data: unknown) {
 }
 
 export async function getOrdersBySource() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const counts = await prisma.order.groupBy({
     by: ['source'],
     _count: true,

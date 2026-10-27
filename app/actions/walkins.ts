@@ -4,6 +4,7 @@ import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { createWalkinSchema } from '@/lib/validations/walkin'
 import type { WalkinStatus } from '@prisma/client'
+import { requireAuth } from '@/lib/auth-helpers'
 
 const statusMap: Record<string, WalkinStatus> = {
   'Browsing': 'BROWSING', 'Interested': 'INTERESTED',
@@ -15,6 +16,7 @@ const statusDisplay: Record<WalkinStatus, string> = {
 }
 
 export async function getWalkins() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const walkins = await prisma.walkin.findMany({
     include: { contact: true, assignedTo: true },
     orderBy: { date: 'desc' },
@@ -45,6 +47,7 @@ export async function getWalkins() {
 }
 
 export async function createWalkin(data: unknown) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = createWalkinSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -79,6 +82,7 @@ export async function createWalkin(data: unknown) {
 }
 
 export async function updateWalkinStatus(id: number, status: string) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const dbStatus = statusMap[status]
   if (!dbStatus) return { success: false, error: 'Invalid status' }
 

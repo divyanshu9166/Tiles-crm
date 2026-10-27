@@ -1,6 +1,7 @@
 'use server'
 
 import { prisma } from '@/lib/db'
+import { requireAuth } from '@/lib/auth-helpers'
 
 function getPercentChange(current: number, previous: number) {
   if (previous <= 0) return current > 0 ? 100 : 0
@@ -18,6 +19,7 @@ const leadStatusLabel: Record<string, string> = {
 }
 
 export async function getDashboardStats() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const today = new Date()
   today.setHours(0, 0, 0, 0)
   const todayEnd = new Date()

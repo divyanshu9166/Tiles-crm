@@ -4,7 +4,7 @@ import { prisma } from '@/lib/db'
 import { Prisma } from '@prisma/client'
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
-import { requireRole } from '@/lib/auth-helpers'
+import { requireAuth, requireRole } from '@/lib/auth-helpers'
 import { getBrand } from '@/lib/brand'
 
 const updateSettingsSchema = z.object({
@@ -94,7 +94,15 @@ async function readWhatsappNumberFromDb() {
   }
 }
 
+// Public (no sign-in): only what the login screen shows.
+export async function getPublicBranding() {
+  const brand = getBrand()
+  const settings = await prisma.storeSettings.findFirst({ where: { id: 1 }, select: { storeName: true, logo: true } })
+  return { success: true as const, data: { storeName: settings?.storeName || brand.name, logo: settings?.logo || brand.logo } }
+}
+
 export async function getStoreSettings() {
+  try { await requireAuth() } catch { return { success: false as const, error: 'Please sign in again' } }
   // Resolve the Active_Vertical's brand so a first-time StoreSettings record
   // is seeded with the correct per-vertical identity (name, contacts, logo)
   // instead of the generic schema default. Writes go through the active
@@ -153,7 +161,8 @@ export async function getStoreSettings() {
       smtpHost: settings.smtpHost,
       smtpPort: settings.smtpPort,
       smtpUser: settings.smtpUser,
-      smtpPass: settings.smtpPass,
+      // The password itself never leaves the server.
+      smtpPassSet: Boolean(settings.smtpPass),
       smtpFromName: settings.smtpFromName,
       smtpSecure: settings.smtpSecure,
       smtpConfigured: settings.smtpConfigured,
@@ -174,8 +183,10 @@ export async function updateStoreSettings(data: unknown) {
     return { success: false, error: issue.message, field }
   }
 
-  const { paymentQr, ...settingsWithoutPaymentQr } = parsed.data
+  const { paymentQr, smtpPass, ...settingsWithoutPaymentQr } = parsed.data
   const { whatsappNumber, logo, ...settingsWithoutExtras } = settingsWithoutPaymentQr
+  // A blank SMTP password means "keep the saved one" (the form never receives it).
+  const smtpPassData = typeof smtpPass === 'string' && smtpPass.trim() !== '' ? { smtpPass } : {}
 
   // Logo replacement guard (Requirement 12.4): a logo only overwrites the
   // stored value when a real, non-empty URL is supplied. A blank/whitespace
@@ -185,6 +196,7 @@ export async function updateStoreSettings(data: unknown) {
 
   const settingsData = {
     ...settingsWithoutExtras,
+    ...smtpPassData,
     ...(hasValidLogo ? { logo } : {}),
     ...(supportsStoreSettingsPaymentQr && paymentQr !== undefined ? { paymentQr } : {}),
     ...(supportsStoreSettingsWhatsappNumber && whatsappNumber !== undefined ? { whatsappNumber } : {}),
@@ -239,6 +251,7 @@ export async function updateStoreSettings(data: unknown) {
 }
 
 export async function getMarketplaceChannels() {
+  try { await requireAuth() } catch { return { success: false as const, error: 'Please sign in again', data: [] } }
   const channels = await prisma.marketplaceChannel.findMany({
     orderBy: { name: 'asc' },
   })
@@ -258,10 +271,16 @@ export async function getMarketplaceChannels() {
   }
 }
 
+const marketplaceChannelSchema = z.object({ connected: z.boolean().optional(), sellerId: z.string().trim().max(100).optional() }).strict()
+
 export async function updateMarketplaceChannel(id: number, data: { connected?: boolean; sellerId?: string }) {
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
+  // Only these two fields may change (no mass assignment of other columns).
+  const parsed = marketplaceChannelSchema.safeParse(data)
+  if (!parsed.success || !Number.isSafeInteger(id)) return { success: false, error: 'Invalid channel update' }
   const channel = await prisma.marketplaceChannel.update({
     where: { id },
-    data,
+    data: parsed.data,
   })
 
   revalidatePath('/settings')
@@ -269,6 +288,7 @@ export async function updateMarketplaceChannel(id: number, data: { connected?: b
 }
 
 export async function getStoreCampaigns() {
+  try { await requireAuth() } catch { return { success: false as const, error: 'Please sign in again', data: [] } }
   const campaigns = await prisma.storeCampaign.findMany({
     orderBy: { createdAt: 'desc' },
   })

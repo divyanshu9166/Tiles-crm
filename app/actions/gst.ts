@@ -2,12 +2,13 @@
 
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
-import { requireRole } from '@/lib/auth-helpers'
+import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { createHsnCodeSchema, createEWayBillSchema } from '@/lib/validations/gst'
 
 // ─── HSN MASTER ──────────────────────────────────────
 
 export async function getHsnCodes() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const codes = await prisma.hsnCode.findMany({ orderBy: { code: 'asc' } })
   return { success: true, data: codes }
 }
@@ -439,6 +440,7 @@ export async function generateGSTR9(year: number) {
 // ─── RETURNS MANAGEMENT ──────────────────────────────
 
 export async function getGSTReturns() {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const returns = await prisma.gSTReturn.findMany({ orderBy: [{ period: 'desc' }, { returnType: 'asc' }] })
   return { success: true, data: returns }
 }
@@ -451,6 +453,7 @@ export async function markReturnFiled(id: number) {
 }
 
 export async function getReturnByTypePeriod(returnType: string, period: string) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const ret = await prisma.gSTReturn.findFirst({ where: { returnType, period } })
   return { success: true, data: ret }
 }
@@ -458,6 +461,7 @@ export async function getReturnByTypePeriod(returnType: string, period: string) 
 // ─── E-WAY BILLS ─────────────────────────────────────
 
 export async function getEWayBills() {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const bills = await prisma.eWayBill.findMany({
     include: { invoice: { select: { displayId: true, total: true, date: true, contact: { select: { name: true } } } } },
     orderBy: { createdAt: 'desc' },

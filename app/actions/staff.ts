@@ -7,6 +7,18 @@ import { requireAuth, requireRole } from '@/lib/auth-helpers'
 import bcrypt from 'bcryptjs'
 import type { Prisma, UserRole } from '@prisma/client'
 import { adjustStock, inventoryError, lockInventoryProducts, resolveStockGodown } from '@/lib/inventory-stock'
+import { passwordLimiter, tooManyAttemptsMessage } from '@/lib/password-limit'
+
+// STAFF users may only act on their own staff record; ADMIN/MANAGER on anyone.
+async function requireStaffScope(staffId: number) {
+  const session = await requireAuth()
+  if (session.user.role === 'STAFF' && Number(session.user.staffId) !== Number(staffId)) throw new Error('Forbidden')
+  return session
+}
+
+function scopeError(error: unknown) {
+  return error instanceof Error && error.message === 'Forbidden' ? 'You can only do this for your own staff record' : 'Please sign in again'
+}
 
 // ─── IST helpers ─────────────────────────────────────────────────────────────
 // All attendance dates/times must be in IST (Asia/Kolkata, UTC+5:30)
@@ -111,15 +123,32 @@ const mapStaffForPortal = (s: any) => ({
   })),
 })
 
+// Public (login screen): only names of staff who can sign in.
+export async function getStaffLoginOptions() {
+  const staff = await prisma.staff.findMany({
+    where: { status: 'Active', user: { isActive: true } },
+    select: { id: true, name: true, role: true },
+    orderBy: { name: 'asc' },
+  })
+  return { success: true as const, data: staff }
+}
+
 export async function getStaff() {
+  let session
+  try { session = await requireAuth() } catch { return { success: false, error: 'Please sign in again', data: [] } }
   const staff = await prisma.staff.findMany({
     include: staffPortalInclude,
     orderBy: { name: 'asc' },
   })
 
+  // Staff see their own full record and only the names of colleagues
+  // (for salesperson pickers), never colleagues' contacts, attendance or pay.
+  const ownId = session.user.role === 'STAFF' ? Number(session.user.staffId) : null
   return {
     success: true,
-    data: staff.map(mapStaffForPortal),
+    data: staff.map(member => (ownId === null || member.id === ownId
+      ? mapStaffForPortal(member)
+      : { id: member.id, name: member.name, role: member.role, status: member.status, avatar: member.avatar })),
   }
 }
 
@@ -142,6 +171,7 @@ export async function getStaffPortalProfile(staffId: number) {
 }
 
 export async function getStaffMember(id: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const staff = await prisma.staff.findUnique({
     where: { id },
     include: {
@@ -246,10 +276,14 @@ export async function assignStaffLogin(staffId: number, loginUsername: string, l
 }
 
 export async function verifyStaffPortalPassword(staffId: number, password: string) {
-  try { await requireAuth() } catch { return { success: false, error: 'Unauthorized' } }
+  let session
+  try { session = await requireStaffScope(staffId) } catch (error) { return { success: false, error: scopeError(error) } }
 
   const pass = password.trim()
   if (!pass) return { success: false, error: 'Password is required' }
+  const key = `staff-portal|${session.user.id}|${staffId}`
+  const wait = passwordLimiter.retryAfter(key)
+  if (wait) return { success: false, error: tooManyAttemptsMessage(wait) }
 
   const staff = await prisma.staff.findUnique({
     where: { id: staffId },
@@ -260,7 +294,11 @@ export async function verifyStaffPortalPassword(staffId: number, password: strin
   if (!staff.user || !staff.user.isActive) return { success: false, error: 'Login is not assigned for this staff member' }
 
   const valid = await bcrypt.compare(pass, staff.user.hashedPassword)
-  if (!valid) return { success: false, error: 'Invalid password' }
+  if (!valid) {
+    passwordLimiter.fail(key)
+    return { success: false, error: 'Invalid password' }
+  }
+  passwordLimiter.succeed(key)
 
   return { success: true }
 }
@@ -375,6 +413,8 @@ function getDistance(lat1: number, lng1: number, lat2: number, lng2: number): nu
 }
 
 export async function clockIn(staffId: number, gps?: { lat: number; lng: number }) {
+  let session
+  try { session = await requireStaffScope(staffId) } catch (error) { return { success: false, error: scopeError(error) } }
   const { today, time } = getISTDate()
 
   // 1. Check if already clocked in
@@ -388,6 +428,12 @@ export async function clockIn(staffId: number, gps?: { lat: number; lng: number 
 
   // Fetch settings once for both geofence and shift-time checks
   const settings = await prisma.storeSettings.findFirst({ where: { id: 1 } })
+
+  // Staff must prove they are at the store when a geofence is set; managers
+  // marking attendance for someone are recorded as "manual".
+  if (session.user.role === 'STAFF' && settings?.storeLat && settings?.storeLng && !gps) {
+    return { success: false, error: 'Turn on location to clock in: you must be at the store' }
+  }
 
   // 2. Check geofence if GPS provided
   let distance: number | null = null
@@ -429,6 +475,7 @@ export async function clockIn(staffId: number, gps?: { lat: number; lng: number 
 }
 
 export async function clockOut(staffId: number, gps?: { lat: number; lng: number }) {
+  try { await requireStaffScope(staffId) } catch (error) { return { success: false, error: scopeError(error) } }
   const { today, time } = getISTDate()
 
   const existing = await prisma.attendance.findUnique({
@@ -486,6 +533,7 @@ export async function clockOut(staffId: number, gps?: { lat: number; lng: number
 }
 
 export async function getMonthAttendance(staffId: number, year: number, month: number) {
+  try { await requireStaffScope(staffId) } catch (error) { return { success: false, error: scopeError(error), data: [] } }
   // month is 1-based (1 = January)
   const startDate = new Date(year, month - 1, 1)
   const endDate = new Date(year, month, 0, 23, 59, 59) // last day of month
@@ -511,6 +559,7 @@ export async function getMonthAttendance(staffId: number, year: number, month: n
 }
 
 export async function getAttendance(staffId: number, days: number = 30) {
+  try { await requireStaffScope(staffId) } catch (error) { return { success: false, error: scopeError(error), data: [] } }
   const since = new Date()
   since.setDate(since.getDate() - days)
 
@@ -523,6 +572,7 @@ export async function getAttendance(staffId: number, days: number = 30) {
 }
 
 export async function getDailyAttendanceReport() {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const { today } = getISTDate()
 
   const allStaff = await prisma.staff.findMany({

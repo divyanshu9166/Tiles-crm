@@ -115,6 +115,7 @@ export async function seedChartOfAccounts() {
 }
 
 export async function getAccounts() {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const groups = await prisma.accountGroup.findMany({
     include: { accounts: { orderBy: { code: 'asc' } } },
     orderBy: { name: 'asc' },

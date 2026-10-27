@@ -6,6 +6,7 @@ import { createQuotationSchema, updateQuotationSchema, updateQuotationStatusSche
 import { getBillableArea } from '@/lib/units'
 import { createInvoice } from '@/app/actions/invoices'
 import type { Quotation, QuotationItem, QuotationStatus, Contact, Product } from '@prisma/client'
+import { requireAuth, requireRole } from '@/lib/auth-helpers'
 
 type QuotationWithRelations = Quotation & {
   contact: Contact
@@ -200,6 +201,7 @@ function formatQuotation(quotation: QuotationWithRelations) {
 }
 
 export async function getQuotations() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const quotations = await prisma.quotation.findMany({
     include: {
       contact: true,
@@ -216,6 +218,7 @@ export async function getQuotations() {
 }
 
 export async function getQuotation(id: number) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const quotation = await prisma.quotation.findUnique({
     where: { id },
     include: {
@@ -229,6 +232,7 @@ export async function getQuotation(id: number) {
 }
 
 export async function createQuotation(data: unknown) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = createQuotationSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -406,6 +410,7 @@ export async function createQuotation(data: unknown) {
 }
 
 export async function updateQuotation(data: unknown) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = updateQuotationSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -584,6 +589,7 @@ export async function updateQuotation(data: unknown) {
 }
 
 export async function updateQuotationStatus(data: unknown) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = updateQuotationStatusSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -602,6 +608,7 @@ export async function updateQuotationStatus(data: unknown) {
  * completed at checkout without consuming inventory prematurely.
  */
 export async function convertQuotationToInvoice(quotationId: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const quotation = await prisma.quotation.findUnique({
     where: { id: quotationId },
     include: {
@@ -679,6 +686,7 @@ export async function convertQuotationToInvoice(quotationId: number) {
 }
 
 export async function getQuotationStats() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const [total, draft, sent, approved, rejected, totalValue] = await Promise.all([
     prisma.quotation.count(),
     prisma.quotation.count({ where: { status: 'DRAFT' } }),

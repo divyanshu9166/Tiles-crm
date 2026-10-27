@@ -2,11 +2,17 @@ import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import bcrypt from 'bcryptjs'
 import { createSession } from '@/lib/session'
+import { clientIp, passwordLimiter, tooManyAttemptsMessage } from '@/lib/password-limit'
+
+function locked(seconds: number) {
+  return NextResponse.json({ error: tooManyAttemptsMessage(seconds) }, { status: 429, headers: { 'Retry-After': String(seconds) } })
+}
 
 export async function POST(req: Request) {
   try {
     const body = await req.json()
     const { email, password, staffId, type } = body
+    const ip = clientIp(req)
 
     if (type === 'credentials') {
       if (!email || !password) {
@@ -14,18 +20,25 @@ export async function POST(req: Request) {
       }
 
       const normalizedEmail = String(email).trim().toLowerCase()
+      // Online guessing is capped per IP + account.
+      const key = `login|${ip}|${normalizedEmail}`
+      const wait = passwordLimiter.retryAfter(key)
+      if (wait) return locked(wait)
       const user = await prisma.user.findUnique({
         where: { email: normalizedEmail },
       })
 
       if (!user || !user.isActive) {
+        passwordLimiter.fail(key)
         return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 })
       }
 
       const isValid = await bcrypt.compare(String(password), user.hashedPassword)
       if (!isValid) {
+        passwordLimiter.fail(key)
         return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 })
       }
+      passwordLimiter.succeed(key)
 
       await createSession({
         id: String(user.id),
@@ -47,6 +60,10 @@ export async function POST(req: Request) {
       if (Number.isNaN(sId)) {
         return NextResponse.json({ error: 'Invalid staff ID' }, { status: 400 })
       }
+
+      const key = `login|${ip}|staff:${sId}`
+      const wait = passwordLimiter.retryAfter(key)
+      if (wait) return locked(wait)
 
       const staff = await prisma.staff.findUnique({
         where: { id: sId },
@@ -73,8 +90,10 @@ export async function POST(req: Request) {
 
       const isValid = await bcrypt.compare(String(password), staff.user.hashedPassword)
       if (!isValid) {
+        passwordLimiter.fail(key)
         return NextResponse.json({ error: 'Invalid staff credentials' }, { status: 401 })
       }
+      passwordLimiter.succeed(key)
 
       await createSession({
         id: String(staff.user.id),

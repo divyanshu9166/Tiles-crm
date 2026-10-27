@@ -92,6 +92,7 @@ export async function getGodownStockSummary() {
 // ─── BRANCHES ────────────────────────────────────────
 
 export async function getBranches() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const branches = await prisma.branch.findMany({
     orderBy: { name: 'asc' },
     include: {

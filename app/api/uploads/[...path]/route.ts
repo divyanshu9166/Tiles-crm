@@ -11,9 +11,12 @@ const MIME_TYPES: Record<string, string> = {
   png: 'image/png',
   webp: 'image/webp',
   gif: 'image/gif',
-  svg: 'image/svg+xml',
+  heic: 'image/heic',
   pdf: 'application/pdf',
+  csv: 'text/csv',
 }
+// Shown in the browser; everything else (including any old .svg) downloads.
+const INLINE = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'pdf'])
 
 // In standalone Next.js builds, process.cwd() ≠ /app — use UPLOAD_DIR env var
 // Serves files from the uploads directory
@@ -47,6 +50,10 @@ export async function GET(
         'Content-Type': contentType,
         'Content-Length': String(buffer.length),
         'Cache-Control': 'public, max-age=31536000, immutable',
+        // Never let the browser guess a type or run anything from an upload.
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
+        'Content-Disposition': INLINE.has(ext) ? 'inline' : 'attachment',
       },
     })
   } catch {

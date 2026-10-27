@@ -17,7 +17,14 @@ const publicPaths = [
   '/api/whatsapp/webhook',
   // Secret-checked (x-api-secret = CRM_API_SECRET) inside the route
   '/api/cron/accounting',
+  // Uploaded files are fetched by WhatsApp/Meta to send media by link; names
+  // are random UUIDs and the route serves them with nosniff + sandbox headers.
+  '/api/uploads/',
 ]
+
+// Real static assets only. Anything else with a dot (e.g. /sales-orders/1.x)
+// still goes through the session and role checks below.
+const STATIC_FILE = /\.(?:png|jpe?g|gif|webp|avif|svg|ico|css|js|mjs|map|txt|xml|webmanifest|json|woff2?|ttf|otf|eot|mp4|webm|mp3|pdf)$/i
 
 // Role-based route restrictions
 const routePermissions: Record<string, string[]> = {
@@ -54,7 +61,7 @@ export async function middleware(req: NextRequest) {
   if (
     pathname.startsWith('/_next') ||
     pathname.startsWith('/favicon') ||
-    pathname.includes('.')
+    (!pathname.startsWith('/api/') && STATIC_FILE.test(pathname))
   ) {
     return NextResponse.next()
   }

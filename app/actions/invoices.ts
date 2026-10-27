@@ -2,7 +2,7 @@
 
 import { prisma } from '@/lib/db'
 import { lockInventoryProducts } from '@/lib/inventory-stock'
-import { requireRole } from '@/lib/auth-helpers'
+import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { revalidatePath } from 'next/cache'
 import { createInvoiceSchema, updateInvoiceSchema, recordPaymentSchema, createCreditNoteSchema } from '@/lib/validations/invoice'
 import { getBillableArea } from '@/lib/units'
@@ -196,6 +196,7 @@ async function restoreInvoiceInventory(tx: any, invoice: any) {
 // ─── GET ALL INVOICES ──────────────────────────────────
 
 export async function getInvoices() {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const invoices = await prisma.invoice.findMany({
     include: {
       contact: true,
@@ -279,6 +280,7 @@ export async function getInvoices() {
 // ─── GET SINGLE INVOICE ────────────────────────────────
 
 export async function getInvoice(id: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const invoice = await prisma.invoice.findUnique({
     where: { id },
     include: {
@@ -931,6 +933,7 @@ export async function finalizeHeldInvoice(invoiceId: number) {
 // ─── SEARCH CONTACTS (for auto-complete) ───────────────
 
 export async function searchContacts(query: string) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   if (!query || query.length < 2) return { success: true, data: [] }
 
   const contacts = await prisma.contact.findMany({
@@ -960,6 +963,7 @@ export async function searchContacts(query: string) {
 // ─── GET CUSTOMER PROFILE (returning customer detection) ──
 
 export async function getCustomerProfile(phone: string, contactId?: number) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const selectFields = {
     id: true,
     name: true,
@@ -1036,6 +1040,7 @@ export async function getCustomerProfile(phone: string, contactId?: number) {
 // ─── GET INVOICE STATS ─────────────────────────────────
 
 export async function getInvoiceStats() {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const now = new Date()
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)

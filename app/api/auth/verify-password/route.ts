@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import bcrypt from 'bcryptjs'
 import { getSession } from '@/lib/session'
 import { prisma } from '@/lib/db'
+import { passwordLimiter, tooManyAttemptsMessage } from '@/lib/password-limit'
 
 export async function POST(request: Request) {
   const session = await getSession()
@@ -37,10 +38,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'User not found' }, { status: 404 })
   }
 
+  const key = `verify-password|${user.id}`
+  const wait = passwordLimiter.retryAfter(key)
+  if (wait) return NextResponse.json({ error: tooManyAttemptsMessage(wait) }, { status: 429, headers: { 'Retry-After': String(wait) } })
+
   const ok = await bcrypt.compare(password, user.hashedPassword)
   if (!ok) {
+    passwordLimiter.fail(key)
     return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 })
   }
+  passwordLimiter.succeed(key)
 
   return NextResponse.json({
     user: {

@@ -433,6 +433,7 @@ export async function getLowStockProducts() {
 }
 
 export async function deleteProduct(id: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   return moveProductToDraft(id)
 }
 

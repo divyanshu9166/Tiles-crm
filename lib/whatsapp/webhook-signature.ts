@@ -21,10 +21,12 @@ import crypto from 'node:crypto'
 export function verifyMetaWebhookSignature(
   rawBody: string,
   signatureHeader: string | null,
+  // Facebook/Instagram pages store their own app secret; WhatsApp uses the env.
+  appSecret: string | null = process.env.META_APP_SECRET ?? null,
 ): boolean {
-  const secret = process.env.META_APP_SECRET
+  const secret = appSecret
 
-  // If META_APP_SECRET is not set, reject the request after logging a loud
+  // If no secret is configured, reject the request after logging a loud
   // warning. This keeps an unconfigured webhook from accepting spoofed data.
   if (!secret) {
     console.warn(

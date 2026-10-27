@@ -3,8 +3,10 @@
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { createAppointmentSchema } from '@/lib/validations/appointment'
+import { requireAuth } from '@/lib/auth-helpers'
 
 export async function getAppointments() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const appointments = await prisma.appointment.findMany({
     include: { contact: true },
     orderBy: { date: 'desc' },
@@ -26,6 +28,7 @@ export async function getAppointments() {
 }
 
 export async function createAppointment(data: unknown) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = createAppointmentSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -51,6 +54,7 @@ export async function createAppointment(data: unknown) {
 }
 
 export async function updateAppointmentStatus(id: number, status: string) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const appointment = await prisma.appointment.update({
     where: { id },
     data: { status },
@@ -61,5 +65,6 @@ export async function updateAppointmentStatus(id: number, status: string) {
 }
 
 export async function cancelAppointment(id: number) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   return updateAppointmentStatus(id, 'Cancelled')
 }

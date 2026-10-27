@@ -2,7 +2,18 @@
 
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
-import { requireRole } from '@/lib/auth-helpers'
+import { requireAuth, requireRole } from '@/lib/auth-helpers'
+
+// Cash expenses move the day's cash register only while they are approved.
+async function moveCashRegister(expense: { date: Date; amount: number; paymentMode: string | null }, direction: 1 | -1) {
+  if (expense.paymentMode !== 'Cash') return
+  const dateOnly = new Date(expense.date.toISOString().split('T')[0] + 'T00:00:00')
+  if (direction === 1) {
+    await prisma.dailyCashRegister.upsert({ where: { date: dateOnly }, create: { date: dateOnly, cashOut: expense.amount }, update: { cashOut: { increment: expense.amount } } })
+  } else {
+    await prisma.dailyCashRegister.updateMany({ where: { date: dateOnly }, data: { cashOut: { decrement: expense.amount } } })
+  }
+}
 import {
   createExpenseSchema,
   createCategorySchema,
@@ -83,6 +94,7 @@ async function ensureDefaultExpenseCategories() {
 }
 
 export async function seedExpenseCategories() {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const result = await ensureDefaultExpenseCategories()
   revalidatePath('/expenses')
   return { success: true, data: result }
@@ -91,6 +103,7 @@ export async function seedExpenseCategories() {
 // ─── CATEGORIES ───────────────────────────────────────
 
 export async function getExpenseCategories() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again', data: [] } }
   await ensureDefaultExpenseCategories()
   const categories = await prisma.expenseCategory.findMany({
     where: { isActive: true },
@@ -103,6 +116,7 @@ export async function getExpenseCategories() {
 }
 
 export async function createExpenseCategory(data: unknown) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const parsed = createCategorySchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -119,12 +133,15 @@ export async function createExpenseCategory(data: unknown) {
 }
 
 export async function updateCategoryBudget(id: number, budget: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
+  if (!Number.isFinite(budget) || budget < 0) return { success: false, error: 'Budget must be zero or more' }
   await prisma.expenseCategory.update({ where: { id }, data: { budget } })
   revalidatePath('/expenses')
   return { success: true }
 }
 
 export async function deleteExpenseCategory(id: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const cat = await prisma.expenseCategory.findUnique({ where: { id }, include: { _count: { select: { expenses: true } } } })
   if (!cat) return { success: false, error: 'Category not found' }
   if (cat._count.expenses > 0) {
@@ -140,7 +157,11 @@ export async function deleteExpenseCategory(id: number) {
 // ─── EXPENSES ─────────────────────────────────────────
 
 export async function getExpenses(fromDate?: string, toDate?: string) {
+  let session
+  try { session = await requireAuth() } catch { return { success: false, error: 'Please sign in again', data: [] } }
   const where: Record<string, unknown> = {}
+  // Staff see only expenses they submitted.
+  if (session.user.role === 'STAFF') where.staffId = session.user.staffId ? Number(session.user.staffId) : -1
   if (fromDate && toDate) {
     where.date = {
       gte: new Date(fromDate + 'T00:00:00'),
@@ -184,10 +205,15 @@ export async function getExpenses(fromDate?: string, toDate?: string) {
 }
 
 export async function createExpense(data: unknown) {
+  let session
+  try { session = await requireAuth() } catch { return { success: false, error: 'Please sign in again' } }
   const parsed = createExpenseSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
-  const { date, categoryId, amount, description, paymentMode, reference, receipt, vendor, staffId, notes } = parsed.data
+  const { date, categoryId, amount, description, paymentMode, reference, receipt, vendor, notes } = parsed.data
+  // Staff submit expenses for approval, as themselves; managers' are approved at once.
+  const isStaff = session.user.role === 'STAFF'
+  const staffId = isStaff ? (session.user.staffId ? Number(session.user.staffId) : undefined) : parsed.data.staffId
 
   const expense = await prisma.expense.create({
     data: {
@@ -201,19 +227,12 @@ export async function createExpense(data: unknown) {
       vendor,
       staffId,
       notes,
-      status: 'Approved', // auto-approved for admin
+      status: isStaff ? 'Pending' : 'Approved',
+      approvedBy: isStaff ? null : session.user.name,
     },
   })
 
-  // Update cash register if cash expense
-  if (paymentMode === 'Cash') {
-    const dateOnly = new Date(date + 'T00:00:00')
-    await prisma.dailyCashRegister.upsert({
-      where: { date: dateOnly },
-      create: { date: dateOnly, cashOut: amount },
-      update: { cashOut: { increment: amount } },
-    })
-  }
+  if (expense.status === 'Approved') await moveCashRegister(expense, 1)
 
   revalidatePath('/expenses')
   return { success: true, data: expense }
@@ -272,17 +291,31 @@ export async function updateExpense(id: number, data: unknown) {
 }
 
 export async function deleteExpense(id: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   return moveExpenseToDraft(id)
 }
 
-export async function approveExpense(id: number, approvedBy: string) {
-  await prisma.expense.update({ where: { id }, data: { status: 'Approved', approvedBy } })
+// The approver is whoever is signed in (the old `approvedBy` argument is ignored).
+export async function approveExpense(id: number, _approvedBy?: string) {
+  let session
+  try { session = await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
+  void _approvedBy
+  const claimed = await prisma.expense.updateMany({ where: { id, status: { not: 'Approved' } }, data: { status: 'Approved', approvedBy: session.user.name } })
+  if (claimed.count !== 1) return { success: false, error: 'This expense is already approved' }
+  const expense = await prisma.expense.findUnique({ where: { id } })
+  if (expense) await moveCashRegister(expense, 1)
   revalidatePath('/expenses')
   return { success: true }
 }
 
 export async function rejectExpense(id: number) {
-  await prisma.expense.update({ where: { id }, data: { status: 'Rejected' } })
+  let session
+  try { session = await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
+  const before = await prisma.expense.findUnique({ where: { id } })
+  if (!before) return { success: false, error: 'Expense not found' }
+  const claimed = await prisma.expense.updateMany({ where: { id, status: { not: 'Rejected' } }, data: { status: 'Rejected', approvedBy: session.user.name } })
+  if (claimed.count !== 1) return { success: false, error: 'This expense is already rejected' }
+  if (before.status === 'Approved') await moveCashRegister(before, -1)
   revalidatePath('/expenses')
   return { success: true }
 }
@@ -290,6 +323,7 @@ export async function rejectExpense(id: number) {
 // ─── RECURRING EXPENSES ───────────────────────────────
 
 export async function getRecurringExpenses() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again', data: [] } }
   const recurring = await prisma.recurringExpense.findMany({
     include: { category: true },
     orderBy: { createdAt: 'desc' },
@@ -315,6 +349,7 @@ export async function getRecurringExpenses() {
 }
 
 export async function createRecurringExpense(data: unknown) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const parsed = createRecurringSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -330,6 +365,7 @@ export async function createRecurringExpense(data: unknown) {
 }
 
 export async function toggleRecurringExpense(id: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const rec = await prisma.recurringExpense.findUnique({ where: { id } })
   if (!rec) return { success: false, error: 'Not found' }
   await prisma.recurringExpense.update({ where: { id }, data: { isActive: !rec.isActive } })
@@ -338,6 +374,7 @@ export async function toggleRecurringExpense(id: number) {
 }
 
 export async function deleteRecurringExpense(id: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   await prisma.recurringExpense.delete({ where: { id } })
   revalidatePath('/expenses')
   return { success: true }
@@ -346,6 +383,7 @@ export async function deleteRecurringExpense(id: number) {
 // ─── DAILY CASH REGISTER ──────────────────────────────
 
 export async function getCashRegister(date: string) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } }
   const dateOnly = new Date(date + 'T00:00:00')
   let register = await prisma.dailyCashRegister.findUnique({ where: { date: dateOnly } })
   if (!register) {
@@ -376,6 +414,7 @@ export async function getCashRegister(date: string) {
 }
 
 export async function updateCashRegister(data: unknown) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const parsed = cashRegisterSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -403,6 +442,7 @@ export async function updateCashRegister(data: unknown) {
 // ─── ANALYTICS & REPORTS ──────────────────────────────
 
 export async function getExpenseSummary(fromDate: string, toDate: string) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } }
   const from = new Date(fromDate + 'T00:00:00')
   const to = new Date(toDate + 'T23:59:59')
 
@@ -498,6 +538,7 @@ export async function getExpenseSummary(fromDate: string, toDate: string) {
 // ─── BUDGET VS ACTUAL ─────────────────────────────────
 
 export async function getBudgetVsActual(month: string) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } }
   // month = "YYYY-MM"
   const from = new Date(month + '-01T00:00:00')
   const to = new Date(from)

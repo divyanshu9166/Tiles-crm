@@ -12,9 +12,11 @@ import { createDeliveryForOrder, cancelPickingTx, releaseOrderSlabs } from '@/li
 import { computeForecast } from '@/lib/erp/forecast'
 import { chargesTax, principalGstRate } from '@/lib/line-math'
 import { nextCreditNoteNumber, refreshInvoiceBalance } from '@/lib/erp/credit-notes'
+import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
 import {
   boxesForArea, computeTaxes, deliveryStatus, invoiceStatus, invoiceableQty, lineAmount, orderDiscount, portionOf, refundableQty, type DiscountType,
 } from '@/lib/erp/sales-math'
+import { stripBankDetails } from '@/lib/quotation-notes'
 
 type Tx = Prisma.TransactionClient
 
@@ -84,7 +86,7 @@ async function resolveContact(tx: Tx, input: { contactId?: number; customer?: st
   }
   const phone = input.phone?.replace(/\s+/g, '')
   if (!phone || !input.customer) throw new Error('Select a customer or enter customer name and phone')
-  return (await tx.contact.findUnique({ where: { phone } })) || tx.contact.create({ data: { name: input.customer, phone } })
+  return (await tx.contact.findFirst({ where: contactPhoneWhere(phone) })) || tx.contact.create({ data: { name: input.customer, phone: normalizePhone(phone) } })
 }
 
 type DraftLine = z.infer<typeof lineSchema>
@@ -260,7 +262,7 @@ export async function createSalesOrderFromQuotation(data: unknown) {
         freightCharge: quotation.freightCharge,
         loadingCharge: quotation.loadingCharge,
         installationCharge: quotation.installationCharge,
-        notes: quotation.notes || undefined,
+        notes: stripBankDetails(quotation.notes) || undefined,
         lines: quotation.items.map(item => ({
           productId: item.productId as number,
           quantity: item.quantity,
@@ -283,34 +285,39 @@ export async function createSalesOrderFromQuotation(data: unknown) {
   }
 }
 
-function summarize<T extends { lines: { quantity: number; qtyDelivered: number; qtyInvoiced: number }[]; invoicePolicy: string }>(order: T) {
-  return { ...order, deliveryStatus: deliveryStatus(order.lines), invoiceStatus: invoiceStatus(order.lines, order.invoicePolicy) }
+function summarize<T extends { lines: { quantity: number; qtyDelivered: number; qtyInvoiced: number }[]; invoicePolicy: string; notes?: string | null }>(order: T) {
+  // Older orders confirmed from quotations may still carry the hidden bank-details block.
+  const notes = order.notes == null ? order.notes : stripBankDetails(order.notes)
+  return { ...order, notes, deliveryStatus: deliveryStatus(order.lines), invoiceStatus: invoiceStatus(order.lines, order.invoicePolicy) }
 }
 
 export async function getSalesOrders(filters: { status?: string; search?: string } = {}) {
   try {
     await requireActor()
     const search = filters.search?.trim()
-    const orders = await prisma.salesOrder.findMany({
-      where: {
-        ...(filters.status && filters.status !== 'ALL' ? { status: filters.status as 'CONFIRMED' | 'DONE' | 'CANCELLED' } : {}),
-        ...(search ? { OR: [
-          { displayId: { contains: search, mode: 'insensitive' } },
-          { projectName: { contains: search, mode: 'insensitive' } },
-          { contact: { name: { contains: search, mode: 'insensitive' } } },
-          { contact: { phone: { contains: search } } },
-        ] } : {}),
-      },
-      orderBy: { id: 'desc' },
-      take: 300,
-      include: {
-        contact: { select: { id: true, name: true, phone: true } },
-        salesperson: { select: { id: true, name: true } },
-        godown: { select: { id: true, name: true } },
-        lines: { select: { quantity: true, qtyDelivered: true, qtyInvoiced: true } },
-        _count: { select: { pickings: true, invoices: true } },
-      },
-    })
+    const where = {
+      ...(filters.status && filters.status !== 'ALL' ? { status: filters.status as 'CONFIRMED' | 'DONE' | 'CANCELLED' } : {}),
+      ...(search ? { OR: [
+        { displayId: { contains: search, mode: 'insensitive' as const } },
+        { projectName: { contains: search, mode: 'insensitive' as const } },
+        { contact: { name: { contains: search, mode: 'insensitive' as const } } },
+        { contact: { phone: { contains: search } } },
+      ] } : {}),
+    }
+    const include = {
+      contact: { select: { id: true, name: true, phone: true } },
+      salesperson: { select: { id: true, name: true } },
+      godown: { select: { id: true, name: true } },
+      lines: { select: { quantity: true, qtyDelivered: true, qtyInvoiced: true } },
+      _count: { select: { pickings: true, invoices: true } },
+    }
+    // Every open order is returned (the To deliver / To invoice tabs depend on
+    // them); only closed history is capped, so old open orders never vanish.
+    const [open, closed] = await Promise.all([
+      prisma.salesOrder.findMany({ where: { AND: [where, { status: 'CONFIRMED' }] }, orderBy: { id: 'desc' }, include }),
+      prisma.salesOrder.findMany({ where: { AND: [where, { status: { not: 'CONFIRMED' } }] }, orderBy: { id: 'desc' }, take: 300, include }),
+    ])
+    const orders = [...open, ...closed].sort((a, b) => b.id - a.id)
     return { success: true as const, data: orders.map(summarize) }
   } catch (error) {
     return { success: false as const, error: actionError(error, 'Could not load sales orders') }
@@ -429,7 +436,7 @@ export async function createInvoiceFromSalesOrder(data: unknown) {
           godownId: order.godownId,
           supplyType: order.supplyType, placeOfSupply: order.placeOfSupply,
           date: now,
-          time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }),
+          time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }),
           dueDate: parseDate(input.dueDate),
           salespersonId: order.salespersonId,
           notes: `Invoiced from sales order ${order.displayId}`,

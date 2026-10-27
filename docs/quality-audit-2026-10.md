@@ -121,6 +121,61 @@ M1–M16 fixed, each with an integration test in `lib/erp.integration.test.ts` (
 
 ---
 
+## Sales & Inventory review (branch `sales-inventory-phase-3`)
+
+The Surface Visualizer (`/recommend` page and API) was removed. The Sales and Inventory sections were then
+re-audited. 117 integration checks pass, including 7 new `P3:` cases.
+
+**Sales — fixed**
+- Editing a quotation kept its area (it was wiped on reload); GST 0% survives edit; prices fall back to the
+  product price only when no rate was typed.
+- Only managers can confirm a quotation into a sales order or invoice; staff see a hint instead.
+- Quotation → invoice duplicate check matches the exact quotation number on active invoices only.
+- Bank details in quotation notes no longer leak onto sales orders, invoices and printed bills (notes are
+  HTML-escaped on print).
+- One customer per phone number: `+91 98765 43210`, `09876543210` and `9876543210` resolve to the same contact
+  (`lib/phone.ts`) across leads, walk-ins, quotations, orders, sales orders, invoices, appointments and calls.
+- India time for printed times (Docker `TZ=Asia/Kolkata`) and for date defaults (`lib/local-date.ts`); before
+  05:30 IST screens used to default to yesterday.
+- POS credit sale: no payment + a due date makes a "Credit" bill; held bills list only active ones; invoice stats
+  ignore parked bills and count overdue from the due date; the daily cash register includes POS cash and
+  excludes reversed payments.
+- A payment above the balance is refused with a clear message (it used to be cut down silently).
+- Dealer collections are atomic (two at once can't overpay); on-account payments settle the oldest open orders
+  first and keep any remainder as an advance; approved dealer orders skip a second credit check.
+- Double-booked appointment slots show a friendly message; leads search by phone; errors show as toasts.
+- Store orders can be moved to packing / shipped / delivered or cancelled from the list; the dead Channels tab
+  was removed.
+- POS search shows out-of-stock matches greyed out and says when results are capped.
+- The sales order list returns every open order (only closed history is capped at 300).
+
+**Inventory — fixed**
+- "Assign stock to godown" removed (it created stock from nothing); pending transfers can be cancelled; the
+  approver is the signed-in user; completing a transfer asks for confirmation.
+- Stock value is shown at cost (stone at its lot cost), not at selling price.
+- Physical counts snapshot the shelf when a line is counted, so a sale made after counting is not undone.
+- AVCO stays correct when one receipt has the same product on two lines.
+- Staff quantity updates can't leave batch quantities above stock.
+- Damaged slabs can be restored, with a reversing journal (`SLABLOSSREV`); slab actions confirm first.
+- Low-stock alerts use the forecast (on hand − reserved + incoming) and skip products without a reorder level.
+- Inventory list shows boxes with their area ("120 boxes · 1,860 sq.ft"); new products default to BOX with a
+  cost field; the nav item "Transfers" is now "Operations".
+
+**UX**
+- Lead and walk-in screens have "New quotation", which opens the form with the customer filled in.
+- The sales order form footer shows untaxed amount, GST and total, using the same math as the server.
+
+**Open (next pass)**
+- Per-godown replenishment and PO destination godown; shade/batch capture at receipt; batches per godown.
+- Transfer lines don't show source on-hand; bulk import doesn't flag duplicates/blank rows; BOX products don't
+  require coverage.
+- Store orders still deduct stock without a GST invoice; staff can't reach Billing, so this is their only way to
+  sell. Decide whether staff should use POS or quotations instead.
+- Large pages (`quotations`, `billing`, `inventory`, 2,300–2,800 lines each) should be split into routes.
+- Invoices from quotations carry no salesperson (team dashboard undercounts).
+
+---
+
 ## Phase 3 — Books, GST and reports
 
 | # | Sev | Finding |

@@ -33,7 +33,7 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
 # Install curl (healthcheck), gosu (permissions), and libgomp1 (required by ONNX runtime)
-RUN apt-get update && apt-get install -y --no-install-recommends curl gosu libgomp1 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl gosu libgomp1 tzdata && rm -rf /var/lib/apt/lists/*
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
@@ -89,6 +89,8 @@ RUN chmod +x /entrypoint.sh
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
+# Indian business days: "today", month ranges and printed times use IST.
+ENV TZ=Asia/Kolkata
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["node", "server.js"]

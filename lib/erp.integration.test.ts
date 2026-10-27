@@ -16,7 +16,7 @@ vi.mock('@/lib/auth-helpers', () => ({
 }))
 vi.mock('@/lib/email', () => ({ sendEmail: vi.fn(async () => ({ success: false, error: 'disabled in tests' })) }))
 
-import { createSalesOrder, createSalesOrderFromQuotation, createInvoiceFromSalesOrder, cancelSalesOrder, getSalesOrder, lockSalesOrder, createRefundFromSalesOrder } from '@/app/actions/sales-orders'
+import { getSalesOrders, createSalesOrder, createSalesOrderFromQuotation, createInvoiceFromSalesOrder, cancelSalesOrder, getSalesOrder, lockSalesOrder, createRefundFromSalesOrder } from '@/app/actions/sales-orders'
 import { validatePicking, getPickings, cancelPicking, reserveDeliverySlabs, getPicking, returnDelivery } from '@/app/actions/operations'
 import { createStoneLot } from '@/app/actions/stone-inventory'
 import { approvePurchaseOrder, receivePurchaseOrder, cancelPurchaseOrder, createPurchaseOrder, recordPurchaseOrderPayment } from '@/app/actions/purchases'
@@ -35,6 +35,8 @@ import { saveSalesTeam, assignUnassignedLeads, getTeamDashboard } from '@/app/ac
 import { getAccountsDesk, executeFollowUp, registerBillPayment, applyPoAdvancesToBill } from '@/app/actions/accounts-desk'
 import { savePricelist, savePricelistItem, assignContactPricelist, getPricesFor } from '@/app/actions/pricelists'
 import { postAutoJournals, journalTrialBalance } from '@/lib/erp/accounting'
+import { createTransfer, cancelTransfer, completeTransfer } from '@/app/actions/godowns'
+import { recordDealerPayment } from '@/app/actions/dealers'
 import { saveLandedCost, postLandedCost, cancelLandedCost, getLandedCost, getLandedCostReceipts } from '@/app/actions/landed-costs'
 
 // Same disposable-schema contract as the inventory suite (scripts/test-inventory.cjs).
@@ -236,19 +238,22 @@ describe.skipIf(!url)('ERP document flows (Odoo parity)', () => {
     expect(updated?.toOrder).toBe(0)
   })
 
-  it('applies a physical count against the live balance', async () => {
+  it('applies a physical count without undoing sales made after counting', async () => {
     const product = await newProduct(10)
     const count = await createInventoryCount({ godownId, scope: 'PRODUCTS', productIds: [product.id] })
     if (!count.success) throw new Error(count.error)
     const detail = await getInventoryCount(count.data.id)
     if (!detail.success) throw new Error(detail.error)
     expect(detail.data.lines[0].systemQty).toBe(10)
+    // A sale before the shelf is counted: the counter sees 9 boxes minus 2 missing.
+    await db.$transaction(tx => adjustStock(tx, product.id, godownId, -1, 'SALE'))
     expect((await setCountedQty({ lineId: detail.data.lines[0].id, countedQty: 7 })).success).toBe(true)
-    // A sale happens while the team is counting: the count still wins.
+    expect((await db.inventoryCountLine.findFirstOrThrow({ where: { countId: count.data.id } })).systemQty).toBe(9)
+    // A sale after the shelf was counted: that box already left, keep the deduction.
     await db.$transaction(tx => adjustStock(tx, product.id, godownId, -1, 'SALE'))
     const applied = await applyInventoryCount(count.data.id)
     expect(applied.success, applied.success ? '' : applied.error).toBe(true)
-    expect((await db.product.findUniqueOrThrow({ where: { id: product.id } })).stock).toBe(7)
+    expect((await db.product.findUniqueOrThrow({ where: { id: product.id } })).stock).toBe(6)
     expect((await db.inventoryCountLine.findFirstOrThrow({ where: { countId: count.data.id } })).appliedDelta).toBe(-2)
     expect((await applyInventoryCount(count.data.id)).success).toBe(false)
     expect(await db.stockLedger.count({ where: { productId: product.id, referenceType: 'InventoryCount' } })).toBe(1)
@@ -816,6 +821,89 @@ describe.skipIf(!url)('ERP document flows (Odoo parity)', () => {
     if (!invoice.success) throw new Error(invoice.error)
     const billed = await db.invoice.findUniqueOrThrow({ where: { id: invoice.data.id } })
     expect([billed.chargesGst, billed.total]).toEqual([360, saved.total])
+  })
+
+  // ── Phase 3: sales and inventory ─────────────────────────────────────
+  it('P3: a payment above the balance is refused, not silently cut down', async () => {
+    const product = await newProduct(5)
+    const created = await posInvoice(product, {}, { payments: [{ amount: 180, method: 'Cash' }] }) // total 1180, owes 1000
+    if (!created.success || !created.data) throw new Error(created.error)
+    const over = await recordPayment({ invoiceId: created.data.id, amount: 1500, method: 'UPI' })
+    expect(over.success).toBe(false)
+    expect(over.error).toMatch(/more than the balance due/)
+    expect((await db.invoice.findUniqueOrThrow({ where: { id: created.data.id } })).amountPaid).toBe(180)
+  })
+
+  it('P3: a POS bill with no payment and a due date is a credit sale', async () => {
+    const product = await newProduct(5)
+    const noDue = await posInvoice(product, {}, { payments: [{ amount: 0, method: 'Cash' }] })
+    expect(noDue.success).toBe(false)
+    const res = await posInvoice(product, {}, { payments: [{ amount: 0, method: 'Cash' }], dueDate: '2026-12-31' })
+    if (!res.success || !res.data) throw new Error(res.error)
+    const saved = await db.invoice.findUniqueOrThrow({ where: { id: res.data.id } })
+    expect([saved.amountPaid, saved.balanceDue, saved.paymentMethod]).toEqual([0, 1180, 'Credit'])
+    expect(await stockOf(product.id)).toBe(4)
+  })
+
+  it('P3: the same customer typed with +91 or spaces is one contact', async () => {
+    const product = await newProduct(10)
+    const digits = contactPhone()
+    const quote = await createQuotation({ customer: 'Same Person', phone: `+91 ${digits.slice(0, 5)} ${digits.slice(5)}`, items: [{ productId: product.id, name: product.name, quantity: 1, rate: 500 }] })
+    if (!quote.success || !quote.data) throw new Error(quote.error)
+    const order = await createSalesOrder({ customer: 'Same Person', phone: digits, godownId, lines: [{ productId: product.id, quantity: 1, price: 500 }] })
+    if (!order.success) throw new Error(order.error)
+    const contacts = await db.contact.findMany({ where: { phone: { endsWith: digits } } })
+    expect(contacts).toHaveLength(1)
+  })
+
+  it('P3: a pending transfer can be cancelled once and never completed afterwards', async () => {
+    const product = await newProduct(10)
+    const other = (await db.godown.create({ data: { name: `ERP-Yard-${crypto.randomUUID()}` } })).id
+    const transfer = await createTransfer({ fromGodownId: godownId, toGodownId: other, items: [{ productId: product.id, name: product.name, sku: product.sku, quantity: 4 }] }) as { success: boolean; data?: { id: number }; error?: string }
+    if (!transfer.success || !transfer.data) throw new Error(transfer.error)
+    expect((await cancelTransfer(transfer.data.id)).success).toBe(true)
+    expect((await cancelTransfer(transfer.data.id)).success).toBe(false)
+    expect((await completeTransfer(transfer.data.id)).success).toBe(false)
+    expect(await stockOf(product.id)).toBe(10)
+    expect(await db.godownStock.count({ where: { godownId: other, productId: product.id, quantity: { gt: 0 } } })).toBe(0)
+  })
+
+  it('P3: dealer payments never overpay an order and on-account money settles oldest orders first', async () => {
+    const dealer = await db.dealer.create({ data: { businessName: 'Dealer P3', contactPerson: 'D', phone: contactPhone(), status: 'ACTIVE' } })
+    const order = (displayId: string, total: number) => db.dealerOrder.create({ data: { displayId: `${displayId}-${crypto.randomUUID().slice(0, 6)}`, dealerId: dealer.id, status: 'APPROVED', total, balanceDue: total } })
+    const older = await order('DO-OLD', 1000)
+    const newer = await order('DO-NEW', 2000)
+    // Two collections against the same order at once: only what is owed is taken.
+    const both = await Promise.all([700, 700].map(amount => recordDealerPayment({ dealerId: dealer.id, dealerOrderId: older.id, amount })))
+    expect(both.filter(result => result.success)).toHaveLength(1)
+    expect((await db.dealerOrder.findUniqueOrThrow({ where: { id: older.id } })).balanceDue).toBe(300)
+    // On-account 1,000: 300 closes the older order, 700 goes to the newer one.
+    expect((await recordDealerPayment({ dealerId: dealer.id, amount: 1000 })).success).toBe(true)
+    const [a, b] = await Promise.all([older, newer].map(o => db.dealerOrder.findUniqueOrThrow({ where: { id: o.id } })))
+    expect([a.balanceDue, a.paymentStatus, b.balanceDue, b.paymentStatus]).toEqual([0, 'PAID', 1300, 'PARTIAL'])
+  })
+
+  it('P3: one receipt with the same product on two lines keeps a correct average cost', async () => {
+    const product = await newProduct(10) // 10 on hand at cost 300
+    const created = await createPurchaseOrder({ supplierId, items: [
+      { productId: product.id, name: product.name, sku: product.sku, quantity: 10, unitCost: 600, gstRate: 0 },
+      { productId: product.id, name: product.name, sku: product.sku, quantity: 10, unitCost: 900, gstRate: 0 },
+    ] })
+    const poId = (created as { data: { id: number } }).data.id
+    await approvePurchaseOrder(poId)
+    expect((await receivePurchaseOrder(poId)).success).toBe(true)
+    const after = await db.product.findUniqueOrThrow({ where: { id: product.id } })
+    expect(after.stock).toBe(30)
+    expect(after.costPrice).toBe(600) // (10x300 + 10x600 + 10x900) / 30
+  })
+
+  it('P3: open sales orders are always listed, however old', async () => {
+    const product = await newProduct(10)
+    const order = await createSalesOrder({ customer: 'Old open', phone: contactPhone(), godownId, lines: [{ productId: product.id, quantity: 1, price: 500 }] })
+    if (!order.success) throw new Error(order.error)
+    const list = await getSalesOrders({})
+    if (!list.success) throw new Error(list.error)
+    expect(list.data.some((row: { id: number }) => row.id === order.data.id)).toBe(true)
   })
 
   it('lists open transfers with late flags', async () => {

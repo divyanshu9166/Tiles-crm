@@ -7,6 +7,7 @@ import type { LeadStatus } from '@prisma/client'
 import { moveLeadToDraft } from './drafts'
 import { autoAssignLead } from '@/lib/erp/sales-team'
 import { requireAuth, requireRole } from '@/lib/auth-helpers'
+import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
 
 const statusMap: Record<string, LeadStatus> = {
   'New': 'NEW',
@@ -81,10 +82,10 @@ export async function createLead(data: unknown) {
   const { name, phone, email, source, interest, materialCategory, applicationArea, areaSqft, budget, notes } = parsed.data
 
   // Find or create contact
-  let contact = await prisma.contact.findFirst({ where: { phone } })
+  let contact = await prisma.contact.findFirst({ where: contactPhoneWhere(phone) })
   if (!contact) {
     contact = await prisma.contact.create({
-      data: { name, phone, email: email || null, source },
+      data: { name, phone: normalizePhone(phone), email: email || null, source },
     })
   }
 

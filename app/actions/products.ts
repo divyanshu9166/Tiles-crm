@@ -43,6 +43,7 @@ export async function getProducts() {
       stoneLots: {
         select: {
           availableSqft: true,
+          costPerSqft: true,
           slabs: { select: { status: true, sqft: true } },
         },
       },
@@ -96,6 +97,8 @@ export async function getProducts() {
       // its live sellable balance separately so inventory screens do not show
       // a stocked lot as "out of stock" or permit quantity adjustments.
       availableStoneSqft: p.stoneLots.reduce((sum, lot) => sum + lot.slabs.filter(slab => slab.status === 'AVAILABLE').reduce((area, slab) => area + slab.sqft, 0), 0),
+      // Value of available slabs at what the lot cost us.
+      availableStoneCost: Math.round(p.stoneLots.reduce((sum, lot) => sum + lot.slabs.filter(slab => slab.status === 'AVAILABLE').reduce((area, slab) => area + slab.sqft, 0) * (lot.costPerSqft || 0), 0)),
       availableStoneSlabs: p.stoneLots.reduce((sum, lot) => sum + lot.slabs.filter(slab => slab.status === 'AVAILABLE').length, 0),
       allocatedStoneSlabs: p.stoneLots.reduce((sum, lot) => sum + lot.slabs.filter(slab => ['RESERVED', 'IN_PROCESSING'].includes(slab.status)).length, 0),
       batches: p.batches.map(batch => ({

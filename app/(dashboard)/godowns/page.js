@@ -10,12 +10,14 @@ import {
   getBranches, createBranch, updateBranch, deleteBranch,
   getGodowns, createGodown, updateGodown, deleteGodown, setDefaultGodown,
   getGodownStock, getTransfers, createTransfer, completeTransfer,
-  getGodownStockSummary, getStockLedger, assignStockToGodown, migrateExistingStockToGodowns
+  getGodownStockSummary, getStockLedger, migrateExistingStockToGodowns, cancelTransfer
 } from '@/app/actions/godowns'
 import { getProducts } from '@/app/actions/products'
 import Modal from '@/components/Modal'
+import { useAlertToast } from '@/components/AlertToastProvider'
 
 export default function GodownsPage() {
+  const { notify } = useAlertToast()
   const [tab, setTab] = useState('branches')
   const [loading, setLoading] = useState(true)
   const [branches, setBranches] = useState([])
@@ -32,13 +34,11 @@ export default function GodownsPage() {
   const [showBranchModal, setShowBranchModal] = useState(false)
   const [showGodownModal, setShowGodownModal] = useState(false)
   const [showTransferModal, setShowTransferModal] = useState(false)
-  const [showAssignModal, setShowAssignModal] = useState(false)
   const [submitting, setSubmitting] = useState(false)
 
   const [branchForm, setBranchForm] = useState({ name: '', address: '', phone: '', email: '', managerName: '', isHeadOffice: false })
   const [godownForm, setGodownForm] = useState({ name: '', address: '', branchId: '', type: 'Warehouse', capacity: '', isDefault: false })
   const [transferForm, setTransferForm] = useState({ fromGodownId: '', toGodownId: '', notes: '', requestedBy: '', items: [{ productId: '', name: '', sku: '', quantity: 1 }] })
-  const [assignForm, setAssignForm] = useState({ productId: '', godownId: '', quantity: 1, notes: '' })
 
   const loadData = () => {
     setLoading(true)
@@ -78,7 +78,7 @@ export default function GodownsPage() {
       setShowBranchModal(false)
       setBranchForm({ name: '', address: '', phone: '', email: '', managerName: '', isHeadOffice: false })
       loadData()
-    } else alert(res.error)
+    } else notify(res.error, { variant: 'danger' })
     setSubmitting(false)
   }
 
@@ -94,7 +94,7 @@ export default function GodownsPage() {
       setShowGodownModal(false)
       setGodownForm({ name: '', address: '', branchId: '', type: 'Warehouse', capacity: '', isDefault: false })
       loadData()
-    } else alert(res.error)
+    } else notify(res.error, { variant: 'danger' })
     setSubmitting(false)
   }
 
@@ -113,25 +113,21 @@ export default function GodownsPage() {
       setShowTransferModal(false)
       setTransferForm({ fromGodownId: '', toGodownId: '', notes: '', requestedBy: '', items: [{ productId: '', name: '', sku: '', quantity: 1 }] })
       loadData()
-    } else alert(res.error)
+    } else notify(res.error, { variant: 'danger' })
     setSubmitting(false)
   }
 
   const handleCompleteTransfer = async (id) => {
+    if (!confirm('Complete this transfer? Stock moves from the source godown to the destination now.')) return
     const res = await completeTransfer(id)
     if (res.success) loadData()
-    else alert(res.error)
+    else notify(res.error, { variant: 'danger' })
   }
 
-  const handleAssignStock = async () => {
-    setSubmitting(true)
-    const res = await assignStockToGodown(Number(assignForm.productId), Number(assignForm.godownId), Number(assignForm.quantity), assignForm.notes)
-    if (res.success) {
-      setShowAssignModal(false)
-      setAssignForm({ productId: '', godownId: '', quantity: 1, notes: '' })
-      loadData()
-    } else alert(res.error)
-    setSubmitting(false)
+  const handleCancelTransfer = async (id) => {
+    const res = await cancelTransfer(id)
+    if (res.success) { notify('Transfer cancelled', { variant: 'success' }); loadData() }
+    else notify(res.error, { variant: 'danger' })
   }
 
   const handleMigrate = async () => {
@@ -139,9 +135,9 @@ export default function GodownsPage() {
     setMigrating(true)
     const res = await migrateExistingStockToGodowns()
     if (res.success) {
-      alert(`Migration complete! ${res.migrated} products migrated to "${res.defaultGodownName}".`)
+      notify(`Sync complete: ${res.migrated} products placed in "${res.defaultGodownName}".`, { variant: 'success' })
       loadData()
-    } else alert(res.error)
+    } else notify(res.error, { variant: 'danger' })
     setMigrating(false)
   }
 
@@ -171,7 +167,6 @@ export default function GodownsPage() {
         <div className="flex w-full sm:w-auto gap-2 flex-wrap">
           {tab === 'branches' && <button onClick={() => setShowBranchModal(true)} className="flex-1 sm:flex-none justify-center px-3 sm:px-4 py-2 bg-accent text-white rounded-lg text-sm font-medium hover:bg-accent/90 flex items-center gap-2"><Plus className="w-4 h-4" /> Add Branch</button>}
           {tab === 'godowns' && <button onClick={() => setShowGodownModal(true)} className="flex-1 sm:flex-none justify-center px-3 sm:px-4 py-2 bg-accent text-white rounded-lg text-sm font-medium hover:bg-accent/90 flex items-center gap-2"><Plus className="w-4 h-4" /> Add Godown</button>}
-          {tab === 'stock' && <button onClick={() => setShowAssignModal(true)} className="flex-1 sm:flex-none justify-center px-3 sm:px-4 py-2 bg-accent text-white rounded-lg text-sm font-medium hover:bg-accent/90 flex items-center gap-2"><Plus className="w-4 h-4" /> Assign Stock</button>}
           {tab === 'transfers' && <button onClick={() => setShowTransferModal(true)} className="flex-1 sm:flex-none justify-center px-3 sm:px-4 py-2 bg-accent text-white rounded-lg text-sm font-medium hover:bg-accent/90 flex items-center gap-2"><Plus className="w-4 h-4" /> New Transfer</button>}
           <button onClick={handleMigrate} disabled={migrating} className="px-3 py-2 border border-border rounded-lg text-sm text-muted hover:text-foreground hover:bg-surface-hover flex items-center gap-1.5 disabled:opacity-50" title="Sync existing product stock to default godown">
             <RefreshCw className={`w-3.5 h-3.5 ${migrating ? 'animate-spin' : ''}`} /> Sync Stock
@@ -224,7 +219,7 @@ export default function GodownsPage() {
                 </div>
                 <div className="flex items-center gap-1">
                   <span className="text-xs text-muted bg-surface-hover px-2 py-1 rounded-full">{b._count?.godowns || 0} godowns</span>
-                  <button onClick={async () => { if (confirm('Delete this branch?')) { const r = await deleteBranch(b.id); if (r.success) loadData(); else alert(r.error) }}}
+                  <button onClick={async () => { if (confirm('Delete this branch?')) { const r = await deleteBranch(b.id); if (r.success) loadData(); else notify(r.error, { variant: 'danger' }) }}}
                     className="p-1 text-red-400/50 hover:text-red-400 rounded"><Trash2 className="w-3.5 h-3.5" /></button>
                 </div>
               </div>
@@ -271,7 +266,7 @@ export default function GodownsPage() {
                         <Star className="w-3.5 h-3.5" />
                       </button>
                     )}
-                    <button onClick={async () => { if (confirm('Delete this godown?')) { const r = await deleteGodown(g.id); if (r.success) loadData(); else alert(r.error) }}}
+                    <button onClick={async () => { if (confirm('Delete this godown?')) { const r = await deleteGodown(g.id); if (r.success) loadData(); else notify(r.error, { variant: 'danger' }) }}}
                       className="p-1.5 text-red-400/50 hover:text-red-400 rounded"><Trash2 className="w-3.5 h-3.5" /></button>
                   </div>
                 </div>
@@ -351,7 +346,7 @@ export default function GodownsPage() {
                 </tbody>
               </table>
             </div>
-            {filteredStocks.length === 0 && <div className="text-center py-12 text-muted">No stock records found. Use &quot;Assign Stock&quot; or &quot;Sync Stock&quot; to allocate products to godowns.</div>}
+            {filteredStocks.length === 0 && <div className="text-center py-12 text-muted">No stock records found. Stock arrives through goods receipts; use &quot;Sync Stock&quot; once for products that had stock before godowns were set up, and Transfers to move stock between godowns.</div>}
           </div>
         </div>
       )}
@@ -381,10 +376,16 @@ export default function GodownsPage() {
                     </td>
                     <td className="px-4 py-3">
                       {t.status === 'Pending' && (
-                        <button onClick={() => handleCompleteTransfer(t.id)}
-                          className="px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 text-xs font-medium hover:bg-emerald-500/20 border border-emerald-500/20 flex items-center gap-1">
-                          <CheckCircle className="w-3.5 h-3.5" /> Complete
-                        </button>
+                        <div className="flex gap-1.5">
+                          <button onClick={() => handleCompleteTransfer(t.id)}
+                            className="px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 text-xs font-medium hover:bg-emerald-500/20 border border-emerald-500/20 flex items-center gap-1">
+                            <CheckCircle className="w-3.5 h-3.5" /> Complete
+                          </button>
+                          <button onClick={() => handleCancelTransfer(t.id)}
+                            className="px-3 py-1.5 rounded-lg text-xs font-medium text-muted hover:text-red-500 border border-border hover:border-red-500/30">
+                            Cancel
+                          </button>
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -515,37 +516,6 @@ export default function GodownsPage() {
           </label>
           <button onClick={handleCreateGodown} disabled={submitting || !godownForm.name} className="w-full py-2.5 bg-accent text-white rounded-lg text-sm font-medium hover:bg-accent/90 disabled:opacity-50">
             {submitting ? 'Creating...' : 'Create Godown'}
-          </button>
-        </div>
-      </Modal>
-
-      {/* Assign Stock Modal */}
-      <Modal isOpen={showAssignModal} onClose={() => setShowAssignModal(false)} title="Assign Stock to Godown">
-        <div className="space-y-4">
-          <div>
-            <label className="text-sm text-muted mb-1 block">Product *</label>
-            <select value={assignForm.productId} onChange={e => setAssignForm(p => ({ ...p, productId: e.target.value }))} className={SEL}>
-              <option value="">Select Product</option>
-              {products.map(p => <option key={p.id} value={p.id}>{p.name} ({p.sku}) — Stock: {p.stock}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="text-sm text-muted mb-1 block">Godown *</label>
-            <select value={assignForm.godownId} onChange={e => setAssignForm(p => ({ ...p, godownId: e.target.value }))} className={SEL}>
-              <option value="">Select Godown</option>
-              {godowns.map(g => <option key={g.id} value={g.id}>{g.name}{g.isDefault ? ' ⭐' : ''}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="text-sm text-muted mb-1 block">Quantity *</label>
-            <input type="number" min="1" value={assignForm.quantity} onChange={e => setAssignForm(p => ({ ...p, quantity: e.target.value }))} className={INP} />
-          </div>
-          <div>
-            <label className="text-sm text-muted mb-1 block">Notes</label>
-            <input value={assignForm.notes} onChange={e => setAssignForm(p => ({ ...p, notes: e.target.value }))} placeholder="e.g. New shipment arrived" className={INP} />
-          </div>
-          <button onClick={handleAssignStock} disabled={submitting || !assignForm.productId || !assignForm.godownId} className="w-full py-2.5 bg-accent text-white rounded-lg text-sm font-medium hover:bg-accent/90 disabled:opacity-50">
-            {submitting ? 'Assigning...' : 'Assign Stock'}
           </button>
         </div>
       </Modal>

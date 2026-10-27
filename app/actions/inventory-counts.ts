@@ -3,7 +3,7 @@
 import { z } from 'zod'
 import { revalidatePath } from 'next/cache'
 import { prisma } from '@/lib/db'
-import { adjustStock, lockInventoryProducts, resolveStockGodown, stockBalance } from '@/lib/inventory-stock'
+import { adjustStock, lockInventoryProducts, resolveStockGodown } from '@/lib/inventory-stock'
 import { requireActor, actionError } from '@/lib/erp/actor'
 import { nextSequence } from '@/lib/erp/sequence'
 import { logMessage, logTracking } from '@/lib/erp/chatter'
@@ -120,8 +120,10 @@ export async function getInventoryCount(id: number) {
         ...count,
         lines: count.lines.map(line => {
           const current = onHand.get(line.productId) ?? 0
-          const difference = line.appliedDelta ?? (line.countedQty === null ? null : line.countedQty - current)
-          return { ...line, currentQty: current, movedSinceSnapshot: count.status === 'IN_PROGRESS' && current !== line.systemQty, difference }
+          // A counted line is applied against its snapshot; an uncounted one against live stock.
+          const baseQty = line.countedQty === null ? current : line.systemQty
+          const difference = line.appliedDelta ?? (line.countedQty === null ? null : line.countedQty - baseQty)
+          return { ...line, currentQty: current, baseQty, movedSinceSnapshot: count.status === 'IN_PROGRESS' && line.countedQty !== null && current !== line.systemQty, difference }
         }),
       },
     }
@@ -141,10 +143,17 @@ export async function setCountedQty(data: unknown) {
   try {
     await requireActor()
     const input = countedSchema.parse(data)
-    const line = await prisma.inventoryCountLine.findUnique({ where: { id: input.lineId }, include: { count: { select: { status: true } } } })
+    const line = await prisma.inventoryCountLine.findUnique({ where: { id: input.lineId }, include: { count: { select: { status: true, godownId: true } } } })
     if (!line) throw new Error('Count line not found')
     if (line.count.status !== 'IN_PROGRESS') throw new Error('This count is already closed')
-    await prisma.inventoryCountLine.update({ where: { id: input.lineId }, data: { countedQty: input.countedQty, ...(input.notes !== undefined ? { notes: input.notes } : {}) } })
+    // Snapshot what the system held at the moment this line was counted, so
+    // sales/receipts after counting are kept when the count is applied.
+    const live = input.countedQty === null ? null : await prisma.godownStock.findUnique({ where: { productId_godownId: { productId: line.productId, godownId: line.count.godownId } }, select: { quantity: true } })
+    const saved = await prisma.inventoryCountLine.updateMany({
+      where: { id: input.lineId, count: { status: 'IN_PROGRESS' } },
+      data: { countedQty: input.countedQty, ...(live ? { systemQty: live.quantity } : input.countedQty !== null ? { systemQty: 0 } : {}), ...(input.notes !== undefined ? { notes: input.notes } : {}) },
+    })
+    if (saved.count !== 1) throw new Error('This count is already closed')
     return { success: true as const }
   } catch (error) {
     return { success: false as const, error: actionError(error, 'Could not save the counted quantity') }
@@ -182,10 +191,10 @@ export async function applyInventoryCount(id: number) {
       let adjusted = 0
       let value = 0
       for (const line of counted) {
-        // Odoo applies against the live quantity, so moves during the count
-        // are not double-counted.
-        const current = await stockBalance(tx, line.productId, count.godownId)
-        const delta = Math.round(((line.countedQty as number) - current) * 1e6) / 1e6
+        // The difference found when the line was counted (counted − system at
+        // that moment). Moves after counting stay: applying the absolute
+        // counted quantity used to erase sales made in between.
+        const delta = Math.round(((line.countedQty as number) - line.systemQty) * 1e6) / 1e6
         if (delta !== 0) {
           await adjustStock(tx, line.productId, count.godownId, delta, 'ADJUSTMENT', {
             referenceType: 'InventoryCount', referenceId: count.id, notes: `Physical count ${count.displayId}`, createdBy: actor.name,

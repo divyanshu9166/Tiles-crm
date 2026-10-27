@@ -16,17 +16,19 @@ import {
   SO_DELIVERY, SO_INVOICE, SO_STATUS,
 } from '@/components/erp/kit';
 import { CustomerPicker, ProductPicker } from '@/components/erp/pickers';
+import { getStoreSettings } from '@/app/actions/settings';
+import { computeTaxes, lineAmount, orderDiscount } from '@/lib/erp/sales-math';
+import { chargesTax, principalGstRate } from '@/lib/line-math';
 
-const AREA_UNITS = ['SQFT', 'SQM', 'SLAB'];
-
+// Same math the server uses when it saves the order, so the footer total is
+// what the customer will actually be charged.
 function lineValue(line) {
-  const qty = Number(line.quantity) || 0;
-  const price = Number(line.price) || 0;
-  if (AREA_UNITS.includes(line.unitOfMeasure) && Number(line.areaSqft) > 0) {
-    const area = line.unitOfMeasure === 'SQM' ? Number(line.areaSqft) / 10.763910416709722 : Number(line.areaSqft);
-    return Math.round(area * price);
-  }
-  return Math.round(qty * price);
+  return lineAmount({
+    quantity: Math.round(Number(line.quantity) || 0),
+    price: Math.round(Number(line.price) || 0),
+    unitOfMeasure: line.unitOfMeasure,
+    areaSqft: Number(line.areaSqft) > 0 ? Number(line.areaSqft) : undefined,
+  });
 }
 
 const emptyForm = () => ({
@@ -49,6 +51,7 @@ export default function SalesOrdersPage() {
   const [godowns, setGodowns] = useState([]);
   const [staff, setStaff] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [storeGst, setStoreGst] = useState(18);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -67,7 +70,8 @@ export default function SalesOrdersPage() {
     setForm(emptyForm());
     setShowNew(true);
     if (products.length === 0) {
-      const [p, g, s, pl] = await Promise.all([getProducts(), getGodowns(), getStaff(), getPricelists()]);
+      const [p, g, s, pl, st] = await Promise.all([getProducts(), getGodowns(), getStaff(), getPricelists(), getStoreSettings()]);
+      if (st.success && st.data?.gstRate != null) setStoreGst(Number(st.data.gstRate));
       if (pl.success) setPricelists(pl.data);
       if (p.success) setProducts(p.data);
       if (g.success) {
@@ -147,8 +151,16 @@ export default function SalesOrdersPage() {
     if ('quantity' in patch || 'areaSqft' in patch) applyPrices(next);
   };
 
-  const subtotal = form.lines.reduce((sum, line) => sum + lineValue(line), 0);
-  const discount = form.discountType === 'percent' ? Math.round(subtotal * Math.min(Number(form.discountValue) || 0, 100) / 100) : form.discountType === 'flat' ? Math.min(Number(form.discountValue) || 0, subtotal) : 0;
+  const totals = useMemo(() => {
+    const lines = form.lines.map(line => ({ amount: lineValue(line), gstRate: storeGst }));
+    const subtotal = lines.reduce((sum, line) => sum + line.amount, 0);
+    const discount = orderDiscount(subtotal, form.discountType, Number(form.discountValue) || 0);
+    const taxes = computeTaxes(lines, discount, form.supplyType);
+    const charges = (Number(form.freightCharge) || 0) + (Number(form.loadingCharge) || 0) + (Number(form.installationCharge) || 0);
+    const chargeTax = chargesTax(charges, principalGstRate(taxes.lines, storeGst), form.supplyType === 'INTERSTATE');
+    const gst = taxes.gst + chargeTax.gst;
+    return { untaxed: taxes.taxable + charges, gst, total: taxes.taxable + taxes.gst + charges + chargeTax.gst };
+  }, [form.lines, form.discountType, form.discountValue, form.supplyType, form.freightCharge, form.loadingCharge, form.installationCharge, storeGst]);
 
   const submit = async () => {
     if (!form.customer?.id && !(form.customer?.name && form.customer?.phone)) return notify('Select a customer or enter a name and phone', { variant: 'warning' });
@@ -270,7 +282,11 @@ export default function SalesOrdersPage() {
       <Modal isOpen={showNew} onClose={() => setShowNew(false)} title="New sales order" size="xl" fullScreenMobile
         footer={(
           <div className="flex items-center justify-between gap-3 w-full">
-            <div className="text-sm text-muted">Untaxed <span className="text-foreground font-semibold">{formatINR(subtotal - discount)}</span></div>
+            <div className="text-sm text-muted flex flex-wrap gap-x-3">
+              <span>Untaxed <span className="text-foreground font-medium">{formatINR(totals.untaxed)}</span></span>
+              <span>GST <span className="text-foreground font-medium">{formatINR(totals.gst)}</span></span>
+              <span>Total <span className="text-foreground font-semibold">{formatINR(totals.total)}</span></span>
+            </div>
             <div className="flex gap-2">
               <Button variant="ghost" onClick={() => setShowNew(false)}>Discard</Button>
               <Button variant="primary" loading={saving} onClick={submit}>Confirm order</Button>

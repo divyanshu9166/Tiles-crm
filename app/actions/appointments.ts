@@ -4,6 +4,7 @@ import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { createAppointmentSchema } from '@/lib/validations/appointment'
 import { requireAuth } from '@/lib/auth-helpers'
+import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
 
 export async function getAppointments() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
@@ -34,20 +35,27 @@ export async function createAppointment(data: unknown) {
 
   const { customer, phone, date, time, purpose, notes } = parsed.data
 
-  let contact = await prisma.contact.findFirst({ where: { phone } })
+  let contact = await prisma.contact.findFirst({ where: contactPhoneWhere(phone) })
   if (!contact) {
-    contact = await prisma.contact.create({ data: { name: customer, phone } })
+    contact = await prisma.contact.create({ data: { name: customer, phone: normalizePhone(phone) } })
   }
 
-  const appointment = await prisma.appointment.create({
-    data: {
-      contactId: contact.id,
-      date: new Date(date),
-      time,
-      purpose,
-      notes,
-    },
-  })
+  let appointment
+  try {
+    appointment = await prisma.appointment.create({
+      data: {
+        contactId: contact.id,
+        date: new Date(date),
+        time,
+        purpose,
+        notes,
+      },
+    })
+  } catch (error) {
+    // One appointment per slot (@@unique date+time): say so instead of failing silently.
+    if ((error as { code?: string }).code === 'P2002') return { success: false, error: `${time} on ${date} is already booked. Pick another slot.` }
+    throw error
+  }
 
   revalidatePath('/appointments')
   return { success: true, data: appointment }

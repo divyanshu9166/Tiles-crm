@@ -25,7 +25,7 @@ function escapeHtml(value: string | number | null | undefined) {
 
 function formatDate(dateValue?: Date | null) {
   if (!dateValue) return '—'
-  return new Date(dateValue).toLocaleDateString('en-IN')
+  return new Date(dateValue).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })
 }
 
 function normalizeIndianPhone(phone: string) {

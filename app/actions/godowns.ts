@@ -76,13 +76,16 @@ export async function getGodownStockSummary() {
     success: true,
     data: godowns.map(g => {
       const totalItems = g.stocks.reduce((s, st) => s + st.quantity, 0) + g.slabs.length
-      const totalValue = g.stocks.reduce((s, st) => s + (st.quantity * (st.product?.price || 0)), 0) + g.slabs.reduce((sum, slab) => sum + slab.sqft * slab.lot.product.price, 0)
-      const totalCostValue = g.stocks.reduce((s, st) => s + (st.quantity * (st.product?.costPrice || 0)), 0) + g.slabs.reduce((sum, slab) => sum + slab.sqft * slab.lot.costPerSqft, 0)
+      // Stock is valued at cost (what it cost us), not at the selling price.
+      const totalCostValue = Math.round(g.stocks.reduce((s, st) => s + (st.quantity * (st.product?.costPrice || 0)), 0) + g.slabs.reduce((sum, slab) => sum + slab.sqft * slab.lot.costPerSqft, 0))
+      const totalRetailValue = Math.round(g.stocks.reduce((s, st) => s + (st.quantity * (st.product?.price || 0)), 0) + g.slabs.reduce((sum, slab) => sum + slab.sqft * slab.lot.product.price, 0))
+      const totalValue = totalCostValue
       return {
         ...g,
         totalItems,
         totalValue,
         totalCostValue,
+        totalRetailValue,
         utilization: g.capacity ? Math.round((totalItems / g.capacity) * 100) : null,
       }
     }),
@@ -237,28 +240,6 @@ export async function updateGodownStock(productId: number, godownId: number, qua
   return updateStock({ id: productId, godownId, stock: quantity, reason: 'Stock count correction' })
 }
 
-/**
- * Assigns stock to a godown (adds to existing). Used from Inventory page.
- */
-export async function assignStockToGodown(productId: number, godownId: number, quantity: number, notes?: string) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
-  if (!Number.isFinite(quantity) || quantity <= 0) return { success: false, error: 'Quantity must be positive' }
-
-  const product = await prisma.product.findUnique({ where: { id: productId }, select: { id: true, isSlabTracked: true } })
-  if (!product) return { success: false, error: 'Product not found' }
-  if (product.isSlabTracked) return { success: false, error: 'Serialized stone stock must be managed through Lot / Slab Explorer' }
-
-  const result = await adjustGodownStock(productId, godownId, quantity, 'IN', {
-    referenceType: 'Manual',
-    notes: notes || 'Stock assigned to godown',
-    createdBy: 'Admin',
-  })
-
-  revalidatePath('/godowns')
-  revalidatePath('/inventory')
-  return { success: true, data: result }
-}
-
 // ─── INTER-GODOWN TRANSFERS ──────────────────────────
 
 export async function getTransfers() {
@@ -340,8 +321,10 @@ export async function createTransfer(data: unknown) {
   } catch (error) { return { success: false, error: inventoryError(error) } }
 }
 
-export async function completeTransfer(id: number, approvedBy?: string) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+export async function completeTransfer(id: number, _approvedBy?: string) {
+  let approvedBy: string
+  try { approvedBy = (await requireRole('ADMIN', 'MANAGER')).user.name || 'Manager' } catch { return { success: false, error: 'Access denied' } }
+  void _approvedBy
 
   try {
     await prisma.$transaction(async tx => {
@@ -364,13 +347,13 @@ export async function completeTransfer(id: number, approvedBy?: string) {
           referenceType: 'Transfer',
           referenceId: transfer.id,
           notes: `Transfer ${transfer.displayId}`,
-          createdBy: approvedBy || 'Admin',
+          createdBy: approvedBy,
         })
         await adjustGodownStockWithTx(tx, item.productId, transfer.toGodownId, item.quantity, 'TRANSFER_IN', {
           referenceType: 'Transfer',
           referenceId: transfer.id,
           notes: `Transfer ${transfer.displayId}`,
-          createdBy: approvedBy || 'Admin',
+          createdBy: approvedBy,
         })
       }
 
@@ -382,6 +365,16 @@ export async function completeTransfer(id: number, approvedBy?: string) {
 
   revalidatePath('/godowns')
   revalidatePath('/inventory')
+  return { success: true }
+}
+
+// A pending transfer moved no stock yet, so cancelling only closes it.
+export async function cancelTransfer(id: number) {
+  let actor: string
+  try { actor = (await requireRole('ADMIN', 'MANAGER')).user.name || 'Manager' } catch { return { success: false, error: 'Access denied' } }
+  const claimed = await prisma.godownTransfer.updateMany({ where: { id, status: 'Pending' }, data: { status: 'Cancelled', approvedBy: actor } })
+  if (claimed.count !== 1) return { success: false, error: 'Only a pending transfer can be cancelled' }
+  revalidatePath('/godowns')
   return { success: true }
 }
 

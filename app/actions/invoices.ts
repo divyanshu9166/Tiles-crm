@@ -9,6 +9,8 @@ import { chargesTax, linePrice, principalGstRate, stockQuantity } from '@/lib/li
 import { nextCreditNoteNumber, refreshInvoiceBalance } from '@/lib/erp/credit-notes'
 import { syncStoneLotTotals } from '@/lib/stone-inventory'
 import type { PaymentStatus, InvoiceStatus } from '@prisma/client'
+import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
+import { stripBankDetails } from '@/lib/quotation-notes'
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
@@ -263,7 +265,7 @@ export async function getInvoices() {
       dueDate: inv.dueDate?.toISOString().split('T')[0] || null,
       salesperson: inv.salesperson?.name || null,
       salespersonId: inv.salespersonId,
-      notes: inv.notes,
+      notes: inv.notes == null ? inv.notes : stripBankDetails(inv.notes),
       isHeld: !!inv.heldAt,
       payments: inv.payments.map(p => ({
         id: p.id,
@@ -299,7 +301,7 @@ export async function getInvoice(id: number) {
     },
   })
   if (!invoice) return { success: false, error: 'Invoice not found' }
-  return { success: true, data: invoice }
+  return { success: true, data: { ...invoice, notes: invoice.notes == null ? invoice.notes : stripBankDetails(invoice.notes) } }
 }
 
 // ─── CREATE INVOICE ────────────────────────────────────
@@ -338,12 +340,12 @@ export async function createInvoice(data: unknown) {
     : undefined
 
   // Find or create contact
-  let contact = await prisma.contact.findFirst({ where: { phone } })
+  let contact = await prisma.contact.findFirst({ where: contactPhoneWhere(phone) })
   if (!contact) {
     contact = await prisma.contact.create({
       data: {
         name: customer,
-        phone,
+        phone: normalizePhone(phone),
         address,
         ...(gstNumberValue ? { gstNumber: gstNumberValue } : {}),
       },
@@ -533,13 +535,13 @@ export async function createInvoice(data: unknown) {
       total,
       amountPaid,
       balanceDue,
-      paymentMethod: payments[0].method, // primary method
+      paymentMethod: amountPaid > 0 ? payments[0].method : (isHeld ? payments[0].method : 'Credit'), // primary method; unpaid bills are credit sales
       paymentStatus,
       invoiceStatus: 'ACTIVE',
       supplyType: resolvedSupplyType,
       placeOfSupply: placeOfSupply?.trim() || null,
       date: now,
-      time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }),
+      time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }),
       dueDate: dueDate ? new Date(dueDate) : null,
       salespersonId,
       notes,
@@ -692,12 +694,12 @@ export async function updateInvoice(invoiceId: number, data: unknown) {
     ? gstNumber.trim().toUpperCase()
     : undefined
 
-  let contact = await prisma.contact.findFirst({ where: { phone } })
+  let contact = await prisma.contact.findFirst({ where: contactPhoneWhere(phone) })
   if (!contact) {
     contact = await prisma.contact.create({
       data: {
         name: customer,
-        phone,
+        phone: normalizePhone(phone),
         address,
         ...(gstNumberValue ? { gstNumber: gstNumberValue } : {}),
       },
@@ -889,7 +891,9 @@ export async function recordPayment(data: unknown) {
       if (invoice.invoiceStatus !== 'ACTIVE') throw new Error('Cannot add payment to cancelled/refunded invoice')
       if (invoice.heldAt) throw new Error('Finalize the parked bill before taking more payments')
       if (invoice.balanceDue <= 0) throw new Error('Invoice is already fully paid')
-      const paymentAmount = Math.min(amount, invoice.balanceDue)
+      // Never cap silently: the cashier must know the extra wasn't recorded.
+      if (amount > invoice.balanceDue) throw new Error(`Amount is more than the balance due (₹${invoice.balanceDue.toLocaleString('en-IN')}). Enter ₹${invoice.balanceDue.toLocaleString('en-IN')} or less and return the change.`)
+      const paymentAmount = amount
       await tx.payment.create({ data: { invoiceId, amount: paymentAmount, method, reference, notes } })
       await tx.invoice.update({ where: { id: invoiceId }, data: { amountPaid: { increment: paymentAmount } } })
       await refreshInvoiceBalance(tx, invoiceId)
@@ -1114,19 +1118,19 @@ export async function getInvoiceStats() {
 
   const [allInvoices, todayInvoices, monthInvoices, lastMonthInvoices] = await Promise.all([
     prisma.invoice.findMany({
-      where: { invoiceStatus: 'ACTIVE' },
-      select: { total: true, amountPaid: true, balanceDue: true, paymentStatus: true },
+      where: { invoiceStatus: 'ACTIVE', heldAt: null },
+      select: { total: true, amountPaid: true, balanceDue: true, paymentStatus: true, dueDate: true, date: true },
     }),
     prisma.invoice.findMany({
-      where: { invoiceStatus: 'ACTIVE', date: { gte: todayStart } },
+      where: { invoiceStatus: 'ACTIVE', heldAt: null, date: { gte: todayStart } },
       select: { total: true, amountPaid: true },
     }),
     prisma.invoice.findMany({
-      where: { invoiceStatus: 'ACTIVE', date: { gte: monthStart } },
+      where: { invoiceStatus: 'ACTIVE', heldAt: null, date: { gte: monthStart } },
       select: { total: true, amountPaid: true },
     }),
     prisma.invoice.findMany({
-      where: { invoiceStatus: 'ACTIVE', date: { gte: lastMonthStart, lte: lastMonthEnd } },
+      where: { invoiceStatus: 'ACTIVE', heldAt: null, date: { gte: lastMonthStart, lte: lastMonthEnd } },
       select: { total: true },
     }),
   ])
@@ -1134,7 +1138,8 @@ export async function getInvoiceStats() {
   const totalBilled = allInvoices.reduce((s, i) => s + i.total, 0)
   const totalCollected = allInvoices.reduce((s, i) => s + i.amountPaid, 0)
   const totalPending = allInvoices.reduce((s, i) => s + i.balanceDue, 0)
-  const overdueCount = allInvoices.filter(i => i.paymentStatus !== 'PAID' && i.balanceDue > 0).length
+  // Overdue = unpaid past its due date (bills without a due date count from the bill date).
+  const overdueCount = allInvoices.filter(i => i.balanceDue > 0 && (i.dueDate ? i.dueDate < todayStart : i.date < todayStart)).length
 
   const todayRevenue = todayInvoices.reduce((s, i) => s + i.amountPaid, 0)
   const todayCount = todayInvoices.length

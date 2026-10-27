@@ -6,6 +6,7 @@ import { createOrderSchema, updateOrderStatusSchema } from '@/lib/validations/or
 import type { OrderSource, PaymentStatus } from '@prisma/client'
 import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { adjustStock, resolveStockGodown, lockInventoryProducts, inventoryError } from '@/lib/inventory-stock'
+import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
 
 export async function getOrders(source?: string) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
@@ -61,7 +62,7 @@ export async function createOrder(data: unknown) {
       if (!product) throw new Error('Product not found')
       if (shouldDeductStock && product.isSlabTracked) throw new Error('Sell physical slabs through the invoice workflow')
       const godown = shouldDeductStock ? await resolveStockGodown(tx, godownId) : null
-      const contact = await tx.contact.findFirst({ where: { phone } }) || await tx.contact.create({ data: { name: customer, phone } })
+      const contact = await tx.contact.findFirst({ where: contactPhoneWhere(phone) }) || await tx.contact.create({ data: { name: customer, phone: normalizePhone(phone) } })
       const prefix = orderSource === 'STORE' ? 'ORD' : orderSource === 'AMAZON' ? 'AMZ' : orderSource === 'FLIPKART' ? 'FK' : 'SHP'
       await tx.$queryRaw`SELECT pg_advisory_xact_lock(82463102)::text`
       const lastOrder = await tx.order.findFirst({ where: { displayId: { startsWith: `${prefix}-` } }, orderBy: { id: 'desc' }, select: { displayId: true } })

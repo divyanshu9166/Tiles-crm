@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Search, Plus, MessageSquare, Instagram, Facebook, Globe, Phone, Mail, ChevronRight, Bot, Clock, Trash2, Store, Building2 } from 'lucide-react';
+import { Search, Plus, MessageSquare, Instagram, Facebook, Globe, Phone, Mail, ChevronRight, Bot, Clock, Trash2, Store, Building2, FileText } from 'lucide-react';
 import { getLeads, createLead, updateLeadStatus, addFollowUp } from '@/app/actions/leads';
 import { moveLeadToDraft } from '@/app/actions/drafts';
 import Modal from '@/components/Modal';
@@ -87,9 +87,11 @@ export default function LeadsPage() {
     });
   }, []);
 
+  const searchDigits = search.replace(/\D/g, '');
   const filteredLeads = leads.filter(l =>
     l.name.toLowerCase().includes(search.toLowerCase()) ||
-    l.interest.toLowerCase().includes(search.toLowerCase())
+    (l.interest || '').toLowerCase().includes(search.toLowerCase()) ||
+    (searchDigits.length >= 3 && String(l.phone || '').replace(/\D/g, '').includes(searchDigits))
   );
 
   const handleCreateLead = async (e) => {
@@ -103,7 +105,8 @@ export default function LeadsPage() {
       applicationArea: IS_TGM ? f.applicationArea.value : undefined,
       areaSqft: IS_TGM && f.areaSqft.value ? Number(f.areaSqft.value) : undefined,
     });
-    if (res.success) { setShowAddModal(false); await refresh(); }
+    if (res.success) { setShowAddModal(false); await refresh(); notify('Lead created', { variant: 'success' }); }
+    else notify(res.error || 'Could not create the lead', { variant: 'danger' });
   };
 
   const handleUpdateStatus = async (leadId, newStage) => {
@@ -114,7 +117,7 @@ export default function LeadsPage() {
     if (res.success) {
       await refresh();
       setSelectedLead(prev => prev ? { ...prev, status: newStage } : null);
-    }
+    } else notify(res.error || 'Could not change the stage', { variant: 'danger' });
     setUpdatingStatus(false);
   };
 
@@ -151,6 +154,7 @@ export default function LeadsPage() {
   const handleAddFollowUp = async () => {
     if (!followUpForm.message || !followUpForm.date) return;
     const res = await addFollowUp({ leadId: selectedLead.id, day: followUpForm.day, message: followUpForm.message, date: followUpForm.date });
+    if (!res.success) { notify(res.error || 'Could not add the follow-up', { variant: 'danger' }); return; }
     if (res.success) {
       setFollowUpForm({ day: 1, message: '', date: '' });
       setShowFollowUpForm(false);
@@ -390,6 +394,12 @@ export default function LeadsPage() {
                   >
                     <MessageSquare className="w-3.5 h-3.5" /> WhatsApp
                   </button>
+                  <a
+                    href={`/quotations?new=1&customer=${encodeURIComponent(selectedLead.name)}&phone=${encodeURIComponent(selectedLead.phone)}${selectedLead.email ? `&email=${encodeURIComponent(selectedLead.email)}` : ''}`}
+                    className="touch-target inline-flex items-center justify-center gap-1.5 flex-1 md:flex-initial px-4 py-2.5 md:px-3 md:py-1.5 rounded-lg text-sm md:text-xs font-medium bg-accent text-white hover:bg-accent-hover"
+                  >
+                    <FileText className="w-3.5 h-3.5" /> New quotation
+                  </a>
                 </div>
               </div>
             </div>

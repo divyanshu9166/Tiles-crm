@@ -413,10 +413,16 @@ export async function getDailyCashRegister(date) {
         date: { gte: startOfDay, lte: endOfDay },
         method: 'Cash',
         isReversal: false,
-        chequeBounced: false
+        chequeBounced: false,
+        status: { not: 'Reversed' },
       },
     });
-    const cashIn = payments.filter(p => p.type === 'IN').reduce((sum, p) => sum + p.amount, 0);
+    // Cash taken at the POS / on invoices belongs in the day's cash book too.
+    const invoiceCash = await prisma.payment.aggregate({
+      where: { date: { gte: startOfDay, lte: endOfDay }, method: 'Cash', amount: { gt: 0 }, invoice: { heldAt: null } },
+      _sum: { amount: true },
+    });
+    const cashIn = payments.filter(p => p.type === 'IN').reduce((sum, p) => sum + p.amount, 0) + (invoiceCash._sum.amount || 0);
 
     // For cashOut we also include Cash expenses from Expense model
     const cashPaymentsOut = payments.filter(p => p.type === 'OUT').reduce((sum, p) => sum + p.amount, 0);

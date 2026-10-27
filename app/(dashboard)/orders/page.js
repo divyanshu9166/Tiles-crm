@@ -6,8 +6,7 @@ import {
   RefreshCw, Plus, Printer, X, Settings2, Edit3, Check,
   Store, Unlink, Link2, ExternalLink, Download, Trash2,
 } from 'lucide-react';
-import { getOrders, createOrder } from '@/app/actions/orders';
-import { getMarketplaceChannels } from '@/app/actions/settings';
+import { getOrders, createOrder, updateOrderStatus } from '@/app/actions/orders';
 import { Suspense } from 'react';
 import { getProducts } from '@/app/actions/products';
 import { getGodowns } from '@/app/actions/godowns';
@@ -30,6 +29,13 @@ const statusColors = {
   Shipped: 'bg-purple-light text-purple',
   Delivered: 'bg-success-light text-success',
   Cancelled: 'bg-danger-light text-danger',
+};
+
+// Next step for a store order: packing → shipped → delivered.
+const NEXT_ORDER_STEP = {
+  Confirmed: { status: 'PROCESSING', label: 'Start packing' },
+  Processing: { status: 'SHIPPED', label: 'Mark shipped' },
+  Shipped: { status: 'DELIVERED', label: 'Mark delivered' },
 };
 
 const paymentColors = {
@@ -79,13 +85,11 @@ export default function OrdersPage() {
 function OrdersPageInner() {
   const searchParams = useSearchParams();
   const [orders, setOrders] = useState([]);
+  const [statusBusy, setStatusBusy] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState('orders');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [sourceFilter, setSourceFilter] = useState('All');
-  const [syncing, setSyncing] = useState({});
-  const [channels, setChannels] = useState([]);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [products, setProducts] = useState([]);
   const [godowns, setGodowns] = useState([]);
@@ -112,9 +116,8 @@ function OrdersPageInner() {
   const [deletingOrder, setDeletingOrder] = useState(false);
 
   useEffect(() => {
-    Promise.all([getOrders(), getMarketplaceChannels(), getProducts(), getGodowns()]).then(([ordersRes, channelsRes, productsRes, godownsRes]) => {
+    Promise.all([getOrders(), getProducts(), getGodowns()]).then(([ordersRes, productsRes, godownsRes]) => {
       if (ordersRes.success) setOrders(ordersRes.data);
-      if (channelsRes.success) setChannels(channelsRes.data);
       if (productsRes.success) setProducts(productsRes.data);
       if (godownsRes.success) {
         setGodowns(godownsRes.data);
@@ -325,24 +328,33 @@ function OrdersPageInner() {
     if (profileRes.success) setOrderCustomerProfile(profileRes.data);
   };
 
-  const handleSync = (channelId) => {
-    setSyncing(prev => ({ ...prev, [channelId]: true }));
-    setTimeout(() => {
-      setSyncing(prev => ({ ...prev, [channelId]: false }));
-      setChannels(prev => prev.map(ch =>
-        ch.id === channelId ? { ...ch, lastSync: new Date().toLocaleString('en-IN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: true }) } : ch
-      ));
-    }, 2000);
+  const handleOrderStatus = async (order, status) => {
+    if (status === 'CANCELLED' && !window.confirm(`Cancel order ${order.id}? The stock goes back to the godown. This cannot be undone.`)) return;
+    setStatusBusy(order.dbId);
+    const res = await updateOrderStatus({ id: order.dbId, status });
+    setStatusBusy(null);
+    if (!res?.success) return notify(res?.error || 'Could not update the order', { variant: 'danger' });
+    const label = status.charAt(0) + status.slice(1).toLowerCase();
+    setOrders(prev => prev.map(o => (o.dbId === order.dbId ? { ...o, status: label } : o)));
+    notify(`Order ${order.id} is now ${label}`, { variant: 'success' });
   };
 
-  const handleSyncAll = () => {
-    channels.filter(ch => ch.connected).forEach(ch => handleSync(ch.id));
-  };
-
-  const handleToggleConnect = (channelId) => {
-    setChannels(prev => prev.map(ch =>
-      ch.id === channelId ? { ...ch, connected: !ch.connected } : ch
-    ));
+  const renderStatusActions = (order) => {
+    const next = NEXT_ORDER_STEP[order.status];
+    if (!next) return null;
+    const busy = statusBusy === order.dbId;
+    return (
+      <>
+        <button type="button" disabled={busy} onClick={() => handleOrderStatus(order, next.status)}
+          className="px-2 py-1.5 rounded-lg text-xs font-medium bg-accent text-white hover:bg-accent-hover disabled:opacity-50 whitespace-nowrap">
+          {next.label}
+        </button>
+        <button type="button" disabled={busy} onClick={() => handleOrderStatus(order, 'CANCELLED')}
+          className="px-2 py-1.5 rounded-lg text-xs font-medium text-muted hover:text-red-700 disabled:opacity-50">
+          Cancel
+        </button>
+      </>
+    );
   };
 
   const getSourceBadge = (source) => {
@@ -371,7 +383,7 @@ function OrdersPageInner() {
 
 
       {/* ─── ORDERS TAB ─── */}
-      {tab === 'orders' && (
+      {(
         <>
           {/* Stats */}
           <div className="flex gap-3 overflow-x-auto hide-scrollbar pb-1">
@@ -454,6 +466,7 @@ function OrdersPageInner() {
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-bold text-foreground">₹{order.amount.toLocaleString()}</span>
+                    {renderStatusActions(order)}
                     <button onClick={() => openSlipModal(order)} title="Print Packaging Slip"
                       className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium bg-surface border border-border text-muted hover:text-accent hover:border-accent/40 transition-all">
                       <Printer className="w-3.5 h-3.5" />
@@ -500,6 +513,7 @@ function OrdersPageInner() {
                     <td className="text-muted">{order.date}</td>
                     <td>
                       <div className="flex items-center gap-2">
+                        {renderStatusActions(order)}
                         <button onClick={() => openSlipModal(order)} title="Print Packaging Slip"
                           className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium bg-surface border border-border text-muted hover:text-accent hover:border-accent/40 transition-all">
                           <Printer className="w-3.5 h-3.5" /> Slip
@@ -522,162 +536,6 @@ function OrdersPageInner() {
         </>
       )}
 
-      {/* ─── CHANNELS TAB ─── */}
-      {tab === 'channels' && (
-        <div className="space-y-6">
-          {/* Channel overview stats */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {orderSources.filter(s => s !== 'All').map(source => (
-              <div key={source} className="glass-card p-4 cursor-pointer hover:border-accent/30 transition-all" onClick={() => { setTab('orders'); setSourceFilter(source); }}>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-9 h-9 rounded-xl flex items-center justify-center text-sm font-bold" style={{ backgroundColor: `${sourceConfig[source].color}20`, color: sourceConfig[source].color }}>
-                      {source === 'Store' ? <Store className="w-4.5 h-4.5" /> : source[0]}
-                    </div>
-                    <span className="text-sm font-semibold text-foreground">{source}</span>
-                  </div>
-                  <span className="text-xs text-muted">{sourceStats[source].count} orders</span>
-                </div>
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-muted">Revenue: <span className="text-success font-medium">₹{(sourceStats[source].revenue / 1000).toFixed(0)}K</span></span>
-                  <span className="text-muted">Active: <span className="text-foreground font-medium">{sourceStats[source].pending}</span></span>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Marketplace Connections */}
-          <div>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-foreground">Marketplace Connections</h2>
-              <button onClick={handleSyncAll} className="flex items-center gap-2 px-3 py-1.5 bg-surface border border-border hover:border-accent/30 rounded-lg text-xs font-medium text-foreground transition-all">
-                <RefreshCw className={`w-3.5 h-3.5 ${Object.values(syncing).some(Boolean) ? 'animate-spin' : ''}`} /> Sync All Now
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              {channels.map(channel => (
-                <div key={channel.id} className="glass-card p-5 relative overflow-hidden">
-                  {/* Accent bar */}
-                  <div className="absolute top-0 left-0 right-0 h-1 rounded-t-xl" style={{ backgroundColor: channel.color }} />
-
-                  {/* Header */}
-                  <div className="flex items-center justify-between mb-4 mt-1">
-                    <div className="flex items-center gap-3">
-                      <div className="w-11 h-11 rounded-xl flex items-center justify-center text-lg font-bold" style={{ backgroundColor: `${channel.color}20`, color: channel.color }}>
-                        {channel.logo}
-                      </div>
-                      <div>
-                        <h3 className="font-semibold text-foreground">{channel.name}</h3>
-                        <p className="text-xs text-muted">Seller: {channel.sellerId}</p>
-                      </div>
-                    </div>
-                    <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${channel.connected ? 'bg-emerald-500/10 text-emerald-700 border-emerald-500/20' : 'bg-red-500/10 text-red-700 border-red-500/20'}`}>
-                      <div className={`w-1.5 h-1.5 rounded-full ${channel.connected ? 'bg-emerald-600' : 'bg-red-600'}`} />
-                      {channel.connected ? 'Connected' : 'Disconnected'}
-                    </div>
-                  </div>
-
-                  {/* Stats */}
-                  <div className="grid grid-cols-3 gap-3 mb-4">
-                    <div className="bg-surface rounded-lg p-2.5 text-center">
-                      <p className="text-lg font-bold text-foreground">{sourceStats[channel.name]?.count || 0}</p>
-                      <p className="text-[10px] text-muted">Orders</p>
-                    </div>
-                    <div className="bg-surface rounded-lg p-2.5 text-center">
-                      <p className="text-lg font-bold text-amber-700">{sourceStats[channel.name]?.pending || 0}</p>
-                      <p className="text-[10px] text-muted">Pending</p>
-                    </div>
-                    <div className="bg-surface rounded-lg p-2.5 text-center">
-                      <p className="text-sm font-bold text-success">₹{((sourceStats[channel.name]?.revenue || 0) / 1000).toFixed(0)}K</p>
-                      <p className="text-[10px] text-muted">Revenue</p>
-                    </div>
-                  </div>
-
-                  {/* Last sync */}
-                  <div className="flex items-center justify-between text-xs text-muted mb-4 px-1">
-                    <span className="flex items-center gap-1.5">
-                      <Clock className="w-3 h-3" />
-                      Last sync: {channel.lastSync}
-                    </span>
-                  </div>
-
-                  {/* Actions */}
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => handleSync(channel.id)}
-                      disabled={!channel.connected || syncing[channel.id]}
-                      className="flex-1 flex items-center justify-center gap-2 py-2 bg-surface border border-border rounded-lg text-xs font-medium text-foreground hover:border-accent/30 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${syncing[channel.id] ? 'animate-spin' : ''}`} />
-                      {syncing[channel.id] ? 'Syncing...' : 'Sync Now'}
-                    </button>
-                    <button
-                      onClick={() => handleToggleConnect(channel.id)}
-                      className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium transition-all border ${channel.connected
-                        ? 'bg-red-500/10 text-red-700 border-red-500/20 hover:bg-red-500/20'
-                        : 'bg-emerald-500/10 text-emerald-700 border-emerald-500/20 hover:bg-emerald-500/20'
-                      }`}
-                    >
-                      {channel.connected ? <><Unlink className="w-3.5 h-3.5" /> Disconnect</> : <><Link2 className="w-3.5 h-3.5" /> Connect</>}
-                    </button>
-                    <button
-                      onClick={() => { setTab('orders'); setSourceFilter(channel.name); setStatusFilter('All'); }}
-                      className="flex items-center justify-center gap-1 px-3 py-2 bg-surface border border-border rounded-lg text-xs font-medium text-muted hover:text-foreground hover:border-accent/30 transition-all"
-                      title="View orders"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Sync settings */}
-          <div className="glass-card p-6">
-            <h3 className="text-base font-semibold text-foreground mb-4">Sync Settings</h3>
-            <div className="space-y-4">
-              <div className="flex items-center justify-between py-3 border-b border-border">
-                <div>
-                  <p className="text-sm font-medium text-foreground">Auto-Sync Orders</p>
-                  <p className="text-xs text-muted">Automatically sync new orders every 15 minutes</p>
-                </div>
-                <button className="w-11 h-6 rounded-full bg-accent relative transition-colors">
-                  <div className="w-5 h-5 bg-black rounded-full absolute top-0.5 right-0.5 transition-all" />
-                </button>
-              </div>
-              <div className="flex items-center justify-between py-3 border-b border-border">
-                <div>
-                  <p className="text-sm font-medium text-foreground">Sync Inventory</p>
-                  <p className="text-xs text-muted">Keep stock levels in sync across all marketplaces</p>
-                </div>
-                <button className="w-11 h-6 rounded-full bg-accent relative transition-colors">
-                  <div className="w-5 h-5 bg-black rounded-full absolute top-0.5 right-0.5 transition-all" />
-                </button>
-              </div>
-              <div className="flex items-center justify-between py-3 border-b border-border">
-                <div>
-                  <p className="text-sm font-medium text-foreground">Auto-Update Tracking</p>
-                  <p className="text-xs text-muted">Push shipping updates back to marketplace platforms</p>
-                </div>
-                <button className="w-11 h-6 rounded-full bg-accent relative transition-colors">
-                  <div className="w-5 h-5 bg-black rounded-full absolute top-0.5 right-0.5 transition-all" />
-                </button>
-              </div>
-              <div className="flex items-center justify-between py-3">
-                <div>
-                  <p className="text-sm font-medium text-foreground">Notify on New Order</p>
-                  <p className="text-xs text-muted">Get notified when a new marketplace order comes in</p>
-                </div>
-                <button className="w-11 h-6 rounded-full bg-accent relative transition-colors">
-                  <div className="w-5 h-5 bg-black rounded-full absolute top-0.5 right-0.5 transition-all" />
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ─── NEW OFFLINE ORDER MODAL ─── */}
       <Modal isOpen={showCreateModal} onClose={() => { setShowCreateModal(false); resetOfflineOrderForm(); }} title="New Offline Order">

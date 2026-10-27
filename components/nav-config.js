@@ -1,7 +1,7 @@
 import {
   Home, Users, Calendar, Package, ShoppingCart, Megaphone, MessageSquare, Settings,
   Headphones, UserPlus, UsersRound, Receipt, Ruler, KeyRound, Trash2, MailPlus, Truck, Warehouse,
-  FileSpreadsheet, FileText, Factory, Wallet, BarChart3, Calculator, Building2, Banknote, Sparkles,
+  FileSpreadsheet, FileText, Factory, Wallet, BarChart3, Calculator, Building2, Banknote,
   Handshake, CalendarCheck, ClipboardList, ClipboardCheck, ArrowLeftRight, RefreshCcw, FileInput,
   PackagePlus, BookOpen, Tags, Trophy, Landmark, ShoppingBag, LayoutGrid,
 } from 'lucide-react';
@@ -33,7 +33,6 @@ export const apps = [
       { href: '/pricelists', label: 'Pricelists', icon: Tags, roles: ['ADMIN', 'MANAGER'] },
       { href: '/dealers', label: 'Dealers & Partners', icon: Handshake },
       { href: '/indiamart-leads', label: 'IndiaMART Leads', icon: Building2, roles: ['ADMIN', 'MANAGER'] },
-      { href: '/recommend', label: 'Surface Visualizer', icon: Sparkles, vertical: 'tiles' },
     ],
   },
   {
@@ -41,7 +40,7 @@ export const apps = [
     description: 'Stock, transfers, counts and reordering',
     items: [
       { href: '/inventory', label: 'Products & Stock', tilesLabel: 'Inventory & Lots', icon: Package },
-      { href: '/operations', label: 'Transfers', icon: ArrowLeftRight, roles: ['ADMIN', 'MANAGER'] },
+      { href: '/operations', label: 'Operations', icon: ArrowLeftRight, roles: ['ADMIN', 'MANAGER'] },
       { href: '/replenishment', label: 'Replenishment', icon: RefreshCcw, roles: ['ADMIN', 'MANAGER'] },
       { href: '/inventory-counts', label: 'Physical Counts', icon: ClipboardCheck },
       { href: '/godowns', label: 'Godowns', icon: Warehouse, roles: ['ADMIN', 'MANAGER', 'STAFF'] },

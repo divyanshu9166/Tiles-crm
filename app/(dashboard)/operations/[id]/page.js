@@ -105,6 +105,7 @@ export default function PickingPage() {
   };
 
   const cancel = async () => {
+    if (!confirm(`Cancel ${picking.displayId}? This cannot be undone.`)) return;
     setBusy('cancel');
     const res = await cancelPicking(pickingId);
     setBusy('');

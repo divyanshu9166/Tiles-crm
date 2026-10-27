@@ -637,7 +637,7 @@ export async function staffStockUpdate(data: {
   else if (action === 'Stock Out' || action === 'Dispatched') delta = -quantity
 
   const now = new Date()
-  const time = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
+  const time = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' })
   let newStock = product.stock
 
   // Movements go through the location ledger so godown balances, the stock
@@ -651,6 +651,11 @@ export async function staffStockUpdate(data: {
           referenceType: 'StaffPortal', referenceId: staffId, notes: `Staff portal: ${action}`, createdBy: session.user.name,
         })
         newStock = result.totalStock
+        // Stock assigned to batches/shades must leave through its batch (same rule as sales and counts).
+        if (delta < 0) {
+          const batches = await tx.productBatch.aggregate({ where: { productId }, _sum: { remainingQty: true } })
+          if ((batches._sum.remainingQty || 0) > newStock) throw new Error(`${product.name}: this stock is assigned to batches/shades. Issue it through a delivery with the shade selected.`)
+        }
       }
       await tx.stockUpdate.create({
         data: {

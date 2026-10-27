@@ -39,13 +39,16 @@ const inventoryQuantity = (product) => product?.isSlabTracked
   ? Number(product.availableStoneSlabs || 0)
   : Number(product?.stock || 0);
 
+// Stock is valued at cost (what it cost us), not at the selling price.
 const inventoryValue = (product) => product?.isSlabTracked
-  ? Number(product.availableStoneSqft || 0) * Number(product.price || 0)
-  : (product?.isRawMaterial ? Number(product.costPrice || 0) : Number(product.price || 0)) * inventoryQuantity(product);
+  ? Number(product.availableStoneCost || 0)
+  : Number(product?.costPrice || 0) * inventoryQuantity(product);
 
 const inventoryStockText = (product) => product?.isSlabTracked
   ? `${inventoryQuantity(product)} slabs · ${Number(product.availableStoneSqft || 0).toFixed(2)} sq.ft`
-  : `${inventoryQuantity(product)} ${inventoryUnitLabel(product)}`;
+  : inventoryUnitLabel(product) === 'BOX' && Number(product?.coveragePerBox) > 0
+    ? `${inventoryQuantity(product)} boxes · ${(inventoryQuantity(product) * Number(product.coveragePerBox)).toLocaleString('en-IN', { maximumFractionDigits: 2 })} sq.ft`
+    : `${inventoryQuantity(product)} ${inventoryUnitLabel(product)}`;
 
 const stockBadge = (stock, reorderLevel) => {
   if (stock === 0) return { text: 'Out of Stock', cls: 'bg-danger-light text-danger' };
@@ -163,11 +166,12 @@ export default function InventoryPage() {
   const [sampleLoanForm, setSampleLoanForm] = useState({ customerName: '', customerPhone: '', productId: '', slabId: '', expectedReturn: '', notes: '' });
 
   useEffect(() => {
-    Promise.all([getProducts(), getCategories(), getWarehouses(), getGodowns()]).then(([pRes, cRes, wRes, gdRes]) => {
+    Promise.all([getProducts(), getCategories(), getWarehouses(), getGodowns(), getGodownStock()]).then(([pRes, cRes, wRes, gdRes, gsRes]) => {
       if (pRes.success) setProducts(pRes.data);
       setCategories(['All', ...cRes.map(c => c.name)]);
       setWarehouses(['All', ...wRes.map(w => w.name)]);
       if (gdRes.success) setGodowns(gdRes.data);
+      if (gsRes.success) setGodownStocks(gsRes.data);
     }).catch(err => setPageError(err.message || 'Could not load inventory')).finally(() => setLoading(false));
   }, []);
 
@@ -674,7 +678,7 @@ export default function InventoryPage() {
             <div className="glass-card p-4 flex items-center gap-3 min-w-[160px] flex-shrink-0">
               <div className="p-2.5 rounded-xl bg-success-light"><TrendingUp className="w-5 h-5 text-success" /></div>
               <div>
-                <p className="text-xs text-muted">{productType === 'rawMaterial' ? 'Material Value' : 'Inventory Value'}</p>
+                <p className="text-xs text-muted">{productType === 'rawMaterial' ? 'Material value (at cost)' : 'Stock value (at cost)'}</p>
                 <p className="text-lg font-bold text-foreground">₹{(totalValue / 100000).toFixed(1)}L</p>
               </div>
             </div>
@@ -1029,11 +1033,15 @@ export default function InventoryPage() {
                        <td>{slab.qcGrade || 'Not graded'}</td>
                        <td><select value={slab.bookMatchPairId || ''} onChange={async e => { const result = await pairSlabs({ slabId: slab.id, partnerId: e.target.value ? Number(e.target.value) : null }); if (result.success) { notify('Book-match pairing updated.', { variant: 'success' }); loadStoneLots(); } else notify(result.error || 'Could not pair slabs', { variant: 'danger' }); }} className="px-2 py-1.5 bg-surface border border-border rounded-lg text-xs"><option value="">None</option>{lot.slabs.filter(candidate => candidate.id !== slab.id).map(candidate => <option key={candidate.id} value={candidate.id}>{candidate.slabNumber}</option>)}</select></td>
                       <td><span className={`badge ${slab.status === 'AVAILABLE' ? 'bg-success-light text-success' : slab.status === 'SOLD' ? 'bg-surface-hover text-muted' : slab.status === 'DAMAGED' ? 'bg-danger-light text-danger' : 'bg-warning-light text-warning'}`}>{slab.status.replace('_', ' ')}</span></td>
-                      <td>{slab.status === 'AVAILABLE' ? <select value={slab.status} onChange={async e => {
-                        const nextStatus = e.target.value;
-                        const result = await updateSlab({ slabId: slab.id, status: nextStatus });
-                        if (result.success) loadStoneLots(); else notify(result.error || 'Could not update slab', { variant: 'danger' });
-                      }} className="px-2 py-1.5 bg-surface border border-border rounded-lg text-xs text-foreground"><option value="AVAILABLE">Available</option><option value="DAMAGED">Damaged</option></select> : <span className="text-[11px] text-muted">Use the linked job / sample workflow</span>}</td>
+                      <td>{slab.status === 'AVAILABLE' || slab.status === 'DAMAGED' ? <button type="button" onClick={async () => {
+                        const damaging = slab.status === 'AVAILABLE';
+                        const question = damaging
+                          ? `Write off slab ${slab.slabNumber} (${slab.sqft.toFixed(2)} sq.ft) as damaged? It leaves sellable stock. A manager can restore it if this was a mistake.`
+                          : `Restore slab ${slab.slabNumber} to available stock?`;
+                        if (!confirm(question)) return;
+                        const result = await updateSlab({ slabId: slab.id, status: damaging ? 'DAMAGED' : 'AVAILABLE' });
+                        if (result.success) { notify(damaging ? 'Slab written off' : 'Slab restored', { variant: 'success' }); loadStoneLots(); } else notify(result.error || 'Could not update slab', { variant: 'danger' });
+                      }} className={`px-2 py-1.5 border rounded-lg text-xs ${slab.status === 'AVAILABLE' ? 'border-red-500/30 text-red-500 hover:bg-red-500/10' : 'border-border text-foreground hover:bg-surface-hover'}`}>{slab.status === 'AVAILABLE' ? 'Mark damaged' : 'Restore'}</button> : <span className="text-[11px] text-muted">Use the linked job / sample workflow</span>}</td>
                     </tr>
                   ))}</tbody>
                 </table>
@@ -1686,7 +1694,7 @@ export default function InventoryPage() {
             sku: f.sku.value,
             category: isRawMode ? 'Raw Material' : f.category.value,
             price: isRawMode ? 0 : Number(f.price.value),
-            costPrice: isRawMode ? Number(f.costPrice?.value || 0) : 0,
+            costPrice: isRawMode ? Number(f.costPrice?.value || 0) : Number(f.finishedCostPrice?.value || 0),
             material: f.material?.value || '',
             color: f.color?.value || '',
             stock: Number(f.stock.value),
@@ -1768,14 +1776,19 @@ export default function InventoryPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-medium text-muted mb-1.5">Category *</label>
-                <input type="text" name="category" required placeholder="e.g., Sofas, Beds, Tables" className="w-full" list="categoryList" />
+                <input type="text" name="category" required placeholder={IS_TILES ? 'e.g., Floor Tiles, Wall Tiles, Granite' : 'e.g., Sofas, Beds, Tables'} className="w-full" list="categoryList" />
                 <datalist id="categoryList">
                   {categories.filter(c => c !== 'All' && c !== 'Raw Material').map(c => <option key={c} value={c} />)}
                 </datalist>
               </div>
               <div>
-                <label className="block text-xs font-medium text-muted mb-1.5">Price (₹) *</label>
-                <input type="number" name="price" required placeholder="0" className="w-full" />
+                <label className="block text-xs font-medium text-muted mb-1.5">Selling price (₹ per unit) *</label>
+                <input type="number" name="price" required min="0" placeholder="0" className="w-full" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-muted mb-1.5">Cost price (₹ per unit)</label>
+                <input type="number" name="finishedCostPrice" min="0" placeholder="What you pay the supplier" className="w-full" />
+                <span className="text-[11px] text-muted mt-1 block">Values opening stock; receipts keep it updated after that.</span>
               </div>
             </div>
           )}
@@ -1826,7 +1839,7 @@ export default function InventoryPage() {
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-muted mb-1.5">Unit of Measure</label>
-                  <select name="unitOfMeasure" defaultValue="PCS" className="w-full px-3 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground">
+                  <select name="unitOfMeasure" defaultValue="BOX" className="w-full px-3 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground">
                     {TILES_UNIT_VALUES.map(u => (
                       <option key={u} value={u}>{u}</option>
                     ))}
@@ -2031,7 +2044,6 @@ export default function InventoryPage() {
             <div>
               <label htmlFor="stockReason" className="block text-xs font-medium text-muted mb-1.5">Reason</label>
               <select id="stockReason" className="w-full px-4 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground">
-                <option>New shipment received</option>
                 <option>Returned by customer</option>
                 <option>Damaged / Write-off</option>
 

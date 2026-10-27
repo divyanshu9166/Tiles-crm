@@ -17,6 +17,7 @@ const publicPaths = [
   '/api/whatsapp/webhook',
   // Secret-checked (x-api-secret = CRM_API_SECRET) inside the route
   '/api/cron/accounting',
+  '/api/cron/stock-alerts',
   // Uploaded files are fetched by WhatsApp/Meta to send media by link; names
   // are random UUIDs and the route serves them with nosniff + sandbox headers.
   '/api/uploads/',

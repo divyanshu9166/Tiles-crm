@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { createWalkinSchema } from '@/lib/validations/walkin'
 import type { WalkinStatus } from '@prisma/client'
 import { requireAuth } from '@/lib/auth-helpers'
+import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
 
 const statusMap: Record<string, WalkinStatus> = {
   'Browsing': 'BROWSING', 'Interested': 'INTERESTED',
@@ -53,10 +54,10 @@ export async function createWalkin(data: unknown) {
 
   const { name, phone, email, requirement, roomType, materialCategory, applicationArea, areaSqft, assignedToId, budget, notes } = parsed.data
 
-  let contact = await prisma.contact.findFirst({ where: { phone } })
+  let contact = await prisma.contact.findFirst({ where: contactPhoneWhere(phone) })
   if (!contact) {
     contact = await prisma.contact.create({
-      data: { name, phone, email: email || null, source: 'Walk-in' },
+      data: { name, phone: normalizePhone(phone), email: email || null, source: 'Walk-in' },
     })
   }
 
@@ -71,7 +72,7 @@ export async function createWalkin(data: unknown) {
       areaSqft: areaSqft ?? null,
       assignedToId,
       date: now,
-      time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }),
+      time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }),
       budget,
       notes,
     },

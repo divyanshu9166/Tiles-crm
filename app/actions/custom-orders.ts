@@ -16,6 +16,7 @@ import { sendEmail } from '@/lib/email'
 import { syncStoneLotTotals } from '@/lib/stone-inventory'
 import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { getBrand } from '@/lib/brand'
+import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
 
 const statusMap: Record<string, CustomOrderStatus> = {
   'Measurement Scheduled': 'MEASUREMENT_SCHEDULED',
@@ -213,9 +214,9 @@ export async function createCustomOrder(data: unknown) {
   }
 
   // Find or create contact
-  let contact = await prisma.contact.findFirst({ where: { phone } })
+  let contact = await prisma.contact.findFirst({ where: contactPhoneWhere(phone) })
   if (!contact) {
-    contact = await prisma.contact.create({ data: { name: customer, phone, address } })
+    contact = await prisma.contact.create({ data: { name: customer, phone: normalizePhone(phone), address } })
   }
 
   // Generate display ID using MAX + 1
@@ -805,7 +806,7 @@ export async function logSelfVisit(data: {
   const { staffId, customer, address, type, notes, measurements, photoUrls } = data
 
   const now = new Date()
-  const time = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
+  const time = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' })
 
   // Generate displayId
   const count = await prisma.fieldVisit.count({ where: { staffId, customOrderId: null } })

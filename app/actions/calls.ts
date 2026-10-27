@@ -7,6 +7,7 @@ import type { CallDirection, CallStatus } from '@prisma/client'
 import { outboundAICallSchema } from '@/lib/validations/ai-call'
 import { callingAgentStatus } from '@/lib/calling-agent-status'
 import { requireAuth, requireRole } from '@/lib/auth-helpers'
+import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
 
 export async function getCallLogs() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
@@ -51,7 +52,7 @@ export async function createCallLog(data: unknown) {
   const { customerName, phone, direction, status, duration, durationSec, agent, purpose, outcome, notes, recording } = parsed.data
 
   // Try to link to existing contact
-  const contact = await prisma.contact.findFirst({ where: { phone } })
+  const contact = await prisma.contact.findFirst({ where: contactPhoneWhere(phone) })
 
   const now = new Date()
   const callLog = await prisma.callLog.create({

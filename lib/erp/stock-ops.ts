@@ -210,6 +210,10 @@ export async function validatePickingTx(tx: Tx, pickingId: number, input: Valida
       const nextCost = costing === 'LAST' ? unitCost : averageCost(product.stock, product.costPrice, qty, unitCost)
       await adjustStock(tx, line.productId, picking.godownId, qty, 'IN', { ...ref, notes: `Received via ${picking.displayId}`, createdBy: author.name || undefined })
       await tx.product.update({ where: { id: line.productId }, data: { costPrice: nextCost } })
+      // The same product can appear on two receipt lines: the next line must
+      // average against this line's result, not the pre-receipt figures.
+      product.stock += qty
+      product.costPrice = nextCost
       if (line.purchaseOrderItemId && picking.purchaseOrder) {
         await tx.purchaseOrderItem.update({ where: { id: line.purchaseOrderItemId }, data: { receivedQty: { increment: qty } } })
         const batchNumber = `PO-${picking.purchaseOrder.displayId}-${line.purchaseOrderItemId}`

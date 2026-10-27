@@ -7,6 +7,8 @@ import { linePrice } from '@/lib/line-math'
 import { createInvoice } from '@/app/actions/invoices'
 import type { Quotation, QuotationItem, QuotationStatus, Contact, Product } from '@prisma/client'
 import { requireAuth, requireRole } from '@/lib/auth-helpers'
+import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
+import { stripBankDetails } from '@/lib/quotation-notes'
 
 type QuotationWithRelations = Quotation & {
   contact: Contact
@@ -263,12 +265,12 @@ export async function createQuotation(data: unknown) {
   const emailValue = email || undefined
   const addressValue = dispatchAddress || undefined
 
-  let contact = await prisma.contact.findFirst({ where: { phone } })
+  let contact = await prisma.contact.findFirst({ where: contactPhoneWhere(phone) })
   if (!contact) {
     contact = await prisma.contact.create({
       data: {
         name: customer,
-        phone,
+        phone: normalizePhone(phone),
         email: emailValue,
         address: addressValue,
       },
@@ -320,7 +322,7 @@ export async function createQuotation(data: unknown) {
   const normalizedItems = items.map((item, idx) => {
     const product = item.productId ? productById.get(item.productId) : null
     const quantity = Math.max(1, item.quantity)
-    const rate = Math.max(0, Math.round(item.rate || product?.price || 0))
+    const rate = Math.max(0, Math.round(item.rate ?? product?.price ?? 0))
     const unitOfMeasure = item.unitOfMeasure || product?.unitOfMeasure || 'PCS'
     const areaSqft = item.areaSqft == null ? null : Math.max(0, Number(item.areaSqft) || 0)
     const coveragePerBox = item.coveragePerBox == null ? product?.coveragePerBox ?? null : Math.max(0, Number(item.coveragePerBox) || 0)
@@ -459,12 +461,12 @@ export async function updateQuotation(data: unknown) {
       },
     })
   } else {
-    const matchedContact = await prisma.contact.findFirst({ where: { phone } })
+    const matchedContact = await prisma.contact.findFirst({ where: contactPhoneWhere(phone) })
     if (!matchedContact) {
       contact = await prisma.contact.create({
         data: {
           name: customer,
-          phone,
+          phone: normalizePhone(phone),
           email: emailValue,
           address: addressValue,
         },
@@ -510,7 +512,7 @@ export async function updateQuotation(data: unknown) {
   const normalizedItems = items.map((item, idx) => {
     const product = item.productId ? productById.get(item.productId) : null
     const quantity = Math.max(1, item.quantity)
-    const rate = Math.max(0, Math.round(item.rate || product?.price || 0))
+    const rate = Math.max(0, Math.round(item.rate ?? product?.price ?? 0))
     const unitOfMeasure = item.unitOfMeasure || product?.unitOfMeasure || 'PCS'
     const areaSqft = item.areaSqft == null ? null : Math.max(0, Number(item.areaSqft) || 0)
     const coveragePerBox = item.coveragePerBox == null ? product?.coveragePerBox ?? null : Math.max(0, Number(item.coveragePerBox) || 0)
@@ -625,10 +627,14 @@ export async function convertQuotationToInvoice(quotationId: number) {
   }
 
   const marker = `Converted from quotation ${quotation.displayId}`
-  const existing = await prisma.invoice.findFirst({
-    where: { notes: { contains: marker } },
-    select: { id: true, displayId: true, heldAt: true },
+  // Only an active invoice blocks a new one (a cancelled one used to block it
+  // forever), and Q.1000 must not match Q.10000.
+  const exact = new RegExp(`${marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\d)`)
+  const candidates = await prisma.invoice.findMany({
+    where: { notes: { contains: marker }, invoiceStatus: 'ACTIVE' },
+    select: { id: true, displayId: true, heldAt: true, notes: true },
   })
+  const existing = candidates.find(invoice => exact.test(invoice.notes || ''))
   if (existing) {
     return { success: false, error: `This quotation is already linked to invoice ${existing.displayId}` }
   }
@@ -672,7 +678,7 @@ export async function convertQuotationToInvoice(quotationId: number) {
     loadingCharge: quotation.loadingCharge,
     installationCharge: quotation.installationCharge,
     roadPermit: quotation.roadPermit || undefined,
-    notes: [marker, quotation.notes].filter(Boolean).join('\n'),
+    notes: [marker, stripBankDetails(quotation.notes)].filter(Boolean).join('\n'),
   })
 
   if (!invoiceResult.success) return invoiceResult

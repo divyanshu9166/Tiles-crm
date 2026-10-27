@@ -1,17 +1,26 @@
 import { getSession as getCustomSession } from './session'
+import { prisma } from './db'
 import type { UserRole } from '@prisma/client'
 
 export async function getSession() {
   const session = await getCustomSession()
   if (!session) return null
-  
+
+  // The cookie lives 7 days; re-read the account so a deactivated user or a
+  // changed role takes effect on the next action, not at cookie expiry.
+  const userId = Number(session.id)
+  const user = Number.isSafeInteger(userId) && userId > 0
+    ? await prisma.user.findUnique({ where: { id: userId }, select: { isActive: true, role: true, name: true, staffId: true } })
+    : null
+  if (!user || !user.isActive) return null
+
   return {
     user: {
       id: session.id,
       email: session.email,
-      name: session.name,
-      role: session.role as UserRole,
-      staffId: session.staffId,
+      name: user.name || session.name,
+      role: user.role as UserRole,
+      staffId: user.staffId ?? session.staffId,
     }
   }
 }

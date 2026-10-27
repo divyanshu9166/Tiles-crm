@@ -6,6 +6,7 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { syncStoneLotTotals } from '@/lib/stone-inventory'
 import { inventoryError, lockInventoryProducts } from '@/lib/inventory-stock'
+import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
 
 const slabStatus = z.enum(['AVAILABLE', 'RESERVED', 'SOLD', 'DAMAGED', 'IN_PROCESSING'])
 
@@ -199,8 +200,10 @@ export async function updateSlab(data: unknown) {
       if (!slab) throw new Error('Slab not found')
       const statusChanged = input.status !== undefined && input.status !== slab.status
       const locationChanged = input.godownId !== undefined && input.godownId !== slab.godownId
-      if ((statusChanged || locationChanged) && (slab.status !== 'AVAILABLE' || slab.reservedForCustomId || slab.reservedForOrderId || slab.sampleLoans.length)) throw new Error('Only unallocated available slabs can be moved or written off from inventory')
-      if (statusChanged && input.status !== 'DAMAGED') throw new Error('Allocate, sell or release slabs through their fabrication, invoice or sample workflow')
+      // A manager can restore a slab written off by mistake (DAMAGED → AVAILABLE).
+      const restoring = statusChanged && slab.status === 'DAMAGED' && input.status === 'AVAILABLE'
+      if (!restoring && (statusChanged || locationChanged) && (slab.status !== 'AVAILABLE' || slab.reservedForCustomId || slab.reservedForOrderId || slab.sampleLoans.length)) throw new Error('Only unallocated available slabs can be moved or written off from inventory')
+      if (statusChanged && !restoring && input.status !== 'DAMAGED') throw new Error('Allocate, sell or release slabs through their fabrication, invoice or sample workflow')
       if (input.godownId && !await tx.godown.findUnique({ where: { id: input.godownId } })) throw new Error('Location not found')
       const next = await tx.slab.update({ where: { id: slab.id }, data: {
         ...(input.status ? { status: input.status } : {}),
@@ -370,7 +373,7 @@ export async function createSampleLoan(data: unknown) {
       if (contactId) {
         if (!await tx.contact.findUnique({ where: { id: contactId } })) throw new Error('Customer not found')
       } else {
-        const contact = await tx.contact.findFirst({ where: { phone: input.customerPhone } })
+        const contact = await tx.contact.findFirst({ where: contactPhoneWhere(input.customerPhone) })
         contactId = contact?.id || (await tx.contact.create({ data: { name: input.customerName!, phone: input.customerPhone! } })).id
       }
       const created = await tx.sampleLoan.create({

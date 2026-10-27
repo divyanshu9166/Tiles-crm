@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { notifyManagers } from '@/lib/notify'
+import { computeForecast } from '@/lib/erp/forecast'
 
 /**
  * GET /api/cron/stock-alerts
@@ -21,7 +22,12 @@ export async function GET(req: NextRequest) {
     const products = await prisma.product.findMany({
       select: { id: true, name: true, sku: true, stock: true, reorderLevel: true, isSlabTracked: true, stoneLots: { select: { slabs: { where: { status: 'AVAILABLE' }, select: { id: true } } } } },
     })
-    const lowStockProducts = products.map(p => ({ ...p, stock: p.isSlabTracked ? p.stoneLots.reduce((sum, lot) => sum + lot.slabs.length, 0) : p.stock })).filter(p => p.stock <= p.reorderLevel)
+    // Alert on forecasted stock (on hand − reserved + incoming POs/production),
+    // so items already on order stop raising an alert every day.
+    const forecast = await computeForecast(prisma, { productIds: products.filter(p => !p.isSlabTracked).map(p => p.id) })
+    const lowStockProducts = products
+      .map(p => ({ ...p, stock: p.isSlabTracked ? p.stoneLots.reduce((sum, lot) => sum + lot.slabs.length, 0) : (forecast.get(p.id)?.forecast ?? p.stock) }))
+      .filter(p => p.reorderLevel > 0 && p.stock <= p.reorderLevel)
 
     if (lowStockProducts.length === 0) {
       return NextResponse.json({ success: true, alertsSent: 0, message: 'All stock levels OK' })

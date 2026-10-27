@@ -14,8 +14,9 @@ import {
 import type { CustomOrderStatus, Prisma } from '@prisma/client'
 import { sendEmail } from '@/lib/email'
 import { syncStoneLotTotals } from '@/lib/stone-inventory'
-import { requireRole } from '@/lib/auth-helpers'
+import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { getBrand } from '@/lib/brand'
+import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
 
 const statusMap: Record<string, CustomOrderStatus> = {
   'Measurement Scheduled': 'MEASUREMENT_SCHEDULED',
@@ -49,6 +50,7 @@ function compactMeasurements(measurements: MeasurementsInput): Prisma.InputJsonV
 // ─── GET ALL CUSTOM ORDERS ──────────────────────────────
 
 export async function getCustomOrders() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const orders = await prisma.customOrder.findMany({
     include: {
       contact: true,
@@ -187,6 +189,7 @@ export async function getCustomOrders() {
 // ─── CREATE CUSTOM ORDER ────────────────────────────────
 
 export async function createCustomOrder(data: unknown) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = createCustomOrderSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -211,9 +214,9 @@ export async function createCustomOrder(data: unknown) {
   }
 
   // Find or create contact
-  let contact = await prisma.contact.findFirst({ where: { phone } })
+  let contact = await prisma.contact.findFirst({ where: contactPhoneWhere(phone) })
   if (!contact) {
-    contact = await prisma.contact.create({ data: { name: customer, phone, address } })
+    contact = await prisma.contact.create({ data: { name: customer, phone: normalizePhone(phone), address } })
   }
 
   // Generate display ID using MAX + 1
@@ -429,6 +432,7 @@ export async function updateCustomOrderStatus(id: number, status: string) {
 // ─── ASSIGN STAFF ───────────────────────────────────────
 
 export async function assignStaff(orderId: number, staffId: number) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const staff = await prisma.staff.findUnique({ where: { id: staffId }, select: { name: true } })
   if (!staff) return { success: false, error: 'Staff not found' }
 
@@ -458,6 +462,7 @@ export async function assignStaff(orderId: number, staffId: number) {
 // ─── SCHEDULE VISIT (Manager) ───────────────────────────
 
 export async function scheduleVisit(data: unknown) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = scheduleVisitSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -519,6 +524,7 @@ export async function scheduleVisit(data: unknown) {
 // ─── UPDATE MEASUREMENTS (Manager or Staff) ─────────────
 
 export async function updateMeasurements(data: unknown) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = updateMeasurementsSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -551,6 +557,7 @@ export async function updateMeasurementsWithPhotos(
   measurements: MeasurementsInput,
   photoUrls: string[]
 ) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const order = await prisma.customOrder.findUnique(
     { where: { id: customOrderId }, select: { photos: true } }
   )
@@ -584,6 +591,7 @@ export async function updateMeasurementsWithPhotos(
 // ─── UPDATE VISIT (Staff) ───────────────────────────────
 
 export async function updateFieldVisit(data: unknown) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = updateVisitSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -678,6 +686,7 @@ export async function updateFieldVisit(data: unknown) {
 // ─── ADD TIMELINE ENTRY ─────────────────────────────────
 
 export async function addTimelineEntry(data: unknown) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = addTimelineEntrySchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -700,6 +709,7 @@ export async function addTimelineEntry(data: unknown) {
 // ─── UPDATE REFERENCE IMAGES ────────────────────────────
 
 export async function updateReferenceImages(orderId: number, imageUrls: string[]) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const order = await prisma.customOrder.findUnique({ where: { id: orderId }, select: { referenceImages: true } })
   if (!order) return { success: false, error: 'Order not found' }
 
@@ -716,6 +726,12 @@ export async function updateReferenceImages(orderId: number, imageUrls: string[]
 // ─── GET STAFF ASSIGNED VISITS ──────────────────────────
 
 export async function getStaffVisits(staffId: number) {
+  {
+    let scope
+    try { scope = await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
+    // Staff act only as themselves; managers may act for anyone.
+    if (scope.user.role === 'STAFF' && Number(scope.user.staffId) !== Number(staffId)) return { success: false, error: 'You can only do this for your own staff record' } as never
+  }
   const visits = await prisma.fieldVisit.findMany({
     where: { staffId },
     include: {
@@ -781,10 +797,16 @@ export async function logSelfVisit(data: {
   measurements?: Record<string, string>
   photoUrls?: string[]
 }) {
+  {
+    let scope
+    try { scope = await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
+    // Staff act only as themselves; managers may act for anyone.
+    if (scope.user.role === 'STAFF' && Number(scope.user.staffId) !== Number(data.staffId)) return { success: false, error: 'You can only do this for your own staff record' } as never
+  }
   const { staffId, customer, address, type, notes, measurements, photoUrls } = data
 
   const now = new Date()
-  const time = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
+  const time = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' })
 
   // Generate displayId
   const count = await prisma.fieldVisit.count({ where: { staffId, customOrderId: null } })
@@ -815,6 +837,12 @@ export async function logSelfVisit(data: {
 // ─── GET SELF VISITS ────────────────────────────────────
 
 export async function getSelfVisits(staffId: number) {
+  {
+    let scope
+    try { scope = await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
+    // Staff act only as themselves; managers may act for anyone.
+    if (scope.user.role === 'STAFF' && Number(scope.user.staffId) !== Number(staffId)) return { success: false, error: 'You can only do this for your own staff record' } as never
+  }
   const visits = await prisma.fieldVisit.findMany({
     where: { staffId, customOrderId: null },
     orderBy: { date: 'desc' },
@@ -842,8 +870,11 @@ export async function getSelfVisits(staffId: number) {
 // ─── UPDATE SELF VISIT PHOTOS ───────────────────────────
 
 export async function updateSelfVisitPhotos(visitId: number, newUrls: string[]) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const visit = await prisma.fieldVisit.findUnique({ where: { id: visitId } })
   if (!visit) return { success: false, error: 'Visit not found' }
+  const viewer = await requireAuth()
+  if (viewer.user.role === 'STAFF' && Number(viewer.user.staffId) !== visit.staffId) return { success: false, error: 'You can only change your own visits' }
 
   await prisma.fieldVisit.update({
     where: { id: visitId },
@@ -864,6 +895,7 @@ export async function sendProgressNotification(data: {
   message: string
   channels: ('whatsapp' | 'email')[]
 }) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const { orderId, message, channels } = data
 
   const order = await prisma.customOrder.findUnique({
@@ -1023,6 +1055,7 @@ export async function sendProgressNotification(data: {
 // ─── GET CUSTOM ORDER STATS ─────────────────────────────
 
 export async function getCustomOrderStats() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const orders = await prisma.customOrder.findMany({
     select: { status: true, quotedPrice: true, advancePaid: true },
   })

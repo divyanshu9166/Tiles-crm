@@ -203,10 +203,13 @@ export default function WalkinsPage() {
         if (refreshed.success) setWalkins(refreshed.data);
         setForm({ name: '', phone: '', email: '', requirement: '', roomType: '', materialCategory: '', areaSqft: '', budget: '', assignedToId: '', notes: '' });
         setShowRegisterModal(false);
-        alertToast.notify?.('Walk-in registered successfully', 'success');
+        alertToast.notify?.('Walk-in registered', { variant: 'success' });
+      } else {
+        alertToast.notify?.(res.error || 'Could not register the walk-in', { variant: 'danger' });
       }
     } catch (err) {
       console.error('Failed to register walk-in:', err);
+      alertToast.notify?.('Could not register the walk-in. Please try again.', { variant: 'danger' });
     } finally {
       setSubmitting(false);
     }
@@ -566,11 +569,11 @@ export default function WalkinsPage() {
                 <button onClick={() => handleWalkinWhatsApp(selectedWalkin)} className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-surface border border-border text-muted rounded-xl text-sm font-medium hover:text-foreground hover:border-emerald-500/30 transition-colors">
                   <MessageSquare className="w-4 h-4" /> WhatsApp
                 </button>
-                <button onClick={handleConvertToLead} className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-accent/10 text-accent border border-accent/20 rounded-xl text-sm font-medium hover:bg-accent/20 transition-colors">
+                {selectedWalkin.status !== 'Converted' && <button onClick={handleConvertToLead} className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-accent/10 text-accent border border-accent/20 rounded-xl text-sm font-medium hover:bg-accent/20 transition-colors">
                   <ArrowRight className="w-4 h-4" /> Convert to Lead
-                </button>
-                <button onClick={() => router.push(`/orders?customer=${encodeURIComponent(selectedWalkin.name)}&phone=${encodeURIComponent(selectedWalkin.phone)}`)} className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-blue-500/10 text-blue-700 border border-blue-500/20 rounded-xl text-sm font-medium hover:bg-blue-500/20 transition-colors">
-                  <ShoppingBag className="w-4 h-4" /> Create Order
+                </button>}
+                <button onClick={() => router.push(`/quotations?new=1&customer=${encodeURIComponent(selectedWalkin.name)}&phone=${encodeURIComponent(selectedWalkin.phone)}${selectedWalkin.email ? `&email=${encodeURIComponent(selectedWalkin.email)}` : ''}`)} className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-blue-500/10 text-blue-700 border border-blue-500/20 rounded-xl text-sm font-medium hover:bg-blue-500/20 transition-colors">
+                  <ShoppingBag className="w-4 h-4" /> Create Quotation
                 </button>
                 <button onClick={handleMoveToDraft} className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-red-500/10 text-red-700 border border-red-500/20 rounded-xl text-sm font-medium hover:bg-red-500/20 transition-colors">
                   <Trash2 className="w-4 h-4" /> Move to Draft

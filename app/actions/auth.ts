@@ -6,6 +6,7 @@ import { z } from 'zod'
 import type { UserRole } from '@prisma/client'
 import { requireAuth, requireRole } from '@/lib/auth-helpers'
 import { createSession } from '@/lib/session'
+import { passwordLimiter, tooManyAttemptsMessage } from '@/lib/password-limit'
 
 const emailSchema = z.string().email()
 const loginUsernameSchema = z
@@ -66,14 +67,26 @@ export async function createUser(data: unknown) {
 }
 
 export async function updatePassword(data: unknown) {
+  let session
+  try { session = await requireAuth() } catch { return { success: false, error: 'Please sign in again' } }
   const parsed = updatePasswordSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
+  // Only your own password; admins reset others through user management.
+  if (String(parsed.data.userId) !== String(session.user.id)) return { success: false, error: 'You can only change your own password' }
+
+  const key = `password-change|${session.user.id}`
+  const wait = passwordLimiter.retryAfter(key)
+  if (wait) return { success: false, error: tooManyAttemptsMessage(wait) }
 
   const user = await prisma.user.findUnique({ where: { id: parsed.data.userId } })
   if (!user) return { success: false, error: 'User not found' }
 
   const valid = await bcrypt.compare(parsed.data.oldPassword, user.hashedPassword)
-  if (!valid) return { success: false, error: 'Incorrect current password' }
+  if (!valid) {
+    passwordLimiter.fail(key)
+    return { success: false, error: 'Incorrect current password' }
+  }
+  passwordLimiter.succeed(key)
 
   const hashedPassword = await bcrypt.hash(parsed.data.newPassword, 12)
   await prisma.user.update({

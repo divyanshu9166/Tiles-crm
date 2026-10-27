@@ -3,9 +3,12 @@
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { createQuotationSchema, updateQuotationSchema, updateQuotationStatusSchema } from '@/lib/validations/quotation'
-import { getBillableArea } from '@/lib/units'
+import { linePrice } from '@/lib/line-math'
 import { createInvoice } from '@/app/actions/invoices'
 import type { Quotation, QuotationItem, QuotationStatus, Contact, Product } from '@prisma/client'
+import { requireAuth, requireRole } from '@/lib/auth-helpers'
+import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
+import { stripBankDetails } from '@/lib/quotation-notes'
 
 type QuotationWithRelations = Quotation & {
   contact: Contact
@@ -128,14 +131,14 @@ function getPreferredItemDescription(
 }
 
 function calculateQuotationLineAmount(item: { quantity: number; rate: number; unitOfMeasure?: string; areaSqft?: number; coveragePerBox?: number }, product?: { unitOfMeasure?: string | null; coveragePerBox?: number | null } | null) {
-  const quantity = Math.max(1, Number(item.quantity) || 1)
-  const rate = Math.max(0, Math.round(Number(item.rate) || 0))
-  const unit = String(item.unitOfMeasure || product?.unitOfMeasure || 'PCS').toUpperCase()
-  const areaSqft = Math.max(0, Number(item.areaSqft) || 0)
-  const coverage = Math.max(0, Number(item.coveragePerBox ?? product?.coveragePerBox) || 0)
-  if (unit === 'SQFT' || unit === 'SQM' || unit === 'SLAB') return Math.round(getBillableArea(areaSqft, quantity, unit) * rate)
-  if (unit === 'BOX' && coverage > 0 && areaSqft > 0) return Math.ceil(areaSqft / coverage) * rate
-  return quantity * rate
+  // Shared with the quotation screen (lib/line-math).
+  return linePrice({
+    quantity: item.quantity,
+    rate: Math.max(0, Math.round(Number(item.rate) || 0)),
+    unitOfMeasure: item.unitOfMeasure || product?.unitOfMeasure || 'PCS',
+    areaSqft: item.areaSqft,
+    coveragePerBox: item.coveragePerBox ?? product?.coveragePerBox,
+  }).amount
 }
 
 function formatQuotation(quotation: QuotationWithRelations) {
@@ -200,6 +203,7 @@ function formatQuotation(quotation: QuotationWithRelations) {
 }
 
 export async function getQuotations() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const quotations = await prisma.quotation.findMany({
     include: {
       contact: true,
@@ -216,6 +220,7 @@ export async function getQuotations() {
 }
 
 export async function getQuotation(id: number) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const quotation = await prisma.quotation.findUnique({
     where: { id },
     include: {
@@ -229,6 +234,7 @@ export async function getQuotation(id: number) {
 }
 
 export async function createQuotation(data: unknown) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = createQuotationSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -259,12 +265,12 @@ export async function createQuotation(data: unknown) {
   const emailValue = email || undefined
   const addressValue = dispatchAddress || undefined
 
-  let contact = await prisma.contact.findFirst({ where: { phone } })
+  let contact = await prisma.contact.findFirst({ where: contactPhoneWhere(phone) })
   if (!contact) {
     contact = await prisma.contact.create({
       data: {
         name: customer,
-        phone,
+        phone: normalizePhone(phone),
         email: emailValue,
         address: addressValue,
       },
@@ -316,7 +322,7 @@ export async function createQuotation(data: unknown) {
   const normalizedItems = items.map((item, idx) => {
     const product = item.productId ? productById.get(item.productId) : null
     const quantity = Math.max(1, item.quantity)
-    const rate = Math.max(0, Math.round(item.rate || product?.price || 0))
+    const rate = Math.max(0, Math.round(item.rate ?? product?.price ?? 0))
     const unitOfMeasure = item.unitOfMeasure || product?.unitOfMeasure || 'PCS'
     const areaSqft = item.areaSqft == null ? null : Math.max(0, Number(item.areaSqft) || 0)
     const coveragePerBox = item.coveragePerBox == null ? product?.coveragePerBox ?? null : Math.max(0, Number(item.coveragePerBox) || 0)
@@ -406,6 +412,7 @@ export async function createQuotation(data: unknown) {
 }
 
 export async function updateQuotation(data: unknown) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = updateQuotationSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -454,12 +461,12 @@ export async function updateQuotation(data: unknown) {
       },
     })
   } else {
-    const matchedContact = await prisma.contact.findFirst({ where: { phone } })
+    const matchedContact = await prisma.contact.findFirst({ where: contactPhoneWhere(phone) })
     if (!matchedContact) {
       contact = await prisma.contact.create({
         data: {
           name: customer,
-          phone,
+          phone: normalizePhone(phone),
           email: emailValue,
           address: addressValue,
         },
@@ -505,7 +512,7 @@ export async function updateQuotation(data: unknown) {
   const normalizedItems = items.map((item, idx) => {
     const product = item.productId ? productById.get(item.productId) : null
     const quantity = Math.max(1, item.quantity)
-    const rate = Math.max(0, Math.round(item.rate || product?.price || 0))
+    const rate = Math.max(0, Math.round(item.rate ?? product?.price ?? 0))
     const unitOfMeasure = item.unitOfMeasure || product?.unitOfMeasure || 'PCS'
     const areaSqft = item.areaSqft == null ? null : Math.max(0, Number(item.areaSqft) || 0)
     const coveragePerBox = item.coveragePerBox == null ? product?.coveragePerBox ?? null : Math.max(0, Number(item.coveragePerBox) || 0)
@@ -584,6 +591,7 @@ export async function updateQuotation(data: unknown) {
 }
 
 export async function updateQuotationStatus(data: unknown) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = updateQuotationStatusSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -602,6 +610,7 @@ export async function updateQuotationStatus(data: unknown) {
  * completed at checkout without consuming inventory prematurely.
  */
 export async function convertQuotationToInvoice(quotationId: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const quotation = await prisma.quotation.findUnique({
     where: { id: quotationId },
     include: {
@@ -618,10 +627,14 @@ export async function convertQuotationToInvoice(quotationId: number) {
   }
 
   const marker = `Converted from quotation ${quotation.displayId}`
-  const existing = await prisma.invoice.findFirst({
-    where: { notes: { contains: marker } },
-    select: { id: true, displayId: true, heldAt: true },
+  // Only an active invoice blocks a new one (a cancelled one used to block it
+  // forever), and Q.1000 must not match Q.10000.
+  const exact = new RegExp(`${marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\d)`)
+  const candidates = await prisma.invoice.findMany({
+    where: { notes: { contains: marker }, invoiceStatus: 'ACTIVE' },
+    select: { id: true, displayId: true, heldAt: true, notes: true },
   })
+  const existing = candidates.find(invoice => exact.test(invoice.notes || ''))
   if (existing) {
     return { success: false, error: `This quotation is already linked to invoice ${existing.displayId}` }
   }
@@ -665,7 +678,7 @@ export async function convertQuotationToInvoice(quotationId: number) {
     loadingCharge: quotation.loadingCharge,
     installationCharge: quotation.installationCharge,
     roadPermit: quotation.roadPermit || undefined,
-    notes: [marker, quotation.notes].filter(Boolean).join('\n'),
+    notes: [marker, stripBankDetails(quotation.notes)].filter(Boolean).join('\n'),
   })
 
   if (!invoiceResult.success) return invoiceResult
@@ -679,6 +692,7 @@ export async function convertQuotationToInvoice(quotationId: number) {
 }
 
 export async function getQuotationStats() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const [total, draft, sent, approved, rejected, totalValue] = await Promise.all([
     prisma.quotation.count(),
     prisma.quotation.count({ where: { status: 'DRAFT' } }),

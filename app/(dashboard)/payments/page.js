@@ -23,6 +23,7 @@ import {
   reconcilePayments,
   getReconciliationSummary
 } from '@/app/actions/payments';
+import { istDate, istMonthStart } from '@/lib/local-date';
 
 const PAYMENT_MODES = ['Cash', 'UPI', 'Card', 'Bank Transfer', 'Cheque'];
 const PAYMENT_STATUSES = ['Pending', 'Reconciled', 'Reversed', 'Bounced'];
@@ -35,12 +36,8 @@ const today = () => {
   d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
   return d.toISOString().slice(0, 16);
 };
-const todayDateOnly = () => {
-  const d = new Date();
-  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-  return d.toISOString().split('T')[0];
-};
-const startOfMonth = () => new Date().toISOString().slice(0, 7) + '-01';
+const todayDateOnly = () => istDate();
+const startOfMonth = () => istMonthStart();
 
 export default function PaymentsPage() {
   const alertToast = useAlertToast?.() || { notify: (m) => alert(m) };
@@ -131,7 +128,7 @@ export default function PaymentsPage() {
   }), [payments, filterMode, filterType, filterStatus, searchQ]);
 
   const todayStr = todayDateOnly();
-  const todayPayments = useMemo(() => payments.filter(p => p.date && new Date(p.date).toISOString().split('T')[0] === todayStr), [payments, todayStr]);
+  const todayPayments = useMemo(() => payments.filter(p => p.date && istDate(p.date) === todayStr), [payments, todayStr]);
   const todayIn = todayPayments.filter(p => p.type === 'IN').reduce((s, p) => s + p.amount, 0);
   const todayOut = todayPayments.filter(p => p.type === 'OUT').reduce((s, p) => s + p.amount, 0);
 
@@ -730,7 +727,7 @@ export default function PaymentsPage() {
                   filtered.filter(p => p.type === 'IN').forEach(p => {
                     if (!p.date) return;
                     try {
-                      const d = new Date(p.date).toISOString().split('T')[0];
+                      const d = istDate(p.date);
                       days[d] = (days[d] || 0) + p.amount;
                     } catch (e) { console.error('Date parsing error', e); }
                   });

@@ -25,7 +25,7 @@ function escapeHtml(value: string | number | null | undefined) {
 
 function formatDate(dateValue?: Date | null) {
   if (!dateValue) return '—'
-  return new Date(dateValue).toLocaleDateString('en-IN')
+  return new Date(dateValue).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })
 }
 
 function normalizeIndianPhone(phone: string) {
@@ -256,6 +256,7 @@ async function notifySupplierForPurchaseOrder(poId: number, source: 'approved' |
 // ─── SUPPLIERS ───────────────────────────────────────
 
 export async function getSuppliers() {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const suppliers = await prisma.supplier.findMany({
     orderBy: { name: 'asc' },
     include: {
@@ -711,6 +712,7 @@ export async function cancelPurchaseOrder(id: number) {
 // ─── PURCHASE RETURNS ─────────────────────────────────
 
 export async function getPurchaseReturns() {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const returns = await prisma.purchaseReturn.findMany({
     orderBy: { date: 'desc' },
     include: {
@@ -794,6 +796,7 @@ export async function createPurchaseReturn(data: unknown) {
 }
 
 export async function getPurchaseStats() {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const [totalPOs, totalSpend, pendingPOs, totalSuppliers, overduePOs, outstandingPayables] = await Promise.all([
     prisma.purchaseOrder.count(),
     prisma.purchaseOrder.aggregate({

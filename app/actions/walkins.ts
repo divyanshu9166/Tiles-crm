@@ -4,6 +4,8 @@ import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { createWalkinSchema } from '@/lib/validations/walkin'
 import type { WalkinStatus } from '@prisma/client'
+import { requireAuth } from '@/lib/auth-helpers'
+import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
 
 const statusMap: Record<string, WalkinStatus> = {
   'Browsing': 'BROWSING', 'Interested': 'INTERESTED',
@@ -15,6 +17,7 @@ const statusDisplay: Record<WalkinStatus, string> = {
 }
 
 export async function getWalkins() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const walkins = await prisma.walkin.findMany({
     include: { contact: true, assignedTo: true },
     orderBy: { date: 'desc' },
@@ -45,15 +48,16 @@ export async function getWalkins() {
 }
 
 export async function createWalkin(data: unknown) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = createWalkinSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
   const { name, phone, email, requirement, roomType, materialCategory, applicationArea, areaSqft, assignedToId, budget, notes } = parsed.data
 
-  let contact = await prisma.contact.findFirst({ where: { phone } })
+  let contact = await prisma.contact.findFirst({ where: contactPhoneWhere(phone) })
   if (!contact) {
     contact = await prisma.contact.create({
-      data: { name, phone, email: email || null, source: 'Walk-in' },
+      data: { name, phone: normalizePhone(phone), email: email || null, source: 'Walk-in' },
     })
   }
 
@@ -68,7 +72,7 @@ export async function createWalkin(data: unknown) {
       areaSqft: areaSqft ?? null,
       assignedToId,
       date: now,
-      time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }),
+      time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }),
       budget,
       notes,
     },
@@ -79,6 +83,7 @@ export async function createWalkin(data: unknown) {
 }
 
 export async function updateWalkinStatus(id: number, status: string) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const dbStatus = statusMap[status]
   if (!dbStatus) return { success: false, error: 'Invalid status' }
 

@@ -3,6 +3,23 @@
 import { prisma } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
 import crypto from 'crypto';
+import { requireAuth, requireRole } from '@/lib/auth-helpers';
+
+const MANAGERS = ['ADMIN', 'MANAGER'];
+
+function denied(error) {
+  return { success: false, error: error?.message === 'Forbidden' ? 'Manager access required' : 'Please sign in again' };
+}
+
+// PAY-YYYYMM-NNNN from the highest number this month, under a lock, so deleted
+// entries never make the next number collide (count()+1 did).
+async function nextPaymentDisplayId(tx, now = new Date()) {
+  const prefix = `PAY-${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}-`;
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(82463213)::text`;
+  const pattern = `^${prefix}([0-9]+)$`;
+  const rows = await tx.$queryRaw`SELECT MAX(CAST(substring("displayId" from ${pattern}) AS INTEGER)) AS max FROM "DailyPayment" WHERE "displayId" ~ ${pattern}`;
+  return `${prefix}${String((Number(rows[0]?.max) || 0) + 1).padStart(4, '0')}`;
+}
 
 // Helper: Generate hash for duplicate detection
 const generateReferenceHash = (method, reference) => {
@@ -13,6 +30,7 @@ const generateReferenceHash = (method, reference) => {
 };
 
 export async function getDailyPayments(filters = {}) {
+  try { await requireAuth(); } catch (error) { return denied(error); }
   try {
     const { startDate, endDate, method, type, search, status, reconciled } = filters;
     const where = {};
@@ -68,10 +86,20 @@ export async function getDailyPayments(filters = {}) {
 }
 
 export async function createDailyPayment(data) {
+  let session;
+  try { session = await requireAuth(); } catch (error) { return denied(error); }
   try {
     // Validation: Amount must be positive integer
     const amount = parseInt(data.amount);
     if (!amount || amount <= 0) return { success: false, error: 'Invalid amount. Must be greater than 0.' };
+    const type = data.type || 'IN';
+    if (type !== 'IN' && type !== 'OUT') return { success: false, error: 'Payment type must be IN or OUT.' };
+    const gstAmount = parseInt(data.gstAmount || 0);
+    if (!Number.isInteger(gstAmount) || gstAmount < 0 || gstAmount > amount) return { success: false, error: 'Invalid GST amount.' };
+    // Staff record payments as themselves; managers may name who received it.
+    const receivedByStaffId = session.user.role === 'STAFF'
+      ? (session.user.staffId ? Number(session.user.staffId) : null)
+      : (data.receivedByStaffId ? parseInt(data.receivedByStaffId) : null);
 
     // Validation: Payment method is required
     if (!data.method) return { success: false, error: 'Payment method is required.' };
@@ -118,11 +146,7 @@ export async function createDailyPayment(data) {
       }
     }
 
-    // Generate payment ID
-    const count = await prisma.dailyPayment.count();
     const now = new Date();
-    const displayId = `PAY-${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}-${(count + 1).toString().padStart(4, '0')}`;
-
     let parsedDate = now;
     if (data.date) {
       const d = new Date(data.date);
@@ -132,18 +156,18 @@ export async function createDailyPayment(data) {
     const referenceHash = generateReferenceHash(data.method, data.reference);
 
     // Create payment
-    const payment = await prisma.dailyPayment.create({
+    const payment = await prisma.$transaction(async tx => tx.dailyPayment.create({
       data: {
-        displayId,
+        displayId: await nextPaymentDisplayId(tx, now),
         amount,
-        gstAmount: parseInt(data.gstAmount || 0),
-        type: data.type || 'IN',
+        gstAmount,
+        type,
         method: data.method,
         reference: data.reference || null,
         referenceHash: referenceHash,
         date: parsedDate,
         status: 'Pending', // New payments start as Pending
-        receivedByStaffId: data.receivedByStaffId ? parseInt(data.receivedByStaffId) : null,
+        receivedByStaffId,
         chequeNumber: data.chequeNumber || null,
         chequeDate: data.chequeDate ? new Date(data.chequeDate) : null,
         customerName: data.customerName || null,
@@ -161,7 +185,7 @@ export async function createDailyPayment(data) {
         customOrder: { select: { id: true, displayId: true } },
         receivedByStaff: { select: { id: true, name: true, email: true } },
       }
-    });
+    }));
 
     revalidatePath('/payments');
     return { success: true, data: payment };
@@ -178,9 +202,13 @@ export async function createDailyPayment(data) {
 }
 
 
+// Only an admin may delete, and only an unreconciled pending entry (a typo
+// caught the same day). Anything else is reversed so the cash book keeps history.
 export async function deleteDailyPayment(id) {
+  try { await requireRole('ADMIN'); } catch (error) { return { success: false, error: error?.message === 'Forbidden' ? 'Only an admin can delete payments. Reverse it instead.' : 'Please sign in again' }; }
   try {
-    await prisma.dailyPayment.delete({ where: { id: parseInt(id) } });
+    const deleted = await prisma.dailyPayment.deleteMany({ where: { id: parseInt(id), status: 'Pending', reconciled: false, isReversal: false } });
+    if (deleted.count !== 1) return { success: false, error: 'Only unreconciled pending payments can be deleted. Reverse this payment instead.' };
     revalidatePath('/payments');
     return { success: true };
   } catch (error) {
@@ -191,19 +219,19 @@ export async function deleteDailyPayment(id) {
 
 // NEW: Reverse a payment (creates audit trail)
 export async function reversePayment(id, reason = '') {
+  try { await requireRole(...MANAGERS); } catch (error) { return denied(error); }
   try {
-    const original = await prisma.dailyPayment.findUnique({ where: { id: parseInt(id) } });
-    if (!original) return { success: false, error: 'Payment not found' };
-    if (original.isReversal) return { success: false, error: 'Cannot reverse an already reversed payment' };
-
-    const count = await prisma.dailyPayment.count();
+    const reversal = await prisma.$transaction(async tx => {
+    // Claim the original first so the same payment can be reversed only once.
+    const claimed = await tx.dailyPayment.updateMany({ where: { id: parseInt(id), isReversal: false, status: { not: 'Reversed' } }, data: { status: 'Reversed' } });
+    if (claimed.count !== 1) throw new Error('This payment is already reversed (or not found)');
+    const original = await tx.dailyPayment.findUnique({ where: { id: parseInt(id) } });
     const now = new Date();
-    const displayId = `PAY-${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}-${(count + 1).toString().padStart(4, '0')}`;
 
     // Create reversal entry (negative of original)
-    const reversal = await prisma.dailyPayment.create({
+    return tx.dailyPayment.create({
       data: {
-        displayId,
+        displayId: await nextPaymentDisplayId(tx, now),
         amount: original.amount,
         gstAmount: original.gstAmount,
         type: original.type === 'IN' ? 'OUT' : 'IN', // Reverse the type
@@ -223,23 +251,19 @@ export async function reversePayment(id, reason = '') {
         receivedByStaff: { select: { id: true, name: true, email: true } },
       }
     });
-
-    // Mark original as reversed
-    await prisma.dailyPayment.update({
-      where: { id: parseInt(id) },
-      data: { status: 'Reversed' }
     });
 
     revalidatePath('/payments');
     return { success: true, data: reversal };
   } catch (error) {
     console.error('Error reversing payment:', error);
-    return { success: false, error: 'Failed to reverse payment' };
+    return { success: false, error: error instanceof Error && error.message.startsWith('This payment') ? error.message : 'Failed to reverse payment' };
   }
 }
 
 // NEW: Mark cheque as bounced
 export async function markChequeBounced(id, bounceReason = '') {
+  try { await requireRole(...MANAGERS); } catch (error) { return denied(error); }
   try {
     const payment = await prisma.dailyPayment.findUnique({ where: { id: parseInt(id) } });
     if (!payment) return { success: false, error: 'Payment not found' };
@@ -268,9 +292,13 @@ export async function markChequeBounced(id, bounceReason = '') {
 
 // NEW: Reconcile payments (batch mark as reconciled)
 export async function reconcilePayments(paymentIds, bankRefNumbers = {}) {
+  try { await requireRole(...MANAGERS); } catch (error) { return denied(error); }
   try {
     if (!Array.isArray(paymentIds) || paymentIds.length === 0) {
       return { success: false, error: 'No payments selected for reconciliation' };
+    }
+    if (paymentIds.length > 500 || paymentIds.some(id => !Number.isSafeInteger(Number(id)) || Number(id) <= 0)) {
+      return { success: false, error: 'Invalid payment selection' };
     }
 
     const updates = await Promise.all(
@@ -297,6 +325,7 @@ export async function reconcilePayments(paymentIds, bankRefNumbers = {}) {
 
 // NEW: Get payment reconciliation summary
 export async function getReconciliationSummary(filters = {}) {
+  try { await requireAuth(); } catch (error) { return denied(error); }
   try {
     const { startDate, endDate, method } = filters;
     const where = {};
@@ -358,6 +387,7 @@ export async function getReconciliationSummary(filters = {}) {
 }
 
 export async function getDailyCashRegister(date) {
+  try { await requireAuth(); } catch (error) { return denied(error); }
   try {
     const startOfDay = new Date(date);
     startOfDay.setHours(0, 0, 0, 0);
@@ -383,10 +413,16 @@ export async function getDailyCashRegister(date) {
         date: { gte: startOfDay, lte: endOfDay },
         method: 'Cash',
         isReversal: false,
-        chequeBounced: false
+        chequeBounced: false,
+        status: { not: 'Reversed' },
       },
     });
-    const cashIn = payments.filter(p => p.type === 'IN').reduce((sum, p) => sum + p.amount, 0);
+    // Cash taken at the POS / on invoices belongs in the day's cash book too.
+    const invoiceCash = await prisma.payment.aggregate({
+      where: { date: { gte: startOfDay, lte: endOfDay }, method: 'Cash', amount: { gt: 0 }, invoice: { heldAt: null } },
+      _sum: { amount: true },
+    });
+    const cashIn = payments.filter(p => p.type === 'IN').reduce((sum, p) => sum + p.amount, 0) + (invoiceCash._sum.amount || 0);
 
     // For cashOut we also include Cash expenses from Expense model
     const cashPaymentsOut = payments.filter(p => p.type === 'OUT').reduce((sum, p) => sum + p.amount, 0);
@@ -417,14 +453,18 @@ export async function getDailyCashRegister(date) {
 }
 
 export async function updateOpeningCash(date, openingCash) {
+  try { await requireRole(...MANAGERS); } catch (error) { return denied(error); }
   try {
+    const amount = Number(openingCash);
+    if (!Number.isInteger(amount) || amount < 0) return { success: false, error: 'Opening cash must be a whole amount of zero or more' };
     const startOfDay = new Date(date);
+    if (Number.isNaN(startOfDay.getTime())) return { success: false, error: 'Invalid date' };
     startOfDay.setHours(0, 0, 0, 0);
 
     const register = await prisma.dailyCashRegister.upsert({
       where: { date: startOfDay },
-      update: { openingCash: parseInt(openingCash) },
-      create: { date: startOfDay, openingCash: parseInt(openingCash) },
+      update: { openingCash: amount },
+      create: { date: startOfDay, openingCash: amount },
     });
 
     revalidatePath('/payments');

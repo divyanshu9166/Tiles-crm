@@ -4,7 +4,7 @@ import { prisma } from '@/lib/db'
 import { lockInventoryProducts } from '@/lib/inventory-stock'
 import { revalidatePath } from 'next/cache'
 import { unstable_noStore } from 'next/cache'
-import { requireRole } from '@/lib/auth-helpers'
+import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { syncStoneLotTotals } from '@/lib/stone-inventory'
 import { computeForecast } from '@/lib/erp/forecast'
 import { componentRequirement } from '@/lib/erp/mrp'
@@ -251,6 +251,7 @@ async function updateProductionTimeVarianceWithTx(tx: any, productionOrderId: nu
 // ─── WORK CENTERS ────────────────────────────────────
 
 export async function getWorkCenters() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const centers = await prisma.workCenter.findMany({
     orderBy: { name: 'asc' },
     include: {
@@ -293,6 +294,7 @@ export async function deleteWorkCenter(id: number) {
 // ─── BILL OF MATERIALS ───────────────────────────────
 
 export async function getBOMs() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const boms = await prisma.billOfMaterials.findMany({
     orderBy: { name: 'asc' },
     include: {
@@ -460,6 +462,7 @@ export async function removeBOMStep(id: number) {
 // ─── BOM EXPORT ──────────────────────────────────────
 
 export async function exportBOM(id: number) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const bom = await prisma.billOfMaterials.findUnique({
     where: { id },
     include: {
@@ -481,6 +484,7 @@ export async function exportBOM(id: number) {
 // ─── BOM TEMPLATES ───────────────────────────────────
 
 export async function getBomTemplates() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const templates = await prisma.bomTemplate.findMany({ orderBy: { name: 'asc' } })
   return { success: true, data: templates }
 }
@@ -508,6 +512,7 @@ export async function deleteBomTemplate(id: number) {
 // ─── MRP ANALYSIS ────────────────────────────────────
 
 export async function getMRPAnalysis(bomId: number, qty: number) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const bom = await prisma.billOfMaterials.findUnique({
     where: { id: bomId },
     include: {
@@ -608,6 +613,7 @@ export async function getMRPAnalysis(bomId: number, qty: number) {
 const PRIORITY_SORT: Record<string, number> = { URGENT: 1, HIGH: 2, MEDIUM: 3, LOW: 4 }
 
 export async function getProductionOrders() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   unstable_noStore()
   const orders = await prisma.productionOrder.findMany({
     orderBy: [{ dueDate: 'asc' }, { createdAt: 'desc' }],
@@ -675,6 +681,7 @@ export async function getProductionOrders() {
 }
 
 export async function getAssignableStaff() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const staff = await prisma.staff.findMany({
     where: { status: 'Active' },
     select: { id: true, name: true, role: true },
@@ -684,6 +691,7 @@ export async function getAssignableStaff() {
 }
 
 export async function getManufacturingCustomOrders() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const orders = await prisma.customOrder.findMany({
     where: { status: { not: 'DELIVERED' } },
     select: {
@@ -710,6 +718,7 @@ export async function getManufacturingCustomOrders() {
 }
 
 export async function getScrapInventory() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const entries = await prisma.scrapInventory.findMany({
     orderBy: { createdAt: 'desc' },
     include: {
@@ -747,6 +756,7 @@ export async function updateScrapInventoryStatus(data: unknown) {
 }
 
 export async function getCustomOrderInventory() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const entries = await prisma.customOrderInventory.findMany({
     orderBy: { createdAt: 'desc' },
     include: {
@@ -964,19 +974,25 @@ export async function cancelProductionOrder(id: number, reason: string) {
   if (order.status === 'CANCELLED') return { success: true }
   if (!reason?.trim()) return { success: false, error: 'Enter a cancellation reason' }
 
+  try {
   await prisma.$transaction(async (tx) => {
     // This workflow issues and consumes material at completion time. The
     // issuedQty field is an audit/planning value, not a prior stock movement,
     // so cancellation must not add it back to inventory.
-    await tx.productionOrder.update({
-      where: { id },
+    const claimed = await tx.productionOrder.updateMany({
+      where: { id, status: { notIn: ['COMPLETED', 'CANCELLED'] } },
       data: { status: 'CANCELLED', cancelReason: reason, cancelledDate: new Date() },
     })
+    // A completion that won the race already moved stock: never mark it cancelled.
+    if (claimed.count !== 1) throw new Error('This production order was completed or cancelled meanwhile')
     if (order.customOrderId) {
       await releaseCustomOrderSlabsWithTx(tx, order.customOrderId)
       await resetCustomOrderAfterProductionChange(tx, order.customOrderId, `Production ${order.displayId} cancelled`)
     }
   })
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Could not cancel the production order' }
+  }
 
   revalidatePath('/manufacturing')
   revalidatePath('/inventory')
@@ -1076,7 +1092,13 @@ export async function completeProduction(data: unknown) {
     return { success: false, error: 'One or more production steps do not belong to this order' }
   }
 
+  try {
   await prisma.$transaction(async (tx) => {
+    // Re-check under a row lock: a double submit (or a cancel at the same
+    // time) used to consume materials and produce goods twice.
+    await tx.$queryRaw`SELECT id FROM "ProductionOrder" WHERE id = ${productionOrderId} FOR UPDATE`
+    const current = await tx.productionOrder.findUnique({ where: { id: productionOrderId }, select: { status: true } })
+    if (!current || (current.status !== 'IN_PROGRESS' && current.status !== 'ON_HOLD')) throw new Error('This production order was already completed or cancelled')
     let totalMaterialCost = 0
 
     for (const c of consumptions) {
@@ -1302,6 +1324,9 @@ export async function completeProduction(data: unknown) {
       })
     }
   })
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Could not complete production' }
+  }
 
   revalidatePath('/manufacturing')
   revalidatePath('/inventory')
@@ -1337,6 +1362,7 @@ export async function recordQualityCheck(data: unknown) {
 // ─── ANALYTICS ───────────────────────────────────────
 
 export async function getManufacturingStats() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const [allOrders, workCenters, scrapEntries, customInventory] = await Promise.all([
     prisma.productionOrder.findMany({
       include: {
@@ -1453,6 +1479,12 @@ export async function getManufacturingStats() {
 // ─── Staff Portal: Production Orders ────────────────────
 
 export async function getStaffProductionOrders(staffId: number) {
+  {
+    let scope
+    try { scope = await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
+    // Staff act only as themselves; managers may act for anyone.
+    if (scope.user.role === 'STAFF' && Number(scope.user.staffId) !== Number(staffId)) return { success: false, error: 'You can only do this for your own staff record' } as never
+  }
   const orders = await prisma.productionOrder.findMany({
     where: { assignedStaffId: staffId },  // Only fetch orders assigned to THIS staff
     orderBy: [{ dueDate: 'asc' }, { createdAt: 'desc' }],
@@ -1497,6 +1529,12 @@ export async function getStaffProductionOrders(staffId: number) {
 }
 
 export async function staffUpdateProductionStep(staffId: number, stepId: number, status: string, notes?: string) {
+  {
+    let scope
+    try { scope = await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
+    // Staff act only as themselves; managers may act for anyone.
+    if (scope.user.role === 'STAFF' && Number(scope.user.staffId) !== Number(staffId)) return { success: false, error: 'You can only do this for your own staff record' } as never
+  }
   // Verify the step belongs to an order assigned to this staff
   const step = await prisma.productionStep.findUnique({
     where: { id: stepId },
@@ -1533,6 +1571,12 @@ export async function staffUpdateProductionStep(staffId: number, stepId: number,
 }
 
 export async function staffAddStepNote(staffId: number, stepId: number, notes: string) {
+  {
+    let scope
+    try { scope = await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
+    // Staff act only as themselves; managers may act for anyone.
+    if (scope.user.role === 'STAFF' && Number(scope.user.staffId) !== Number(staffId)) return { success: false, error: 'You can only do this for your own staff record' } as never
+  }
   const step = await prisma.productionStep.findUnique({
     where: { id: stepId },
     include: { productionOrder: { select: { assignedStaffId: true } } },
@@ -1549,6 +1593,12 @@ export async function staffAddStepNote(staffId: number, stepId: number, notes: s
 
 
 export async function staffUpdateProductionProgress(staffId: number, orderId: number, actualQty: number, notes?: string) {
+  {
+    let scope
+    try { scope = await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
+    // Staff act only as themselves; managers may act for anyone.
+    if (scope.user.role === 'STAFF' && Number(scope.user.staffId) !== Number(staffId)) return { success: false, error: 'You can only do this for your own staff record' } as never
+  }
   const order = await prisma.productionOrder.findUnique({ where: { id: orderId } })
   if (!order) return { success: false, error: 'Order not found' }
   if (order.assignedStaffId !== staffId) return { success: false, error: 'You are not assigned to this order' }

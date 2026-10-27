@@ -32,7 +32,10 @@ import { getStoneLots } from '@/app/actions/stone-inventory';
 import { getGodowns } from '@/app/actions/godowns';
 import { getPricelists, getPricesFor } from '@/app/actions/pricelists';
 import { getBillableArea } from '@/lib/units';
+import { chargesTax, linePrice, principalGstRate } from '@/lib/line-math';
 import { getActiveVertical } from '@/lib/brand';
+import { stripBankDetails } from '@/lib/quotation-notes';
+import { istDate } from '@/lib/local-date';
 
 const DEFAULT_STORE_NAME = getActiveVertical() === 'tiles' ? 'Tiles, Granite & Marble Showroom' : 'Furniture Store';
 
@@ -61,6 +64,7 @@ const paymentMethodIcons = {
   Cheque: FileText,
 };
 
+const POS_RESULT_LIMIT = 30;
 const quickAmounts = [500, 1000, 2000, 5000, 10000, 20000];
 
 const indiaStates = [
@@ -177,47 +181,14 @@ const normalizeHsnCode = (value) => String(value || '').replace(/\s+/g, '').toUp
  * @returns {{ amount: number, boxes?: number, area?: number }}
  */
 function computeLineAmount(item, product) {
-  const unit = String(item?.unitOfMeasure || product?.unitOfMeasure || 'PCS').toUpperCase();
-  const quantity = Math.max(1, Number(item?.quantity) || 1);
-  const rate = Math.max(0, Number(item?.rate) || 0);
-  const coveragePerBox = Math.max(0, Number(item?.coveragePerBox ?? product?.coveragePerBox) || 0);
-  const area = Math.max(0, Number(item?.area ?? item?.areaInput) || 0);
-  const hasCoverage = coveragePerBox > 0;
-
-  // A serialized slab is sold by its exact measured area, not by a count of one.
-  if (unit === 'SLAB') {
-    const billedArea = area > 0 ? area : quantity;
-    return { amount: billedArea * rate, area: billedArea };
-  }
-
-  // Furniture and any per-piece (PCS) product: unchanged quantity * rate math.
-  if (unit === 'SQM') {
-    const billableArea = getBillableArea(area, quantity, unit);
-    return { amount: billableArea * rate, area: area || quantity, billableArea };
-  }
-
-  if (unit !== 'SQFT' && unit !== 'BOX') {
-    return { amount: quantity * rate };
-  }
-
-  if (unit === 'SQFT') {
-    if (hasCoverage) {
-      // Amount is priced per square foot; boxes are derived from the area.
-      const boxes = Math.max(0, Math.ceil(area / coveragePerBox));
-      return { amount: area * rate, boxes, area };
-    }
-    // No coverage defined: use the entered quantity directly, no box conversion.
-    return { amount: quantity * rate };
-  }
-
-  // unit === 'BOX'
-  if (hasCoverage && area > 0) {
-    // Derive the number of boxes from the entered area; price per box.
-    const boxes = Math.max(0, Math.ceil(area / coveragePerBox));
-    return { amount: boxes * rate, boxes, area };
-  }
-  // No area entered (or no coverage): bill the box count, as the server does.
-  return { amount: quantity * rate };
+  // Same rules as the server (lib/line-math), so the cart total is the saved total.
+  return linePrice({
+    quantity: item?.quantity,
+    rate: item?.rate,
+    unitOfMeasure: item?.unitOfMeasure || product?.unitOfMeasure || 'PCS',
+    areaSqft: item?.area ?? item?.areaInput,
+    coveragePerBox: item?.coveragePerBox ?? product?.coveragePerBox,
+  });
 }
 
 /** POS cart adapter: cart items carry qty/price plus optional unit/coverage/area. */
@@ -345,7 +316,7 @@ export default function BillingPage() {
     ]);
     if (invRes.success) {
       setInvoices(invRes.data);
-      setHeldBills(invRes.data.filter(i => i.isHeld));
+      setHeldBills(invRes.data.filter(i => i.isHeld && i.invoiceStatus === 'ACTIVE'));
     }
     if (prodRes.success) setProducts(prodRes.data);
     if (staffRes.success) setStaffList(staffRes.data.filter(s => s.status === 'Active'));
@@ -482,14 +453,19 @@ export default function BillingPage() {
     acc.igst += igst;
     acc.cgst += cgst;
     acc.sgst += sgst;
+    acc.lines.push({ taxable: taxableAmount, gstRate: rate });
     return acc;
-  }, { taxable: 0, totalGst: 0, igst: 0, cgst: 0, sgst: 0 });
+  }, { taxable: 0, totalGst: 0, igst: 0, cgst: 0, sgst: 0, lines: [] });
 
-  const posTotalGst = posTaxSummary.totalGst;
-  const posIgst = posTaxSummary.igst;
-  const posCgst = posTaxSummary.cgst;
-  const posSgst = posTaxSummary.sgst;
-  const posTotal = posTaxSummary.taxable + posTotalGst + (posTransportCost || 0) + (posFreightCharge || 0) + (posLoadingCharge || 0) + (posInstallationCharge || 0);
+  // Transport/freight/loading/installation carry GST at the principal line's
+  // rate, exactly as the server bills them (lib/line-math).
+  const posChargesTotal = (posTransportCost || 0) + (posFreightCharge || 0) + (posLoadingCharge || 0) + (posInstallationCharge || 0);
+  const posChargeTax = chargesTax(posChargesTotal, principalGstRate(posTaxSummary.lines, gstRate), posSupplyType === 'INTERSTATE');
+  const posTotalGst = posTaxSummary.totalGst + posChargeTax.gst;
+  const posIgst = posTaxSummary.igst + posChargeTax.igst;
+  const posCgst = posTaxSummary.cgst + posChargeTax.cgst;
+  const posSgst = posTaxSummary.sgst + posChargeTax.sgst;
+  const posTotal = posTaxSummary.taxable + posTotalGst + posChargesTotal;
   const posTotalPayments = posPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
   const posAdvancePaid = Math.min(posTotalPayments, posTotal);
   const posBalanceDue = Math.max(0, posTotal - posTotalPayments);
@@ -501,6 +477,12 @@ export default function BillingPage() {
     (p.sku || '').toLowerCase().includes(productSearch.toLowerCase()) ||
     (p.category || '').toLowerCase().includes(productSearch.toLowerCase())
   );
+  // Out-of-stock matches are listed (greyed out) so the cashier knows the
+  // product exists but can't be sold, instead of it silently disappearing.
+  const posMatches = {
+    inStock: filteredProducts.filter(p => p.stock > 0),
+    outOfStock: productSearch.trim() ? filteredProducts.filter(p => !(p.stock > 0)) : [],
+  };
 
   // ─── POS ACTIONS ───────────────────────────────────────
 
@@ -657,13 +639,14 @@ export default function BillingPage() {
   const handleGenerateInvoice = async (isHeld = false) => {
     if (posItems.length === 0 || !posCustomer.name || !posCustomer.phone) return;
     const isEditing = !!editingInvoiceId;
-    if (!isHeld && !isEditing && posTotalPayments === 0) return;
+    // No payment is allowed only as a credit sale with a due date.
+    if (!isHeld && !isEditing && posTotalPayments === 0 && !posDueDate) return;
     setSubmitting(true);
     try {
       const placeOfSupplyValue = posPlaceOfSupply === 'OTHER'
         ? posPlaceOfSupplyCustom.trim()
         : posPlaceOfSupply;
-      const paymentsData = isHeld
+      const paymentsData = isHeld || (posTotalPayments === 0 && posDueDate)
         ? [{ amount: 0, method: 'Cash' }]
         : posPayments.filter(p => p.amount > 0).map(p => ({
           amount: Number(p.amount),
@@ -672,7 +655,7 @@ export default function BillingPage() {
         }));
 
       if (!isHeld && !isEditing && paymentsData.length === 0) {
-        alert('Please enter at least one payment amount');
+        notify('Enter a payment, or set a due date to sell on credit', { variant: 'warning' });
         setSubmitting(false);
         return;
       }
@@ -723,10 +706,10 @@ export default function BillingPage() {
         if (!isHeld || isEditing) setTab('invoices');
         await loadData();
       } else {
-        alert(res.error || `Failed to ${isEditing ? 'update' : 'create'} invoice`);
+        notify(res.error || `Failed to ${isEditing ? 'update' : 'create'} invoice`, { variant: 'danger' });
       }
     } catch {
-      alert('Something went wrong. Please try again.');
+      notify('Something went wrong. Please try again.', { variant: 'danger' });
     } finally {
       setSubmitting(false);
     }
@@ -781,8 +764,11 @@ export default function BillingPage() {
            batchId: item.batchId || undefined,
         };
       }));
+      // The server stores the discount in rupees (even when it was entered as a
+      // percent), so reload it as a flat amount: reading 1,000 back as 1,000%
+      // used to wipe the whole bill.
       setPosDiscount(invoice.discount || 0);
-      setPosDiscountType(invoice.discountType === 'percent' ? 'percent' : 'flat');
+      setPosDiscountType('flat');
       setPosTransportCost(invoice.transportCost || 0);
       setPosFreightCharge(invoice.freightCharge || 0);
       setPosLoadingCharge(invoice.loadingCharge || 0);
@@ -816,6 +802,10 @@ export default function BillingPage() {
 
   const handleRecordPayment = async () => {
     if (!selectedInvoice || !paymentModalData.amount) return;
+    if (Number(paymentModalData.amount) > Number(selectedInvoice.balanceDue || 0)) {
+      notify(`Amount is more than the balance due (${formatFullCurrency(Number(selectedInvoice.balanceDue || 0))}). Return the change to the customer.`, { variant: 'warning' });
+      return;
+    }
     setSubmitting(true);
     try {
       const res = await recordPayment({
@@ -832,11 +822,12 @@ export default function BillingPage() {
         // Refresh selected invoice
         const updated = (await getInvoices()).data?.find(i => i.dbId === selectedInvoice.dbId);
         if (updated) setSelectedInvoice(updated);
+        notify('Payment recorded', { variant: 'success' });
       } else {
-        alert(res.error || 'Failed to record payment');
+        notify(res.error || 'Failed to record payment', { variant: 'danger' });
       }
     } catch {
-      alert('Something went wrong');
+      notify('Something went wrong', { variant: 'danger' });
     } finally {
       setSubmitting(false);
     }
@@ -854,10 +845,10 @@ export default function BillingPage() {
         setSelectedInvoice(null);
         await loadData();
       } else {
-        alert(res.error || 'Failed to cancel invoice');
+        notify(res.error || 'Failed to cancel invoice', { variant: 'danger' });
       }
     } catch {
-      alert('Something went wrong');
+      notify('Something went wrong', { variant: 'danger' });
     } finally {
       setSubmitting(false);
     }
@@ -909,10 +900,10 @@ export default function BillingPage() {
         const updated = (await getInvoices()).data?.find(i => i.dbId === selectedInvoice.dbId);
         if (updated) setSelectedInvoice(updated);
       } else {
-        alert(res.error || 'Failed to create credit note');
+        notify(res.error || 'Failed to create credit note', { variant: 'danger' });
       }
     } catch {
-      alert('Something went wrong');
+      notify('Something went wrong', { variant: 'danger' });
     } finally {
       setSubmitting(false);
     }
@@ -925,9 +916,9 @@ export default function BillingPage() {
     try {
       const res = await finalizeHeldInvoice(inv.dbId);
       if (res.success) await loadData();
-      else alert(res.error || 'Failed to finalize');
+      else notify(res.error || 'Failed to finalize', { variant: 'danger' });
     } catch {
-      alert('Something went wrong');
+      notify('Something went wrong', { variant: 'danger' });
     } finally {
       setSubmitting(false);
     }
@@ -949,7 +940,7 @@ export default function BillingPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `invoices_${new Date().toISOString().split('T')[0]}.csv`;
+    a.download = `invoices_${istDate()}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -1047,7 +1038,7 @@ export default function BillingPage() {
         ${inv.balanceDue > 0 ? `<div class="row due"><span>Balance Due</span><span>₹${inv.balanceDue.toLocaleString('en-IN')}</span></div>` : ''}
       </div>
       ${inv.payments && inv.payments.length > 0 ? `<div class="payments"><h4>Payment History</h4>${inv.payments.map(p => `<div class="entry"><span>${p.method}${p.reference ? ' · ' + p.reference : ''} — ${p.date}</span><span>₹${p.amount.toLocaleString('en-IN')}</span></div>`).join('')}</div>` : ''}
-      ${inv.notes ? `<div style="margin-top:16px;padding:12px;background:#f9fafb;border-radius:8px;font-size:12px;color:#666">Notes: ${inv.notes}</div>` : ''}
+      ${inv.notes ? `<div style="margin-top:16px;padding:12px;background:#f9fafb;border-radius:8px;font-size:12px;color:#666">Notes: ${escapeHtml(stripBankDetails(inv.notes))}</div>` : ''}
       ${invoiceFooter}
       <div class="footer">Thank you for your purchase!</div>
       </div>
@@ -1144,7 +1135,7 @@ export default function BillingPage() {
           ${inv.balanceDue > 0 ? `<div class="row due"><span>Balance Due</span><span>₹${inv.balanceDue.toLocaleString('en-IN')}</span></div>` : ''}
         </div>
         ${inv.payments && inv.payments.length > 0 ? `<div class="payments"><h4>Payment History</h4>${inv.payments.map(p => `<div class="entry"><span>${p.method}${p.reference ? ' · ' + p.reference : ''} — ${p.date}</span><span>₹${p.amount.toLocaleString('en-IN')}</span></div>`).join('')}</div>` : ''}
-        ${inv.notes ? `<div style="margin-top:16px;padding:12px;background:#f9fafb;border-radius:8px;font-size:12px;color:#666">Notes: ${inv.notes}</div>` : ''}
+        ${inv.notes ? `<div style="margin-top:16px;padding:12px;background:#f9fafb;border-radius:8px;font-size:12px;color:#666">Notes: ${escapeHtml(stripBankDetails(inv.notes))}</div>` : ''}
         ${invoiceFooter}
         <div class="footer">Thank you for your purchase!</div>
       </div>
@@ -1258,7 +1249,7 @@ export default function BillingPage() {
             ${inv.balanceDue > 0 ? `<div class="row due"><span>Balance Due</span><span>₹${inv.balanceDue.toLocaleString('en-IN')}</span></div>` : ''}
           </div>
           ${inv.payments && inv.payments.length > 0 ? `<div class="payments"><h4>Payment History</h4>${inv.payments.map(p => `<div class="entry"><span>${p.method}${p.reference ? ' · ' + p.reference : ''} — ${p.date}</span><span>₹${p.amount.toLocaleString('en-IN')}</span></div>`).join('')}</div>` : ''}
-          ${inv.notes ? `<div style="margin-top:16px;padding:12px;background:#f9fafb;border-radius:8px;font-size:12px;color:#666">Notes: ${inv.notes}</div>` : ''}
+          ${inv.notes ? `<div style="margin-top:16px;padding:12px;background:#f9fafb;border-radius:8px;font-size:12px;color:#666">Notes: ${escapeHtml(stripBankDetails(inv.notes))}</div>` : ''}
           ${invoiceFooter}
           <div class="footer">Thank you for your purchase!</div>
         </div>
@@ -1723,7 +1714,7 @@ export default function BillingPage() {
               {/* Search results dropdown — shows on focus (all products) OR on type (filtered) */}
               {showProductDropdown && (
                 <div className="mt-2 bg-surface border border-border rounded-xl shadow-lg max-h-[300px] overflow-y-auto z-20 relative">
-                  {filteredProducts.filter(p => p.stock > 0).slice(0, 12).map(p => {
+                  {posMatches.inStock.slice(0, POS_RESULT_LIMIT).map(p => {
                     const inCart = posItems.find(i => i.id === p.id);
                     return (
                       <button key={p.id} onClick={() => addToPOS(p)} className="w-full flex items-center justify-between px-4 py-3 hover:bg-surface-hover transition-colors text-left border-b border-border/50 last:border-0">
@@ -1748,8 +1739,20 @@ export default function BillingPage() {
                       </button>
                     );
                   })}
-                  {filteredProducts.filter(p => p.stock > 0).length === 0 && (
-                    <p className="text-center text-muted text-xs py-8">No products found in stock</p>
+                  {posMatches.inStock.length > POS_RESULT_LIMIT && (
+                    <p className="px-4 py-2 text-[11px] text-muted bg-surface-hover/50">Showing {POS_RESULT_LIMIT} of {posMatches.inStock.length} in-stock matches. Type more of the name or SKU to narrow down.</p>
+                  )}
+                  {posMatches.outOfStock.slice(0, 5).map(p => (
+                    <div key={p.id} className="w-full flex items-center justify-between px-4 py-2.5 text-left border-b border-border/50 last:border-0 opacity-60 cursor-not-allowed" title="No stock to sell. Receive stock or transfer it from another godown first.">
+                      <div className="min-w-0">
+                        <p className="text-sm text-foreground truncate">{p.name}</p>
+                        <p className="text-xs text-muted mt-0.5">{p.category} · <span className="font-mono">{p.sku}</span></p>
+                      </div>
+                      <span className="text-[10px] font-medium text-red-600 bg-red-500/10 px-2 py-0.5 rounded-full flex-shrink-0 ml-3">Out of stock</span>
+                    </div>
+                  ))}
+                  {posMatches.inStock.length === 0 && posMatches.outOfStock.length === 0 && (
+                    <p className="text-center text-muted text-xs py-8">No products match “{productSearch}”</p>
                   )}
                 </div>
               )}
@@ -2342,7 +2345,7 @@ export default function BillingPage() {
                   <span className="text-[10px] text-muted font-normal">(optional)</span>
                 </h3>
                 <input type="date" value={posDueDate} onChange={e => setPosDueDate(e.target.value)}
-                  min={new Date().toISOString().split('T')[0]}
+                  min={istDate()}
                   className="w-full px-4 py-3 bg-surface border border-border rounded-xl text-sm focus:outline-none focus:border-accent/50" />
               </div>
               <div>
@@ -2440,14 +2443,15 @@ export default function BillingPage() {
               ) : (
                 <>
                   <button
-                    disabled={posItems.length === 0 || !posCustomer.name || !posCustomer.phone || submitting || posTotalPayments === 0}
+                    disabled={posItems.length === 0 || !posCustomer.name || !posCustomer.phone || submitting || (posTotalPayments === 0 && !posDueDate)}
+                    title={posTotalPayments === 0 && !posDueDate ? 'Enter a payment, or set a due date to sell on credit' : undefined}
                     onClick={() => handleGenerateInvoice(false)}
                     className="w-full py-3.5 bg-accent hover:bg-accent-hover text-white rounded-xl text-sm font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                   >
                     {submitting ? (
                       <><svg className="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg> Generating...</>
                     ) : (
-                      <><Receipt className="w-4 h-4" /> Generate Invoice</>
+                      <><Receipt className="w-4 h-4" /> {posTotalPayments === 0 && posDueDate ? 'Generate Credit Invoice' : 'Generate Invoice'}</>
                     )}
                   </button>
                   <button

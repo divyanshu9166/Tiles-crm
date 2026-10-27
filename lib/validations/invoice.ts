@@ -46,8 +46,9 @@ const invoiceBaseSchema = z.object({
   pricelistId: z.number().int().positive().nullable().optional(), // pricelist the bill was priced from
 })
 
-export const createInvoiceSchema = invoiceBaseSchema.refine(data => data.isHeld || data.payments.some(payment => payment.amount > 0), {
-  message: 'At least one payment amount is required for an active invoice',
+// A bill needs a payment, or a due date when it is sold on credit (pay later).
+export const createInvoiceSchema = invoiceBaseSchema.refine(data => data.isHeld || data.payments.some(payment => payment.amount > 0) || !!data.dueDate, {
+  message: 'Enter a payment, or set a due date to sell on credit (pay later)',
   path: ['payments'],
 })
 

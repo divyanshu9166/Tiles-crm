@@ -239,7 +239,7 @@ export default function SalesOrderPage() {
         footer={<div className="flex justify-end gap-2 w-full"><Button variant="ghost" onClick={() => setInvoiceDraft(null)}>Discard</Button><Button variant="primary" loading={busy === 'invoice'} onClick={submitInvoice}>Create invoice</Button></div>}>
         {invoiceDraft && (
           <div className="space-y-4">
-            <p className="text-sm text-muted">{order.invoicePolicy === 'DELIVERED' ? 'Invoicing delivered quantities that are not invoiced yet.' : 'Invoicing ordered quantities that are not invoiced yet.'} {!order.chargesInvoiced && order.charges > 0 ? `Freight/loading/installation (${formatINR(order.charges)}) is added to this invoice.` : ''}</p>
+            <p className="text-sm text-muted">{order.invoicePolicy === 'DELIVERED' ? 'Invoicing delivered quantities that are not invoiced yet.' : 'Invoicing ordered quantities that are not invoiced yet.'} {!order.chargesInvoiced && order.charges > 0 ? `Freight/loading/installation (${formatINR(order.charges)} + GST) is added to this invoice.` : ''}</p>
             <table className="w-full text-sm">
               <thead><tr className="text-[11px] uppercase text-muted text-left border-b border-border"><th className="py-2">Product</th><th className="py-2 text-right">Invoiceable</th><th className="py-2 text-right w-28">Invoice now</th></tr></thead>
               <tbody>

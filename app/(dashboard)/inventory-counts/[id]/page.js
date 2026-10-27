@@ -12,6 +12,10 @@ import { ProductPicker } from '@/components/erp/pickers';
 import { getInventoryCount, setCountedQty, applyInventoryCount, cancelInventoryCount, addCountLine } from '@/app/actions/inventory-counts';
 import { getProducts } from '@/app/actions/products';
 
+// A saved counted value is compared with the stock at the moment it was
+// counted; a value being typed (saved on blur) with today's stock.
+const baseFor = (line, value) => (line.countedQty !== null && Number(value) === line.countedQty ? line.baseQty ?? line.systemQty : line.currentQty);
+
 export default function InventoryCountPage() {
   const { id } = useParams();
   const countId = Number(id);
@@ -54,7 +58,7 @@ export default function InventoryCountPage() {
       if (q && !line.product.name.toLowerCase().includes(q) && !line.product.sku.toLowerCase().includes(q)) return false;
       const value = values[line.id];
       if (filter === 'todo') return value === '' || value === null;
-      if (filter === 'diff') return value !== '' && value !== null && Number(value) !== line.currentQty;
+      if (filter === 'diff') return value !== '' && value !== null && Number(value) !== baseFor(line, value);
       return true;
     });
   }, [count, values, filter, search]);
@@ -68,7 +72,7 @@ export default function InventoryCountPage() {
     if (count.status === 'DONE') return sum + (line.appliedDelta || 0) * line.unitCost;
     const value = values[line.id];
     if (value === '' || value === null) return sum;
-    return sum + (Number(value) - line.currentQty) * line.unitCost;
+    return sum + (Number(value) - baseFor(line, value)) * line.unitCost;
   }, 0);
 
   const save = async (line) => {
@@ -147,11 +151,11 @@ export default function InventoryCountPage() {
                   {lines.map(line => {
                     const value = values[line.id];
                     const has = value !== '' && value !== null;
-                    const diff = count.status === 'DONE' ? line.appliedDelta : has ? Number(value) - line.currentQty : null;
+                    const diff = count.status === 'DONE' ? line.appliedDelta : has ? Number(value) - baseFor(line, value) : null;
                     return (
                       <tr key={line.id} className="border-b border-border/50">
                         <td className="px-4 py-2"><div className="text-foreground">{line.product.name}</div><div className="text-[11px] text-muted">{line.product.sku} · {line.product.category?.name}</div></td>
-                        <td className="px-4 py-2 text-right text-muted">{formatQty(line.currentQty)} {line.movedSinceSnapshot && <span title={`Stock moved since the count started (was ${line.systemQty})`}><AlertTriangle className="inline w-3.5 h-3.5 text-amber-500" /></span>}</td>
+                        <td className="px-4 py-2 text-right text-muted">{formatQty(line.currentQty)} {line.movedSinceSnapshot && <span title={`Stock moved after this line was counted (was ${line.systemQty}). Those moves are kept when the count is applied.`}><AlertTriangle className="inline w-3.5 h-3.5 text-amber-500" /></span>}</td>
                         <td className="px-4 py-2">
                           {open ? <input type="number" min="0" step="any" value={value} onChange={e => setValues({ ...values, [line.id]: e.target.value })} onBlur={() => save(line)} onKeyDown={e => e.key === 'Enter' && e.currentTarget.blur()} placeholder="—" className={`${inputClass} text-right ${saving[line.id] ? 'opacity-60' : ''}`} /> : <span className="block text-right">{line.countedQty ?? '—'}</span>}
                         </td>

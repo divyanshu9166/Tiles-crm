@@ -2,7 +2,7 @@
 
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
-import { requireRole } from '@/lib/auth-helpers'
+import { requireAuth, requireRole } from '@/lib/auth-helpers'
 import { z } from 'zod'
 import { sendBulkEmails, replaceVariables, testSmtpConnection, sendTestEmail, getSmtpConfig } from '@/lib/email'
 import type { SmtpConfig } from '@/lib/email'
@@ -38,6 +38,7 @@ const campaignSchema = z.object({
 // ─── EMAIL TEMPLATES ────────────────────────────────
 
 export async function getEmailTemplates() {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const templates = await prisma.emailTemplate.findMany({
     orderBy: { updatedAt: 'desc' },
     include: { _count: { select: { campaigns: true } } },
@@ -92,6 +93,7 @@ export async function deleteEmailTemplate(id: number) {
 // ─── EMAIL CAMPAIGNS ────────────────────────────────
 
 export async function getEmailCampaigns() {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const campaigns = await prisma.emailCampaign.findMany({
     orderBy: { createdAt: 'desc' },
     include: {
@@ -197,6 +199,7 @@ export async function deleteEmailCampaign(id: number) {
 // ─── AUDIENCE / RECIPIENTS ──────────────────────────
 
 export async function getAudienceStats() {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const [total, withEmail, subscribed, leads, customers] = await Promise.all([
     prisma.contact.count(),
     prisma.contact.count({ where: { email: { not: null } } }),
@@ -212,6 +215,7 @@ export async function getAudienceStats() {
 }
 
 export async function getAudiencePreview(audience: string) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const where: Record<string, unknown> = { email: { not: null }, emailSubscribed: true }
 
   if (audience === 'leads') {
@@ -364,11 +368,19 @@ export async function sendEmailCampaign(campaignId: number) {
 
 // ─── SMTP TEST & CONFIG ACTIONS ─────────────────────
 
+// The settings form never receives the saved SMTP password; a blank password
+// in a test request means "use the saved one".
+async function withSavedSmtpPass<T extends { smtpPass: string }>(config: T): Promise<T> {
+  if (config.smtpPass) return config
+  const saved = await prisma.storeSettings.findFirst({ where: { id: 1 }, select: { smtpPass: true } })
+  return { ...config, smtpPass: saved?.smtpPass || '' }
+}
+
 export async function testSmtp(config: {
   smtpHost: string; smtpPort: number; smtpUser: string; smtpPass: string; smtpFromName: string; smtpSecure: boolean
 }) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
-  const result = await testSmtpConnection(config as SmtpConfig)
+  const result = await testSmtpConnection(await withSavedSmtpPass(config) as SmtpConfig)
   return result
 }
 
@@ -376,11 +388,12 @@ export async function sendSmtpTestEmail(config: {
   smtpHost: string; smtpPort: number; smtpUser: string; smtpPass: string; smtpFromName: string; smtpSecure: boolean
 }, toEmail: string) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
-  const result = await sendTestEmail(config as SmtpConfig, toEmail)
+  const result = await sendTestEmail(await withSavedSmtpPass(config) as SmtpConfig, toEmail)
   return result
 }
 
 export async function getEmailConfigStatus() {
+  try { await requireAuth() } catch { return { success: false, configured: false, smtpHost: null, smtpUser: null, fromName: null } }
   const config = await getSmtpConfig()
   return {
     success: true,
@@ -394,6 +407,7 @@ export async function getEmailConfigStatus() {
 // ─── CAMPAIGN ANALYTICS ─────────────────────────────
 
 export async function getCampaignAnalytics(campaignId: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const campaign = await prisma.emailCampaign.findUnique({
     where: { id: campaignId },
     include: {
@@ -501,65 +515,10 @@ export async function getCampaignAnalytics(campaignId: number) {
   }
 }
 
-// ─── RECORD TRACKING EVENT ──────────────────────────
-
-export async function recordEmailEvent(recipientId: number, type: 'open' | 'click' | 'bounce' | 'unsubscribe', metadata?: Record<string, unknown>) {
-  const recipient = await prisma.emailRecipient.findUnique({
-    where: { id: recipientId },
-    include: { campaign: true },
-  })
-  if (!recipient) return { success: false }
-
-  // Create event
-  await prisma.emailEvent.create({
-    data: { recipientId, type, metadata: (metadata || {}) as any },
-  })
-
-  // Update recipient stats
-  const recipientUpdate: Record<string, unknown> = {}
-  const campaignUpdate: Record<string, unknown> = {}
-
-  if (type === 'open') {
-    recipientUpdate.opens = { increment: 1 }
-    if (!recipient.openedAt) {
-      recipientUpdate.openedAt = new Date()
-      recipientUpdate.status = 'opened'
-      campaignUpdate.opened = { increment: 1 }
-    }
-  } else if (type === 'click') {
-    recipientUpdate.clicks = { increment: 1 }
-    if (!recipient.clickedAt) {
-      recipientUpdate.clickedAt = new Date()
-      recipientUpdate.status = 'clicked'
-      campaignUpdate.clicked = { increment: 1 }
-    }
-  } else if (type === 'bounce') {
-    recipientUpdate.status = 'bounced'
-    recipientUpdate.bouncedAt = new Date()
-    campaignUpdate.bounced = { increment: 1 }
-  } else if (type === 'unsubscribe') {
-    recipientUpdate.status = 'unsubscribed'
-    campaignUpdate.unsubscribed = { increment: 1 }
-    // Also update contact subscription
-    if (recipient.contactId) {
-      await prisma.contact.update({
-        where: { id: recipient.contactId },
-        data: { emailSubscribed: false },
-      })
-    }
-  }
-
-  await prisma.$transaction([
-    prisma.emailRecipient.update({ where: { id: recipientId }, data: recipientUpdate }),
-    prisma.emailCampaign.update({ where: { id: recipient.campaignId }, data: campaignUpdate }),
-  ])
-
-  return { success: true }
-}
-
 // ─── AUTOMATED CAMPAIGN HELPERS ─────────────────────
 
 export async function getAutomatedCampaigns() {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const campaigns = await prisma.emailCampaign.findMany({
     where: { isAutomated: true },
     orderBy: { createdAt: 'desc' },

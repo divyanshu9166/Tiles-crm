@@ -16,6 +16,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { decrypt, encrypt } from '@/lib/whatsapp/encryption'
 import { getAiAgentQueue } from '@/lib/queues/jobs'
+import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import {
   sendTextMessage,
   setTypingOn,
@@ -68,9 +69,12 @@ export async function GET(req: NextRequest) {
 // ── Incoming events (POST) ─────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  // Keep the raw body: Meta signs the exact bytes (x-hub-signature-256).
+  const rawBody = await req.text()
+  const signature = req.headers.get('x-hub-signature-256')
   let body: Record<string, unknown>
   try {
-    body = await req.json()
+    body = JSON.parse(rawBody)
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
   }
@@ -90,7 +94,7 @@ export async function POST(req: NextRequest) {
   // ✅ Meta best practice: Respond 200 immediately to prevent retries,
   // then process asynchronously. Meta retries if no response within ~20s.
   Promise.all(
-    entries.map((entry) => processEntry(entry, normalizedPlatform)),
+    entries.map((entry) => processEntry(entry, normalizedPlatform, rawBody, signature)),
   ).catch((err) => console.error('[social-webhook] Entry processing error:', err))
 
   return NextResponse.json({ status: 'ok' })
@@ -101,6 +105,8 @@ export async function POST(req: NextRequest) {
 async function processEntry(
   entry: Record<string, unknown>,
   platform: SocialPlatform,
+  rawBody: string,
+  signature: string | null,
 ) {
   const pageId = entry.id as string // FB Page ID or IG Business Account ID
 
@@ -134,6 +140,13 @@ async function processEntry(
   }
 
   if (!userId || !pageAccessToken) return
+
+  // Only Meta can send events: verify the signature with this page's app
+  // secret (or META_APP_SECRET). No secret configured → rejected (fail closed).
+  if (!verifyMetaWebhookSignature(rawBody, signature, appSecret || process.env.META_APP_SECRET || null)) {
+    console.warn(`[social-webhook] Rejected unsigned or forged ${platform} event for ${pageId}`)
+    return
+  }
 
   // Both Facebook and Instagram deliver via entry.messaging[]
   const messagingEvents = (entry.messaging as Record<string, unknown>[]) ?? []

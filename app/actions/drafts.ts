@@ -3,7 +3,7 @@
 import { prisma } from '@/lib/db'
 import { lockInventoryProducts } from '@/lib/inventory-stock'
 import { revalidatePath } from 'next/cache'
-import { requireRole } from '@/lib/auth-helpers'
+import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { syncProductStockFromGodowns } from './godowns'
 import { syncStoneLotTotals } from '@/lib/stone-inventory'
 import {
@@ -81,6 +81,7 @@ async function adjustGodownStockWithTx(tx: any, params: {
 // ─── MOVE CUSTOM ORDER TO DRAFT ────────────────────────
 
 export async function moveCustomOrderToDraft(orderId: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const order = await prisma.customOrder.findUnique({
     where: { id: orderId },
     include: {
@@ -178,11 +179,14 @@ export async function moveCustomOrderToDraft(orderId: number) {
 // ─── MOVE SELF VISIT TO DRAFT ─────────────────────────
 
 export async function moveSelfVisitToDraft(visitId: number) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const visit = await prisma.fieldVisit.findUnique({
     where: { id: visitId },
     include: { staff: { select: { name: true } } },
   })
   if (!visit) return { success: false, error: 'Visit not found' }
+  const viewer = await requireAuth()
+  if (viewer.user.role === 'STAFF' && Number(viewer.user.staffId) !== visit.staffId) return { success: false, error: 'You can only delete your own visits' }
 
   const now = new Date()
   const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000)
@@ -227,6 +231,7 @@ export async function moveSelfVisitToDraft(visitId: number) {
 // ─── MOVE LEAD TO DRAFT ─────────────────────────────
 
 export async function moveLeadToDraft(leadId: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const lead = await prisma.lead.findUnique({
     where: { id: leadId },
     include: {
@@ -289,6 +294,7 @@ export async function moveLeadToDraft(leadId: number) {
 // ─── MOVE WALK-IN TO DRAFT ─────────────────────────
 
 export async function moveWalkinToDraft(walkinId: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const walkin = await prisma.walkin.findUnique({
     where: { id: walkinId },
     include: { contact: true, assignedTo: { select: { name: true } } },
@@ -344,6 +350,7 @@ export async function moveWalkinToDraft(walkinId: number) {
 // ─── MOVE APPOINTMENT TO DRAFT ──────────────────────
 
 export async function moveAppointmentToDraft(appointmentId: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const appointment = await prisma.appointment.findUnique({
     where: { id: appointmentId },
     include: { contact: true },
@@ -389,6 +396,7 @@ export async function moveAppointmentToDraft(appointmentId: number) {
 // ─── MOVE ORDER TO DRAFT ────────────────────────────
 
 export async function moveOrderToDraft(orderId: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const order = await prisma.order.findUnique({
     where: { id: orderId },
     include: {
@@ -401,7 +409,9 @@ export async function moveOrderToDraft(orderId: number) {
 
   const now = new Date()
   const expiresAt = getDraftExpiry(now)
-  const shouldDeductStock = ['STORE', 'SHOPIFY'].includes(order.source)
+  // A cancelled order already put its stock back (orders.ts); restoring again
+  // created phantom stock.
+  const shouldDeductStock = ['STORE', 'SHOPIFY'].includes(order.source) && order.status !== 'CANCELLED'
 
   const snapshot = {
     displayId: order.displayId,
@@ -425,7 +435,14 @@ export async function moveOrderToDraft(orderId: number) {
     subtitle: order.product?.name ? `${order.product.name} · Qty ${order.quantity}` : 'Order',
   }
 
+  try {
   await prisma.$transaction(async (tx) => {
+    // Re-check under a row lock: a cancel (or a second move) running at the
+    // same time must not make the stock decision on stale data.
+    await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${orderId} FOR UPDATE`
+    const current = await tx.order.findUnique({ where: { id: orderId }, select: { status: true } })
+    if (!current) throw new Error('This order was already removed')
+    if (current.status !== order.status) throw new Error('This order changed meanwhile. Refresh and try again.')
     if (shouldDeductStock) {
       if (order.godownId) {
         await adjustGodownStockWithTx(tx, {
@@ -464,6 +481,9 @@ export async function moveOrderToDraft(orderId: number) {
 
     await tx.order.delete({ where: { id: orderId } })
   })
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Could not move the order to drafts' }
+  }
 
   revalidatePath('/orders')
   revalidatePath('/inventory')
@@ -474,11 +494,21 @@ export async function moveOrderToDraft(orderId: number) {
 // ─── MOVE QUOTATION TO DRAFT ────────────────────────
 
 export async function moveQuotationToDraft(quotationId: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const quotation = await prisma.quotation.findUnique({
     where: { id: quotationId },
     include: { contact: true, items: true },
   })
   if (!quotation) return { success: false, error: 'Quotation not found' }
+
+  // Deleting a confirmed quotation let it be restored and confirmed again into
+  // a second order for the same deal.
+  const linkedOrder = await prisma.salesOrder.findFirst({ where: { quotationId, status: { not: 'CANCELLED' } }, select: { displayId: true } })
+  if (linkedOrder) return { success: false, error: `This quotation is confirmed as ${linkedOrder.displayId}. Cancel the order first if the deal is off.` }
+  const marker = new RegExp(`Converted from quotation ${quotation.displayId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\d)`)
+  const markedInvoices = await prisma.invoice.findMany({ where: { invoiceStatus: 'ACTIVE', notes: { contains: `Converted from quotation ${quotation.displayId}` } }, select: { displayId: true, notes: true } })
+  const linkedInvoice = markedInvoices.find(invoice => marker.test(invoice.notes || ''))
+  if (linkedInvoice) return { success: false, error: `This quotation was invoiced as ${linkedInvoice.displayId}. Cancel that invoice first.` }
 
   const now = new Date()
   const expiresAt = getDraftExpiry(now)
@@ -551,6 +581,7 @@ export async function moveQuotationToDraft(quotationId: number) {
 // ─── MOVE INVOICE TO DRAFT ──────────────────────────
 
 export async function moveInvoiceToDraft(invoiceId: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const invoice = await prisma.invoice.findUnique({
     where: { id: invoiceId },
     include: {
@@ -688,8 +719,6 @@ export async function moveInvoiceToDraft(invoiceId: number) {
 
 export async function movePurchaseOrderToDraft(poId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
-
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const po = await prisma.purchaseOrder.findUnique({
     where: { id: poId },
     include: { supplier: true, items: true, payments: true },
@@ -700,6 +729,16 @@ export async function movePurchaseOrderToDraft(poId: number) {
   const expiresAt = getDraftExpiry(now)
 
   if (po.items.some(item => item.receivedQty > 0)) return { success: false, error: 'Received purchase orders are inventory history and cannot be moved to drafts. Use a supplier return to reverse received stock.' }
+  // Approved/paid POs own receipts, bills and payment journals; deleting one
+  // orphaned all of them and restoring created a second receipt.
+  if (!['DRAFT', 'CANCELLED'].includes(po.status)) return { success: false, error: 'Only draft or cancelled purchase orders can be moved to drafts. Cancel this order instead.' }
+  if (po.payments.length > 0 || po.amountPaid > 0) return { success: false, error: 'This purchase order has payments recorded, so it cannot be deleted.' }
+  const [linkedBills, linkedReceipts] = await Promise.all([
+    prisma.vendorBill.count({ where: { poId, status: { not: 'CANCELLED' } } }),
+    prisma.stockPicking.count({ where: { purchaseOrderId: poId, status: { not: 'CANCELLED' } } }),
+  ])
+  if (linkedBills > 0) return { success: false, error: 'This purchase order has a vendor bill. Cancel the bill first.' }
+  if (linkedReceipts > 0) return { success: false, error: 'This purchase order has an open goods receipt. Cancel the order instead.' }
   const receivedItems = po.items.filter(i => i.receivedQty > 0)
   if (receivedItems.length > 0) {
     const productIds = Array.from(new Set(receivedItems.map(i => i.productId)))
@@ -810,6 +849,7 @@ export async function movePurchaseOrderToDraft(poId: number) {
 // ─── MOVE EXPENSE TO DRAFT ──────────────────────────
 
 export async function moveExpenseToDraft(expenseId: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const expense = await prisma.expense.findUnique({
     where: { id: expenseId },
     include: { category: true, staff: { select: { name: true } } },
@@ -958,6 +998,7 @@ export async function moveProductToDraft(productId: number) {
 // ─── GET ALL DRAFTS ────────────────────────────────────
 
 export async function getDrafts() {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   // Auto-purge expired drafts first
   await prisma.draft.deleteMany({
     where: { expiresAt: { lt: new Date() } },
@@ -1255,7 +1296,9 @@ export async function restoreFromDraft(draftId: number) {
     const productId = data.productId as number
     const quantity = data.quantity as number
     const orderSource = coerceEnum(data.source, orderSourceValues, OrderSource.STORE)
-    const shouldDeductStock = ['STORE', 'SHOPIFY'].includes(orderSource)
+    const restoredStatus: OrderStatus = coerceEnum(data.status, orderStatusValues, OrderStatus.CONFIRMED as OrderStatus)
+    // A cancelled order holds no stock, so restoring it takes none.
+    const shouldDeductStock = ['STORE', 'SHOPIFY'].includes(orderSource) && restoredStatus !== OrderStatus.CANCELLED
 
     let contact = await prisma.contact.findFirst({ where: { phone: data.phone as string } })
     if (!contact) {
@@ -1321,7 +1364,7 @@ export async function restoreFromDraft(draftId: number) {
           amount: data.amount as number,
           source: orderSource,
           payment: coerceEnum(data.payment, paymentStatusValues, PaymentStatus.PENDING),
-          status: coerceEnum(data.status, orderStatusValues, OrderStatus.CONFIRMED),
+          status: restoredStatus,
           date: data.date ? new Date(data.date as string) : new Date(),
           deliveryDate: data.deliveryDate ? new Date(data.deliveryDate as string) : null,
           notes: (data.notes as string) || null,
@@ -1398,7 +1441,9 @@ export async function restoreFromDraft(draftId: number) {
       const match = lastQuotation.displayId.match(/(\d+)$/)
       if (match) nextNum = parseInt(match[1]) + 1
     }
-    const displayId = `Q.${nextNum}`
+    const originalId = typeof data.displayId === 'string' ? data.displayId : null
+    const originalTaken = originalId ? await prisma.quotation.findUnique({ where: { displayId: originalId }, select: { id: true } }) : null
+    const displayId = originalId && !originalTaken ? originalId : `Q.${nextNum}`
 
     await prisma.$transaction(async (tx) => {
       await tx.quotation.create({

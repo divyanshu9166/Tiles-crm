@@ -2,6 +2,7 @@
 
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
+import { requireRole } from '@/lib/auth-helpers'
 
 export interface BulkContactRow {
   name: string
@@ -14,6 +15,7 @@ export interface BulkContactRow {
 }
 
 export async function bulkImportContacts(rows: BulkContactRow[]) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   if (!rows || rows.length === 0) return { success: false, error: 'No contacts to import' }
 
   // Validate — every row needs at least name and phone

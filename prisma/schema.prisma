@@ -507,6 +507,7 @@ model Invoice {
   sgst               Int           @default(0)
   igst               Int           @default(0) // Interstate GST
   cess               Int           @default(0) // Cess on applicable goods
+  chargesGst         Int           @default(0) // GST on transport/freight/loading/installation (part of gst); 0 = charges untaxed (bills before Oct 2026)
   total              Int
   amountPaid         Int           @default(0)
   balanceDue         Int           @default(0)

@@ -27,13 +27,16 @@ import {
 import { moveQuotationToDraft } from '@/app/actions/drafts'
 import Modal from '@/components/Modal'
 import { useAlertToast } from '@/components/AlertToastProvider'
+import { useSession } from '@/components/AuthProvider'
 import { convertQuotationToInvoice, createQuotation, getQuotationStats, getQuotations, updateQuotation, updateQuotationStatus } from '@/app/actions/quotations'
 import { createSalesOrderFromQuotation } from '@/app/actions/sales-orders'
 import { getProducts } from '@/app/actions/products'
 import { getPricelists, getPricesFor } from '@/app/actions/pricelists'
+import { linePrice } from '@/lib/line-math'
 import { getStoreSettings, updateStoreSettings } from '@/app/actions/settings'
 import { getBillableArea } from '@/lib/units'
 import { getActiveVertical } from '@/lib/brand'
+import { istDate } from '@/lib/local-date'
 
 const DEFAULT_STORE_NAME = getActiveVertical() === 'tiles' ? 'Tiles, Granite & Marble Showroom' : 'Furniture Store'
 
@@ -114,7 +117,7 @@ const createInitialForm = () => ({
   phone: '',
   email: '',
   dispatchAddress: '',
-  date: new Date().toISOString().split('T')[0],
+  date: istDate(),
   validUntil: '',
   projectName: '',
   deliveryMode: 'CARGO BY ROAD',
@@ -159,7 +162,7 @@ function buildFormFromQuotation(quotation) {
         description: item.description || '',
          quantity: Number(item.quantity) || 1,
          rate: Number(item.rate) || 0,
-         area: Number(item.area ?? item.areaInput) || 0,
+         area: Number(item.areaSqft ?? item.area ?? item.areaInput) || 0,
          unitOfMeasure: item.unitOfMeasure || 'PCS',
          coveragePerBox: Number(item.coveragePerBox) || 0,
         productImage,
@@ -177,7 +180,7 @@ function buildFormFromQuotation(quotation) {
     phone: quotation?.phone || '',
     email: quotation?.email || '',
     dispatchAddress: quotation?.dispatchAddress || '',
-    date: quotation?.date || new Date().toISOString().split('T')[0],
+    date: quotation?.date || istDate(),
     validUntil: quotation?.validUntil || '',
     projectName: quotation?.projectName || '',
     deliveryMode: quotation?.deliveryMode || 'CARGO BY ROAD',
@@ -188,7 +191,7 @@ function buildFormFromQuotation(quotation) {
     discountValue: Number(quotation?.discountValue) || 0,
     freightCharge: Number(quotation?.freightCharge) || 0,
     loadingCharge: Number(quotation?.loadingCharge) || 0,
-    gstPercent: Number(quotation?.gstPercent) || 18,
+    gstPercent: quotation?.gstPercent == null ? 18 : Number(quotation.gstPercent),
     bankDetails: {
       accountName: quotation?.bankDetails?.accountName || '',
       bankName: quotation?.bankDetails?.bankName || '',
@@ -274,40 +277,14 @@ function getItemDisplayImage(item) {
  *   plus the entered area and resulting box count when a conversion occurred.
  */
 function computeLineAmount(item, product) {
-  const unit = String(item?.unitOfMeasure || product?.unitOfMeasure || 'PCS').toUpperCase()
-  const quantity = Math.max(1, Number(item?.quantity) || 1)
-  const rate = Math.max(0, Number(item?.rate) || 0)
-  const coveragePerBox = Math.max(0, Number(item?.coveragePerBox ?? product?.coveragePerBox) || 0)
-  const area = Math.max(0, Number(item?.area ?? item?.areaInput) || 0)
-  const hasCoverage = coveragePerBox > 0
-
-  if (unit === 'SQFT' || unit === 'SQM' || unit === 'SLAB') {
-    return { amount: getBillableArea(area, quantity, unit) * rate, area, billableArea: getBillableArea(area, quantity, unit) }
-  }
-
-  // Furniture, running-feet profiles and per-piece products use quantity * rate.
-  if (unit !== 'BOX') {
-    return { amount: quantity * rate }
-  }
-
-  if (unit === 'SQFT') {
-    if (hasCoverage) {
-      // Amount is priced per square foot; boxes are derived from the area.
-      const boxes = Math.max(0, Math.ceil(area / coveragePerBox))
-      return { amount: area * rate, boxes, area }
-    }
-    // No coverage defined: use the entered quantity directly, no box conversion.
-    return { amount: quantity * rate }
-  }
-
-  // unit === 'BOX'
-  if (hasCoverage && area > 0) {
-    // Derive the number of boxes from the entered area; price per box.
-    const boxes = Math.max(0, Math.ceil(area / coveragePerBox))
-    return { amount: boxes * rate, boxes, area }
-  }
-  // No area entered (or no coverage): bill the box count, as the server does.
-  return { amount: quantity * rate }
+  // Same rules as the server (lib/line-math): the printed quote matches the saved one.
+  return linePrice({
+    quantity: item?.quantity,
+    rate: Math.round(Number(item?.rate) || 0),
+    unitOfMeasure: item?.unitOfMeasure || product?.unitOfMeasure || 'PCS',
+    areaSqft: item?.area ?? item?.areaInput,
+    coveragePerBox: item?.coveragePerBox ?? product?.coveragePerBox,
+  })
 }
 
 function computeTotals(items, installationPercent, discountType, discountValue, freightCharge, loadingCharge, gstPercent, products = []) {
@@ -756,6 +733,9 @@ function QuotationSheetPreview({ quotation, storeSettings }) {
 }
 
 export default function QuotationsPage() {
+  const { data: session } = useSession()
+  // Confirming and invoicing are manager actions on the server; don't offer them to staff.
+  const canConfirm = ['ADMIN', 'MANAGER'].includes(session?.user?.role)
   const { notify } = useAlertToast()
   const [quotationToDraft, setQuotationToDraft] = useState(null)
   const [deletingQuotation, setDeletingQuotation] = useState(false)
@@ -867,6 +847,26 @@ export default function QuotationsPage() {
     setForm({ ...createInitialForm(), bankDetails: loadSavedBankDetails() })
     setShowGenerator(true)
   }
+
+  // Leads and walk-ins open /quotations?new=1&customer=…&phone=…&email=… to
+  // start a quotation with the customer already filled in.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('new') !== '1') return
+    const timer = setTimeout(() => {
+      setEditingQuotationId(null)
+      setForm({
+        ...createInitialForm(),
+        bankDetails: loadSavedBankDetails(),
+        customer: params.get('customer') || '',
+        phone: params.get('phone') || '',
+        email: params.get('email') || '',
+      })
+      setShowGenerator(true)
+      window.history.replaceState(null, '', '/quotations')
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [])
 
   const openEditQuotationModal = quotation => {
     setEditingQuotationId(quotation.dbId)
@@ -2304,9 +2304,12 @@ export default function QuotationsPage() {
                   onClick={() => handleMoveToDraft(selectedQuotation)}
                   className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-red-500/20 text-xs text-red-700 hover:bg-red-500/10"
                 >
-                  <Trash2 className="w-3.5 h-3.5" /> Move to Draft
+                  <Trash2 className="w-3.5 h-3.5" /> Delete
                 </button>
-                {selectedQuotation.statusKey !== 'REJECTED' && (
+                {!canConfirm && selectedQuotation.statusKey !== 'REJECTED' && !selectedQuotation.salesOrder && (
+                  <span className="text-xs text-muted self-center">Ask a manager to confirm this quotation.</span>
+                )}
+                {canConfirm && selectedQuotation.statusKey !== 'REJECTED' && (
                   <button
                     onClick={() => handleConfirmSalesOrder(selectedQuotation)}
                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-accent text-white text-xs hover:bg-accent-hover"
@@ -2314,7 +2317,7 @@ export default function QuotationsPage() {
                     <ClipboardList className="w-3.5 h-3.5" /> {selectedQuotation.salesOrder ? `Open ${selectedQuotation.salesOrder.displayId}` : 'Confirm → Sales Order'}
                   </button>
                 )}
-                {(selectedQuotation.statusKey === 'SENT' || selectedQuotation.statusKey === 'APPROVED') && !selectedQuotation.salesOrder && (
+                {canConfirm && (selectedQuotation.statusKey === 'SENT' || selectedQuotation.statusKey === 'APPROVED') && !selectedQuotation.salesOrder && (
                   <button
                     onClick={() => handleConvertToInvoice(selectedQuotation)}
                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-accent text-white text-xs hover:bg-accent-hover"

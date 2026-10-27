@@ -507,7 +507,10 @@ export async function updateDealerOrderStatus(id: number, status: string, notes?
   const isCreditApproval = order.status === 'APPROVAL_PENDING' && status === 'APPROVED'
   if (status === 'APPROVED' && !['ADMIN', 'MANAGER'].includes(session.user.role)) return { success: false, error: 'Only a manager can approve a dealer order' }
   if (status === 'ALLOCATED' && !(notes?.trim() || order.allocationNotes?.trim())) return { success: false, error: 'Record the allocated lot, slab, batch or production reference before allocating this order' }
-  if (!isCreditApproval && ['ORDER_RECEIVED', 'APPROVED', 'ALLOCATED', 'DISPATCHED'].includes(status)) {
+  // Once approved (by the limit check or by a manager over the limit), later
+  // steps don't re-check credit: that dead-ended manager-approved orders.
+  const alreadyApproved = ['APPROVED', 'ALLOCATED', 'DISPATCHED'].includes(order.status)
+  if (!isCreditApproval && !alreadyApproved && ['ORDER_RECEIVED', 'APPROVED', 'ALLOCATED', 'DISPATCHED'].includes(status)) {
     const dealer = await prisma.dealer.findUnique({ where: { id: order.dealerId }, select: { creditLimit: true } })
     if (dealer?.creditLimit && dealer.creditLimit > 0) {
       const outstanding = await prisma.dealerOrder.aggregate({ where: { dealerId: order.dealerId, id: { not: id }, status: { in: financiallyCommittedOrderStatuses } }, _sum: { balanceDue: true } })
@@ -533,21 +536,56 @@ export async function recordDealerPayment(input: unknown) {
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
   const session = await actor()
   if (!session || !(await canAccessDealer(parsed.data.dealerId, session))) return { success: false, error: 'Access denied' }
-  const result = await prisma.$transaction(async tx => {
-    let order: any = null
-    if (parsed.data.dealerOrderId) {
-      order = await tx.dealerOrder.findFirst({ where: { id: parsed.data.dealerOrderId, dealerId: parsed.data.dealerId }, select: { id: true, total: true, amountPaid: true, balanceDue: true, status: true } })
-      if (!order) throw new Error('Dealer order not found')
-      if (!financiallyCommittedOrderStatuses.includes(order.status)) throw new Error('Collection can be recorded only after the dealer order is received')
-      if (parsed.data.amount > order.balanceDue) throw new Error('Payment cannot be higher than the order balance')
-    }
-    const payment = await tx.dealerPayment.create({ data: { dealerId: parsed.data.dealerId, dealerOrderId: parsed.data.dealerOrderId || null, amount: parsed.data.amount, method: parsed.data.method, reference: parsed.data.reference || null, paymentDate: parseDate(parsed.data.paymentDate) || new Date(), notes: parsed.data.notes || null } })
-    if (order) {
-      const amountPaid = order.amountPaid + parsed.data.amount
-      await tx.dealerOrder.update({ where: { id: order.id }, data: { amountPaid, balanceDue: order.total - amountPaid, paymentStatus: amountPaid >= order.total ? 'PAID' : 'PARTIAL' } })
-    }
-    return payment
-  })
+  let result
+  try {
+    result = await prisma.$transaction(async tx => {
+      const amount = parsed.data.amount
+      const paymentDate = parseDate(parsed.data.paymentDate) || new Date()
+      const base = { dealerId: parsed.data.dealerId, method: parsed.data.method, reference: parsed.data.reference || null, paymentDate, notes: parsed.data.notes || null }
+      // Apply money to an order with a guarded increment, so two cashiers
+      // recording at once can never push the balance below zero.
+      const applyToOrder = async (order: { id: number; total: number }, share: number) => {
+        const claimed = await tx.dealerOrder.updateMany({
+          where: { id: order.id, balanceDue: { gte: share } },
+          data: { amountPaid: { increment: share }, balanceDue: { decrement: share } },
+        })
+        if (claimed.count !== 1) throw new Error('This order balance just changed. Refresh and try again.')
+        const fresh = await tx.dealerOrder.findUnique({ where: { id: order.id }, select: { amountPaid: true, total: true } })
+        await tx.dealerOrder.update({ where: { id: order.id }, data: { paymentStatus: (fresh?.amountPaid || 0) >= (fresh?.total || 0) ? 'PAID' : 'PARTIAL' } })
+        return tx.dealerPayment.create({ data: { ...base, dealerOrderId: order.id, amount: share } })
+      }
+      if (parsed.data.dealerOrderId) {
+        const order = await tx.dealerOrder.findFirst({ where: { id: parsed.data.dealerOrderId, dealerId: parsed.data.dealerId }, select: { id: true, total: true, balanceDue: true, status: true } })
+        if (!order) throw new Error('Dealer order not found')
+        if (!financiallyCommittedOrderStatuses.includes(order.status)) throw new Error('Collection can be recorded only after the dealer order is received')
+        if (amount > order.balanceDue) throw new Error('Payment cannot be higher than the order balance')
+        return applyToOrder(order, amount)
+      }
+      // On-account payment: settle the oldest open orders first (FIFO). Anything
+      // left over is kept as an advance on the dealer's account.
+      const open = await tx.dealerOrder.findMany({
+        where: { dealerId: parsed.data.dealerId, status: { in: financiallyCommittedOrderStatuses }, balanceDue: { gt: 0 } },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        select: { id: true, total: true, balanceDue: true },
+      })
+      let left = amount
+      let first: any = null
+      for (const order of open) {
+        if (left <= 0) break
+        const share = Math.min(left, order.balanceDue)
+        const payment = await applyToOrder(order, share)
+        first = first || payment
+        left -= share
+      }
+      if (left > 0) {
+        const advance = await tx.dealerPayment.create({ data: { ...base, dealerOrderId: null, amount: left, notes: [parsed.data.notes, 'Advance (no open order)'].filter(Boolean).join(' · ') } })
+        first = first || advance
+      }
+      return first
+    })
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Could not record the payment' }
+  }
   await addActivity(parsed.data.dealerId, session, 'PAYMENT', `Payment received: ₹${parsed.data.amount.toLocaleString('en-IN')}`, parsed.data.reference || undefined)
   revalidatePath(DEALER_PATH)
   return { success: true, data: result }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { uploadFile } from '@/lib/r2'
+import { detectFileType } from '@/lib/file-type'
 
 const ALLOWED_TYPES = [
   'image/jpeg', 'image/jpg',
@@ -54,7 +55,17 @@ export async function POST(req: NextRequest) {
       const bytes = await file.arrayBuffer()
       const buffer = Buffer.from(bytes)
 
-      const url = await uploadFile(buffer, file.name, file.type, folder)
+      // The stored extension comes from the content, never from the
+      // browser-declared type or the file name (blocks SVG/HTML uploads).
+      const detected = detectFileType(new Uint8Array(buffer), file.type)
+      if (!detected) {
+        return NextResponse.json(
+          { error: `${file.name} is not a supported image, PDF or CSV file.` },
+          { status: 400 }
+        )
+      }
+
+      const url = await uploadFile(buffer, `upload.${detected.ext}`, detected.mime, folder)
       urls.push(url)
     }
 
@@ -62,6 +73,6 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Upload failed'
     console.error('[Upload API] Error:', msg)
-    return NextResponse.json({ error: msg }, { status: 500 })
+    return NextResponse.json({ error: 'Upload failed. Please try again.' }, { status: 500 })
   }
 }

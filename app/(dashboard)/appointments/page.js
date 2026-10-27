@@ -7,6 +7,7 @@ import { moveAppointmentToDraft } from '@/app/actions/drafts';
 import Modal from '@/components/Modal';
 import { useAlertToast } from '@/components/AlertToastProvider';
 import { getActiveVertical } from '@/lib/brand';
+import { istDate } from '@/lib/local-date';
 
 const IS_TGM = getActiveVertical() === 'tiles';
 
@@ -30,7 +31,7 @@ export default function AppointmentsPage() {
   const now = new Date();
   const [currentMonth, setCurrentMonth] = useState(now.getMonth());
   const [currentYear, setCurrentYear] = useState(now.getFullYear());
-  const [selectedDate, setSelectedDate] = useState(now.toISOString().split('T')[0]);
+  const [selectedDate, setSelectedDate] = useState(istDate());
   const [showBookModal, setShowBookModal] = useState(false);
 
   const refresh = async () => {
@@ -179,7 +180,7 @@ export default function AppointmentsPage() {
               const dateStr = getDateStr(day);
               const dayApts = day ? getAptsForDate(dateStr) : [];
               const isSelected = dateStr === selectedDate;
-              const isToday = dateStr === new Date().toISOString().split('T')[0];
+              const isToday = dateStr === istDate();
               return (
                 <button key={i} onClick={() => day && setSelectedDate(dateStr)} disabled={!day}
                   className={`aspect-square rounded-xl flex flex-col items-center justify-center gap-0.5 text-sm transition-all ${
@@ -317,7 +318,8 @@ export default function AppointmentsPage() {
             date: f.date.value, time: f.time.value,
             purpose: f.purpose.value, notes: f.notes.value,
           });
-          if (res.success) { setShowBookModal(false); await refresh(); }
+          if (res.success) { setShowBookModal(false); await refresh(); notify('Appointment booked', { variant: 'success' }); }
+          else notify(res.error || 'Could not book the appointment', { variant: 'danger' });
         }}>
           <div>
             <label className="block text-xs font-medium text-muted mb-1.5">Customer Name</label>

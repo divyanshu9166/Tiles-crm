@@ -2,8 +2,8 @@
 
 import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { getStaff } from '@/app/actions/staff';
-import { getStoreSettings } from '@/app/actions/settings';
+import { getStaffLoginOptions } from '@/app/actions/staff';
+import { getPublicBranding } from '@/app/actions/settings';
 import { getBrand } from '@/lib/brand';
 import Image from 'next/image';
 
@@ -36,7 +36,7 @@ function LoginContent() {
   useEffect(() => {
     if (mode === 'staff' && staffList.length === 0) {
       setStaffLoading(true);
-      getStaff().then(res => {
+      getStaffLoginOptions().then(res => {
         if (res.success) setStaffList(res.data);
         setStaffLoading(false);
       });
@@ -45,7 +45,7 @@ function LoginContent() {
 
   useEffect(() => {
     let active = true;
-    getStoreSettings().then(res => {
+    getPublicBranding().then(res => {
       if (!active || !res.success) return;
       setStoreProfile({
         name: res.data.storeName || brand.name,
@@ -239,7 +239,7 @@ function LoginContent() {
                   <select value={selectedStaffId} onChange={(e) => setSelectedStaffId(e.target.value)} required
                     className="w-full px-4 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-amber-500 focus:border-transparent outline-none transition-all">
                     <option value="">Choose your name</option>
-                    {staffList.filter(s => s.status === 'Active' && s.hasLogin && s.loginActive).map(s => (
+                    {staffList.map(s => (
                       <option key={s.id} value={s.id}>{s.name} — {s.role}</option>
                     ))}
                   </select>

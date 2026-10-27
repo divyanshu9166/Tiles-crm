@@ -2,8 +2,10 @@
 
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
+import { requireAuth } from '@/lib/auth-helpers'
 
 export async function getReviews() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const reviews = await prisma.review.findMany({
     include: { contact: true },
     orderBy: { date: 'desc' },
@@ -25,6 +27,7 @@ export async function getReviews() {
 }
 
 export async function getReviewStats() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const [total, avgRating, breakdown] = await Promise.all([
     prisma.review.count(),
     prisma.review.aggregate({ _avg: { rating: true } }),
@@ -47,6 +50,7 @@ export async function getReviewStats() {
 }
 
 export async function markReplied(id: number) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const review = await prisma.review.update({
     where: { id },
     data: { replied: true },

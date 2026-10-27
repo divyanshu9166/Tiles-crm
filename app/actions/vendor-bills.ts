@@ -7,7 +7,7 @@ import { prisma } from '@/lib/db'
 import { requireActor, actionError } from '@/lib/erp/actor'
 import { nextSequence } from '@/lib/erp/sequence'
 import { logMessage, logTracking } from '@/lib/erp/chatter'
-import { billMatchStatus, billTotals, billableQty, matchLine, poBillingStatus } from '@/lib/erp/bill-match'
+import { billMatchStatus, billTotals, billableQty, matchLine, poBillingStatus, poDiscountFactor } from '@/lib/erp/bill-match'
 
 type Tx = Prisma.TransactionClient
 const ROLES = ['ADMIN', 'MANAGER'] as const
@@ -37,7 +37,8 @@ async function recompute(tx: Tx, billId: number) {
     const amount = line.quantity * line.unitCost
     if (amount !== line.amount) await tx.vendorBillLine.update({ where: { id: line.id }, data: { amount } })
   }
-  const totals = billTotals(bill.lines, bill.supplyType)
+  const po = bill.poId ? await tx.purchaseOrder.findUnique({ where: { id: bill.poId }, select: { subtotal: true, discount: true } }) : null
+  const totals = billTotals(bill.lines, bill.supplyType, poDiscountFactor(po))
   // A posted bill's own quantity is already inside billedQty; match against the rest.
   const matchStatus = billMatchStatus(bill.lines.map(line => ({
     quantity: line.quantity,
@@ -97,7 +98,7 @@ export async function getVendorBill(id: number) {
       where: { id },
       include: {
         supplier: { select: { id: true, name: true, gstNumber: true, paymentTerms: true } },
-        po: { select: { id: true, displayId: true, total: true, amountPaid: true, balanceDue: true, status: true } },
+        po: { select: { id: true, displayId: true, total: true, amountPaid: true, balanceDue: true, status: true, subtotal: true, discount: true } },
         lines: { orderBy: { id: 'asc' }, include: { poItem: true } },
         payments: { orderBy: { paidAt: 'asc' }, select: { id: true, amount: true, method: true, reference: true, paidAt: true, createdBy: true } },
       },
@@ -109,6 +110,8 @@ export async function getVendorBill(id: number) {
       data: {
         ...bill,
         outstandingAdvances: advances,
+        discountFactor: poDiscountFactor(bill.po),
+        poDiscount: Math.max(0, bill.lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0) - bill.subtotal),
         amountPaid: bill.payments.reduce((sum, payment) => sum + payment.amount, 0),
         residual: Math.max(0, bill.total - bill.payments.reduce((sum, payment) => sum + payment.amount, 0)),
         lines: bill.lines.map(line => {

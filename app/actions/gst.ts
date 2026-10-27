@@ -2,12 +2,13 @@
 
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
-import { requireRole } from '@/lib/auth-helpers'
+import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { createHsnCodeSchema, createEWayBillSchema } from '@/lib/validations/gst'
 
 // ─── HSN MASTER ──────────────────────────────────────
 
 export async function getHsnCodes() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const codes = await prisma.hsnCode.findMany({ orderBy: { code: 'asc' } })
   return { success: true, data: codes }
 }
@@ -51,6 +52,17 @@ function gstUqc(unitOfMeasure?: string) {
 }
 
 // ─── GSTR-1 (Outward Supplies) ───────────────────────
+
+// Taxable value of an invoice. Since Oct 2026 transport/freight/loading/
+// installation carry GST (chargesGst > 0) and are part of the taxable value;
+// older bills billed them untaxed and keep reporting goods only.
+type TaxableInvoice = { subtotal: number; discount: number; chargesGst?: number | null; transportCost?: number | null; freightCharge?: number | null; loadingCharge?: number | null; installationCharge?: number | null }
+function invoiceCharges(inv: TaxableInvoice) {
+  return (inv.transportCost || 0) + (inv.freightCharge || 0) + (inv.loadingCharge || 0) + (inv.installationCharge || 0)
+}
+function taxableOf(inv: TaxableInvoice) {
+  return taxableOf(inv) + ((inv.chargesGst || 0) > 0 ? invoiceCharges(inv) : 0)
+}
 
 export async function generateGSTR1(period: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
@@ -123,6 +135,17 @@ export async function generateGSTR1(period: string) {
       }
       hsnMap[key].cess += item.cess || 0
     }
+    if ((inv.chargesGst || 0) > 0 && inv.items.length > 0) {
+      const principal = inv.items.reduce((best, item) => ((item.taxableAmount || 0) > (best.taxableAmount || 0) ? item : best), inv.items[0])
+      const key = `${principal.hsnCode || 'OTHERS'}:${gstUqc(principal.unitOfMeasure)}`
+      hsnMap[key].taxableValue += invoiceCharges(inv)
+      if (inv.supplyType === 'INTERSTATE') {
+        hsnMap[key].igst += inv.chargesGst || 0
+      } else {
+        hsnMap[key].cgst += Math.round((inv.chargesGst || 0) / 2)
+        hsnMap[key].sgst += (inv.chargesGst || 0) - Math.round((inv.chargesGst || 0) / 2)
+      }
+    }
   }
 
   // ── Document Serial Summary ────────────────────────
@@ -136,7 +159,7 @@ export async function generateGSTR1(period: string) {
 
   // ── Totals ─────────────────────────────────────────
   const totals = {
-    taxableValue: invoices.reduce((s, i) => s + (i.subtotal - i.discount), 0),
+    taxableValue: invoices.reduce((s, i) => s + taxableOf(i), 0),
     cgst: invoices.reduce((s, i) => s + i.cgst, 0),
     sgst: invoices.reduce((s, i) => s + i.sgst, 0),
     igst: invoices.reduce((s, i) => s + i.igst, 0),
@@ -152,30 +175,30 @@ export async function generateGSTR1(period: string) {
       customer: inv.contact.name, gstin: inv.contact.gstNumber,
       placeOfSupply: inv.placeOfSupply || inv.contact.state || storeState,
       supplyType: inv.supplyType,
-      taxableValue: inv.subtotal - inv.discount,
+      taxableValue: taxableOf(inv),
       cgst: inv.cgst, sgst: inv.sgst, igst: inv.igst, cess: inv.cess, total: inv.total,
     })),
     b2cl: b2cl.map(inv => ({
       displayId: inv.displayId, date: inv.date,
       customer: inv.contact.name,
       placeOfSupply: inv.placeOfSupply || inv.contact.state || storeState,
-      taxableValue: inv.subtotal - inv.discount,
+      taxableValue: taxableOf(inv),
       igst: inv.igst, cess: inv.cess, total: inv.total,
     })),
     b2cs: b2cs.map(inv => ({
       displayId: inv.displayId, date: inv.date,
       customer: inv.contact.name,
       supplyType: inv.supplyType,
-      taxableValue: inv.subtotal - inv.discount,
+      taxableValue: taxableOf(inv),
       cgst: inv.cgst, sgst: inv.sgst, igst: inv.igst, total: inv.total,
     })),
     exports: exports_.map(inv => ({
       displayId: inv.displayId, date: inv.date, customer: inv.contact.name,
-      taxableValue: inv.subtotal - inv.discount, igst: inv.igst, total: inv.total,
+      taxableValue: taxableOf(inv), igst: inv.igst, total: inv.total,
     })),
     nilExempt: {
-      nilRated: nilExempt.filter(i => i.supplyType === 'NIL_RATED').reduce((s, i) => s + (i.subtotal - i.discount), 0),
-      exempt: nilExempt.filter(i => i.supplyType === 'EXEMPT').reduce((s, i) => s + (i.subtotal - i.discount), 0),
+      nilRated: nilExempt.filter(i => i.supplyType === 'NIL_RATED').reduce((s, i) => s + taxableOf(i), 0),
+      exempt: nilExempt.filter(i => i.supplyType === 'EXEMPT').reduce((s, i) => s + taxableOf(i), 0),
       count: nilExempt.length,
     },
     cdnr: cdnr.map(c => ({
@@ -439,6 +462,7 @@ export async function generateGSTR9(year: number) {
 // ─── RETURNS MANAGEMENT ──────────────────────────────
 
 export async function getGSTReturns() {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const returns = await prisma.gSTReturn.findMany({ orderBy: [{ period: 'desc' }, { returnType: 'asc' }] })
   return { success: true, data: returns }
 }
@@ -451,6 +475,7 @@ export async function markReturnFiled(id: number) {
 }
 
 export async function getReturnByTypePeriod(returnType: string, period: string) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const ret = await prisma.gSTReturn.findFirst({ where: { returnType, period } })
   return { success: true, data: ret }
 }
@@ -458,6 +483,7 @@ export async function getReturnByTypePeriod(returnType: string, period: string) 
 // ─── E-WAY BILLS ─────────────────────────────────────
 
 export async function getEWayBills() {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const bills = await prisma.eWayBill.findMany({
     include: { invoice: { select: { displayId: true, total: true, date: true, contact: { select: { name: true } } } } },
     orderBy: { createdAt: 'desc' },

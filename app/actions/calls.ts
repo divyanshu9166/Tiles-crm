@@ -6,8 +6,11 @@ import { createCallLogSchema } from '@/lib/validations/call'
 import type { CallDirection, CallStatus } from '@prisma/client'
 import { outboundAICallSchema } from '@/lib/validations/ai-call'
 import { callingAgentStatus } from '@/lib/calling-agent-status'
+import { requireAuth, requireRole } from '@/lib/auth-helpers'
+import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
 
 export async function getCallLogs() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const calls = await prisma.callLog.findMany({
     include: { contact: true, transcript: true },
     orderBy: { date: 'desc' },
@@ -42,13 +45,14 @@ export async function getCallLogs() {
 }
 
 export async function createCallLog(data: unknown) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = createCallLogSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
   const { customerName, phone, direction, status, duration, durationSec, agent, purpose, outcome, notes, recording } = parsed.data
 
   // Try to link to existing contact
-  const contact = await prisma.contact.findFirst({ where: { phone } })
+  const contact = await prisma.contact.findFirst({ where: contactPhoneWhere(phone) })
 
   const now = new Date()
   const callLog = await prisma.callLog.create({
@@ -75,6 +79,7 @@ export async function createCallLog(data: unknown) {
 }
 
 export async function getCallStats() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const [total, completed, missed, totalDuration, aiHandled] = await Promise.all([
     prisma.callLog.count(),
     prisma.callLog.count({ where: { status: 'COMPLETED' } }),
@@ -96,6 +101,7 @@ export async function getCallStats() {
 }
 
 export async function initiateAICall(phoneNumber: string, reason: string, customerName: string = '') {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const parsed = outboundAICallSchema.safeParse({ phoneNumber, reason, customerName })
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
   try {
@@ -119,5 +125,6 @@ export async function initiateAICall(phoneNumber: string, reason: string, custom
 }
 
 export async function getAIAgentStatus() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   return { success: true, data: await callingAgentStatus() }
 }

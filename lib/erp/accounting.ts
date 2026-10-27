@@ -153,6 +153,17 @@ async function collectEntries(db: Db, posted: Set<string>): Promise<DraftEntry[]
         lines: [{ code: ACC.inventoryAdjustment, debit: value }, { code: ACC.inventory, credit: value }] })
     }
   }
+  // A write-off undone (slab restored from DAMAGED) is reversed.
+  for (const key of posted) {
+    const match = key.match(/^SLABLOSS:(\d+)$/)
+    if (!match) continue
+    const slab = slabById.get(Number(match[1]))
+    if (!slab || slab.status === 'DAMAGED') continue
+    const value = Math.round(slab.sqft * slab.lot.costPerSqft)
+    if (value === 0) continue
+    entries.push({ sourceKey: `SLABLOSSREV:${match[1]}`, reverses: key, date: new Date(), narration: `Slab write-off reversed · slab ${slab.slabNumber}`, referenceType: 'Slab', referenceId: Number(match[1]),
+      lines: [{ code: ACC.inventory, debit: value }, { code: ACC.inventoryAdjustment, credit: value }] })
+  }
   // A sale that was undone (invoice cancelled / refunded) is reversed.
   for (const key of posted) {
     const match = key.match(/^SLABOUT:(\d+):(\d+)$/)

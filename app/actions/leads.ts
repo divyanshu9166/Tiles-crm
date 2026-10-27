@@ -6,6 +6,8 @@ import { createLeadSchema, updateLeadStatusSchema, addFollowUpSchema } from '@/l
 import type { LeadStatus } from '@prisma/client'
 import { moveLeadToDraft } from './drafts'
 import { autoAssignLead } from '@/lib/erp/sales-team'
+import { requireAuth, requireRole } from '@/lib/auth-helpers'
+import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
 
 const statusMap: Record<string, LeadStatus> = {
   'New': 'NEW',
@@ -26,6 +28,7 @@ const statusDisplayMap: Record<LeadStatus, string> = {
 }
 
 export async function getLeads(status?: string) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const where = status && statusMap[status] ? { status: statusMap[status] } : {}
 
   const leads = await prisma.lead.findMany({
@@ -62,6 +65,7 @@ export async function getLeads(status?: string) {
 }
 
 export async function getLead(id: number) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const lead = await prisma.lead.findUnique({
     where: { id },
     include: { contact: true, followUps: true, assignedTo: true },
@@ -71,16 +75,17 @@ export async function getLead(id: number) {
 }
 
 export async function createLead(data: unknown) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = createLeadSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
   const { name, phone, email, source, interest, materialCategory, applicationArea, areaSqft, budget, notes } = parsed.data
 
   // Find or create contact
-  let contact = await prisma.contact.findFirst({ where: { phone } })
+  let contact = await prisma.contact.findFirst({ where: contactPhoneWhere(phone) })
   if (!contact) {
     contact = await prisma.contact.create({
-      data: { name, phone, email: email || null, source },
+      data: { name, phone: normalizePhone(phone), email: email || null, source },
     })
   }
 
@@ -105,6 +110,7 @@ export async function createLead(data: unknown) {
 }
 
 export async function updateLeadStatus(data: unknown) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = updateLeadStatusSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -120,6 +126,7 @@ export async function updateLeadStatus(data: unknown) {
 export async function updateLead(id: number, data: Partial<{
   interest: string; materialCategory: string; applicationArea: string; areaSqft: number; budget: string; notes: string; source: string;
 }>) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const lead = await prisma.lead.update({
     where: { id },
     data,
@@ -130,10 +137,12 @@ export async function updateLead(id: number, data: Partial<{
 }
 
 export async function deleteLead(id: number) {
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   return moveLeadToDraft(id)
 }
 
 export async function addFollowUp(data: unknown) {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = addFollowUpSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -152,6 +161,7 @@ export async function addFollowUp(data: unknown) {
 }
 
 export async function getLeadPipelineCounts() {
+  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const counts = await prisma.lead.groupBy({
     by: ['status'],
     _count: true,

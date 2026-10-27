@@ -10,9 +10,13 @@ import { nextSequence } from '@/lib/erp/sequence'
 import { logMessage, logTracking, startOfToday } from '@/lib/erp/chatter'
 import { createDeliveryForOrder, cancelPickingTx, releaseOrderSlabs } from '@/lib/erp/stock-ops'
 import { computeForecast } from '@/lib/erp/forecast'
+import { chargesTax, principalGstRate } from '@/lib/line-math'
+import { nextCreditNoteNumber, refreshInvoiceBalance } from '@/lib/erp/credit-notes'
+import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
 import {
   boxesForArea, computeTaxes, deliveryStatus, invoiceStatus, invoiceableQty, lineAmount, orderDiscount, portionOf, refundableQty, type DiscountType,
 } from '@/lib/erp/sales-math'
+import { stripBankDetails } from '@/lib/quotation-notes'
 
 type Tx = Prisma.TransactionClient
 
@@ -82,7 +86,7 @@ async function resolveContact(tx: Tx, input: { contactId?: number; customer?: st
   }
   const phone = input.phone?.replace(/\s+/g, '')
   if (!phone || !input.customer) throw new Error('Select a customer or enter customer name and phone')
-  return (await tx.contact.findUnique({ where: { phone } })) || tx.contact.create({ data: { name: input.customer, phone } })
+  return (await tx.contact.findFirst({ where: contactPhoneWhere(phone) })) || tx.contact.create({ data: { name: input.customer, phone: normalizePhone(phone) } })
 }
 
 type DraftLine = z.infer<typeof lineSchema>
@@ -119,11 +123,17 @@ async function buildLines(tx: Tx, lines: DraftLine[], defaultGst: number) {
   })
 }
 
+// Charges (freight/loading/installation) carry GST at the principal line's rate.
+function chargesTaxFor(taxedLines: { taxable: number; gstRate: number }[], charges: number, supplyType: string) {
+  return chargesTax(charges, principalGstRate(taxedLines, 18), supplyType === 'INTERSTATE')
+}
+
 function orderTotals(lines: { amount: number; gstRate: number }[], discountType: DiscountType, discountValue: number, supplyType: string, charges: number) {
   const subtotal = lines.reduce((sum, line) => sum + line.amount, 0)
   const discount = orderDiscount(subtotal, discountType, discountValue)
   const taxes = computeTaxes(lines, discount, supplyType)
-  return { subtotal, discountAmount: taxes.discount, gst: taxes.gst, total: taxes.taxable + taxes.gst + charges }
+  const chargeTax = chargesTaxFor(taxes.lines, charges, supplyType)
+  return { subtotal, discountAmount: taxes.discount, gst: taxes.gst + chargeTax.gst, total: taxes.taxable + taxes.gst + charges + chargeTax.gst }
 }
 
 // Without an explicit location, ship from the godown that covers the most
@@ -252,7 +262,7 @@ export async function createSalesOrderFromQuotation(data: unknown) {
         freightCharge: quotation.freightCharge,
         loadingCharge: quotation.loadingCharge,
         installationCharge: quotation.installationCharge,
-        notes: quotation.notes || undefined,
+        notes: stripBankDetails(quotation.notes) || undefined,
         lines: quotation.items.map(item => ({
           productId: item.productId as number,
           quantity: item.quantity,
@@ -275,34 +285,39 @@ export async function createSalesOrderFromQuotation(data: unknown) {
   }
 }
 
-function summarize<T extends { lines: { quantity: number; qtyDelivered: number; qtyInvoiced: number }[]; invoicePolicy: string }>(order: T) {
-  return { ...order, deliveryStatus: deliveryStatus(order.lines), invoiceStatus: invoiceStatus(order.lines, order.invoicePolicy) }
+function summarize<T extends { lines: { quantity: number; qtyDelivered: number; qtyInvoiced: number }[]; invoicePolicy: string; notes?: string | null }>(order: T) {
+  // Older orders confirmed from quotations may still carry the hidden bank-details block.
+  const notes = order.notes == null ? order.notes : stripBankDetails(order.notes)
+  return { ...order, notes, deliveryStatus: deliveryStatus(order.lines), invoiceStatus: invoiceStatus(order.lines, order.invoicePolicy) }
 }
 
 export async function getSalesOrders(filters: { status?: string; search?: string } = {}) {
   try {
     await requireActor()
     const search = filters.search?.trim()
-    const orders = await prisma.salesOrder.findMany({
-      where: {
-        ...(filters.status && filters.status !== 'ALL' ? { status: filters.status as 'CONFIRMED' | 'DONE' | 'CANCELLED' } : {}),
-        ...(search ? { OR: [
-          { displayId: { contains: search, mode: 'insensitive' } },
-          { projectName: { contains: search, mode: 'insensitive' } },
-          { contact: { name: { contains: search, mode: 'insensitive' } } },
-          { contact: { phone: { contains: search } } },
-        ] } : {}),
-      },
-      orderBy: { id: 'desc' },
-      take: 300,
-      include: {
-        contact: { select: { id: true, name: true, phone: true } },
-        salesperson: { select: { id: true, name: true } },
-        godown: { select: { id: true, name: true } },
-        lines: { select: { quantity: true, qtyDelivered: true, qtyInvoiced: true } },
-        _count: { select: { pickings: true, invoices: true } },
-      },
-    })
+    const where = {
+      ...(filters.status && filters.status !== 'ALL' ? { status: filters.status as 'CONFIRMED' | 'DONE' | 'CANCELLED' } : {}),
+      ...(search ? { OR: [
+        { displayId: { contains: search, mode: 'insensitive' as const } },
+        { projectName: { contains: search, mode: 'insensitive' as const } },
+        { contact: { name: { contains: search, mode: 'insensitive' as const } } },
+        { contact: { phone: { contains: search } } },
+      ] } : {}),
+    }
+    const include = {
+      contact: { select: { id: true, name: true, phone: true } },
+      salesperson: { select: { id: true, name: true } },
+      godown: { select: { id: true, name: true } },
+      lines: { select: { quantity: true, qtyDelivered: true, qtyInvoiced: true } },
+      _count: { select: { pickings: true, invoices: true } },
+    }
+    // Every open order is returned (the To deliver / To invoice tabs depend on
+    // them); only closed history is capped, so old open orders never vanish.
+    const [open, closed] = await Promise.all([
+      prisma.salesOrder.findMany({ where: { AND: [where, { status: 'CONFIRMED' }] }, orderBy: { id: 'desc' }, include }),
+      prisma.salesOrder.findMany({ where: { AND: [where, { status: { not: 'CONFIRMED' } }] }, orderBy: { id: 'desc' }, take: 300, include }),
+    ])
+    const orders = [...open, ...closed].sort((a, b) => b.id - a.id)
     return { success: true as const, data: orders.map(summarize) }
   } catch (error) {
     return { success: false as const, error: actionError(error, 'Could not load sales orders') }
@@ -393,7 +408,9 @@ export async function createInvoiceFromSalesOrder(data: unknown) {
           : 0
       const taxes = computeTaxes(priced.map(row => ({ amount: row.amount, gstRate: row.line.gstRate })), discount, order.supplyType)
       const charges = order.chargesInvoiced ? { freight: 0, loading: 0, installation: 0 } : { freight: order.freightCharge, loading: order.loadingCharge, installation: order.installationCharge }
-      const total = taxes.taxable + taxes.gst + charges.freight + charges.loading + charges.installation
+      const chargeTotal = charges.freight + charges.loading + charges.installation
+      const chargeTax = chargesTaxFor(taxes.lines, chargeTotal, order.supplyType)
+      const total = taxes.taxable + taxes.gst + chargeTotal + chargeTax.gst
 
       const settings = await tx.storeSettings.findFirst({ where: { id: 1 }, select: { invoicePrefix: true, invoicePadding: true } })
       const prefix = (settings?.invoicePrefix || 'INV-').trim() || 'INV-'
@@ -411,14 +428,15 @@ export async function createInvoiceFromSalesOrder(data: unknown) {
           subtotal: taxes.subtotal,
           discount: taxes.discount,
           discountType: order.discountType === 'none' ? 'none' : order.discountType,
-          gst: taxes.gst, cgst: taxes.cgst, sgst: taxes.sgst, igst: taxes.igst,
+          gst: taxes.gst + chargeTax.gst, chargesGst: chargeTax.gst,
+          cgst: taxes.cgst + chargeTax.cgst, sgst: taxes.sgst + chargeTax.sgst, igst: taxes.igst + chargeTax.igst,
           freightCharge: charges.freight, loadingCharge: charges.loading, installationCharge: charges.installation,
           total, amountPaid: 0, balanceDue: total,
           paymentMethod: 'Credit', paymentStatus: 'PENDING', invoiceStatus: 'ACTIVE',
           godownId: order.godownId,
           supplyType: order.supplyType, placeOfSupply: order.placeOfSupply,
           date: now,
-          time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }),
+          time: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }),
           dueDate: parseDate(input.dueDate),
           salespersonId: order.salespersonId,
           notes: `Invoiced from sales order ${order.displayId}`,
@@ -588,18 +606,16 @@ export async function createRefundFromSalesOrder(orderId: number) {
         }
         if (left > 0) throw new Error(`${line.name}: ${left} invoiced unit(s) could not be matched to an active invoice`)
       }
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(82463211)::text`
       const created: string[] = []
       for (const [invoiceId, entry] of perInvoice) {
-        const last = await tx.creditNote.findFirst({ orderBy: { id: 'desc' }, select: { displayId: true } })
-        const next = Number(last?.displayId.match(/CN-(\d+)/)?.[1] || 0) + 1
-        const displayId = `CN-${String(next).padStart(4, '0')}`
+        const displayId = await nextCreditNoteNumber(tx)
         const credited = (await tx.creditNote.aggregate({ where: { invoiceId }, _sum: { amount: true } }))._sum.amount || 0
         const amount = Math.min(entry.amount, entry.total - credited)
         if (amount <= 0) continue
         await tx.creditNote.create({ data: { displayId, invoiceId, amount, reason: `Goods returned on ${order.displayId}: ${entry.parts.join(', ')}` } })
         // Stock already came back through the return; only the invoice status changes.
         if (credited + amount >= entry.total) await tx.invoice.update({ where: { id: invoiceId }, data: { invoiceStatus: 'REFUNDED' } })
+        await refreshInvoiceBalance(tx, invoiceId)
         await logMessage(tx, 'Invoice', invoiceId, `Credit note ${displayId} for ₹${amount.toLocaleString('en-IN')} (customer return)`, { author: actor })
         created.push(`${displayId} on ${entry.displayId} (₹${amount.toLocaleString('en-IN')})`)
       }

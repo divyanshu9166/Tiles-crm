@@ -1475,6 +1475,7 @@ model StockLedger {
   entryType     String // IN, OUT, TRANSFER_IN, TRANSFER_OUT, ADJUSTMENT, PRODUCTION, SALE, RETURN
   quantity      Float // positive = in, negative = out
   balanceAfter  Float // running balance at godown after entry
+  unitCost      Float? // cost per unit when the move happened (journals value the move at this, not today's cost)
   referenceType String? // Order, Transfer, Production, Manual
   referenceId   Int?
   notes         String?

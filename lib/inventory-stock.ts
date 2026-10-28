@@ -1,7 +1,14 @@
 import type { Prisma } from '@prisma/client'
 
 type Tx = Prisma.TransactionClient
-export type StockOptions = { referenceType?: string; referenceId?: number; notes?: string; createdBy?: string }
+export type StockOptions = { referenceType?: string; referenceId?: number; notes?: string; createdBy?: string; unitCost?: number }
+
+// The product's cost right now. Stamped on every ledger row so a journal posted
+// later values the move at what it cost then (AVCO keeps changing afterwards).
+export async function ledgerUnitCost(tx: Tx, productId: number) {
+  const product = await tx.product.findUnique({ where: { id: productId }, select: { costPrice: true } })
+  return product?.costPrice ?? 0
+}
 
 // Lock the product, not only a location row: this also serializes the aggregate
 // stock balance when two transactions affect different locations.
@@ -41,7 +48,7 @@ export async function stockBalance(tx: Tx, productId: number, godownId: number) 
   // Preserve legacy stock rather than discarding it at the first adjustment.
   if (product.stock > 0 && await tx.godownStock.count({ where: { productId } }) === 0) {
     await tx.godownStock.create({ data: { productId, godownId, quantity: product.stock } })
-    await tx.stockLedger.create({ data: { productId, godownId, entryType: 'OPENING_BALANCE', quantity: product.stock, balanceAfter: product.stock, notes: 'Existing stock allocated on first inventory movement' } })
+    await tx.stockLedger.create({ data: { productId, godownId, entryType: 'OPENING_BALANCE', quantity: product.stock, balanceAfter: product.stock, unitCost: product.costPrice, notes: 'Existing stock allocated on first inventory movement' } })
   }
   const row = await tx.godownStock.findUnique({ where: { productId_godownId: { productId, godownId } } })
   return row?.quantity ?? 0
@@ -57,7 +64,7 @@ export async function adjustStock(tx: Tx, productId: number, godownId: number, d
     where: { productId_godownId: { productId, godownId } },
     create: { productId, godownId, quantity: balance }, update: { quantity: balance },
   })
-  await tx.stockLedger.create({ data: { productId, godownId, entryType, quantity: delta, balanceAfter: balance, ...options } })
+  await tx.stockLedger.create({ data: { productId, godownId, entryType, quantity: delta, balanceAfter: balance, ...options, unitCost: options?.unitCost ?? await ledgerUnitCost(tx, productId) } })
   const totalStock = await syncStock(tx, productId)
   if (delta > 0) await tx.product.update({ where: { id: productId }, data: { lastRestocked: new Date() } })
   return { godownBalance: balance, totalStock }

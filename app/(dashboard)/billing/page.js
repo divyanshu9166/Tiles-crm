@@ -33,6 +33,7 @@ import { getGodowns } from '@/app/actions/godowns';
 import { getPricelists, getPricesFor } from '@/app/actions/pricelists';
 import { getBillableArea } from '@/lib/units';
 import { chargesTax, linePrice, principalGstRate } from '@/lib/line-math';
+import { gstinState, supplyTypeFor } from '@/lib/erp/gst-math';
 import { getActiveVertical } from '@/lib/brand';
 import { stripBankDetails } from '@/lib/quotation-notes';
 import { istDate } from '@/lib/local-date';
@@ -285,7 +286,7 @@ export default function BillingPage() {
   const [posSalesperson, setPosSalesperson] = useState('');
   const [posNotes, setPosNotes] = useState('');
   const [posDueDate, setPosDueDate] = useState('');
-  const [posSupplyType, setPosSupplyType] = useState('INTRASTATE');
+  const [posSupplyChoice, setPosSupplyType] = useState('INTRASTATE');
   const [posPlaceOfSupply, setPosPlaceOfSupply] = useState('');
   const [posPlaceOfSupplyCustom, setPosPlaceOfSupplyCustom] = useState('');
   const [posGodownId, setPosGodownId] = useState('');
@@ -399,6 +400,10 @@ export default function BillingPage() {
   // ─── COMPUTED VALUES ───────────────────────────────────
 
   const gstRate = storeSettings?.gstRate || 18;
+
+  // With both GSTINs known the state codes decide the supply type (the server does the same).
+  const supplyTypeLocked = !!(gstinState(storeSettings?.gstNumber) && gstinState(posCustomer.gstNumber));
+  const posSupplyType = supplyTypeFor(storeSettings?.gstNumber, posCustomer.gstNumber, posSupplyChoice);
 
   const filtered = useMemo(() => {
     let result = invoices.filter(inv => {
@@ -2112,7 +2117,9 @@ export default function BillingPage() {
                     <select
                       value={posSupplyType}
                       onChange={e => setPosSupplyType(e.target.value)}
-                      className="w-full px-4 py-3 bg-surface border border-border rounded-xl text-sm focus:outline-none focus:border-accent/50"
+                      disabled={supplyTypeLocked}
+                      title={supplyTypeLocked ? 'Set from the store and customer GSTIN state codes' : undefined}
+                      className="w-full px-4 py-3 bg-surface border border-border rounded-xl text-sm focus:outline-none focus:border-accent/50 disabled:opacity-70"
                     >
                       <option value="INTRASTATE">Intra-state (CGST + SGST)</option>
                       <option value="INTERSTATE">Inter-state (IGST)</option>

@@ -28,7 +28,10 @@ import { getReplenishment, orderReplenishment, saveReorderRule, saveVendorPrice 
 import { createInventoryCount, setCountedQty, applyInventoryCount, getInventoryCount } from '@/app/actions/inventory-counts'
 import { getChatter, postNote, scheduleActivity, markActivityDone, getMyActivities } from '@/app/actions/chatter'
 import { createBillFromPurchaseOrder, updateVendorBill, postVendorBill, cancelVendorBill, getVendorBill } from '@/app/actions/vendor-bills'
-import { seedChartOfAccounts } from '@/app/actions/financials'
+import { seedChartOfAccounts, getProfitAndLoss, getBalanceSheet, getCashFlow, getTrialBalance, voidJournalEntry } from '@/app/actions/financials'
+import { generateGSTR1, generateGSTR2 } from '@/app/actions/gst'
+import { createExpense, updateExpense, rejectExpense, approveExpense } from '@/app/actions/expenses'
+import { creditNoteSplit } from '@/lib/erp/gst-math'
 import { computeForecast } from '@/lib/erp/forecast'
 import { getMRPAnalysis } from '@/app/actions/manufacturing'
 import { saveSalesTeam, assignUnassignedLeads, getTeamDashboard } from '@/app/actions/sales-teams'
@@ -389,7 +392,7 @@ describe.skipIf(!url)('ERP document flows (Odoo parity)', () => {
     expect((await postAutoJournals(db as never)).posted).toBe(0)
     expect((await cancelInvoice(invoice.data.id)).success).toBe(true)
     expect((await postAutoJournals(db as never)).posted).toBe(1)
-    expect(await db.journalEntry.count({ where: { sourceKey: `INVREV:${invoice.data.id}` } })).toBe(1)
+    expect(await db.journalEntry.count({ where: { sourceKey: `REV:INV:${invoice.data.id}` } })).toBe(1)
 
     const trial = await journalTrialBalance(db as never, new Date(Date.now() + 86400000))
     expect(trial.totals.debit).toBe(trial.totals.credit)
@@ -910,4 +913,168 @@ describe.skipIf(!url)('ERP document flows (Odoo parity)', () => {
     const result = await getPickings({ type: 'DELIVERY', status: 'READY' })
     expect(result.success).toBe(true)
   })
+
+  // ─── Phase 3: books, GST and reports ───────────────────────────────
+  const WIDE = ['2000-01-01', '2100-01-01'] as const
+  const period = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` }
+  const pl = async () => { const r = await getProfitAndLoss(...WIDE); if (!r.success || !r.data) throw new Error('P&L failed'); return r.data.current }
+  const bs = async () => { const r = await getBalanceSheet(WIDE[1]); if (!r.success || !r.data) throw new Error('Balance sheet failed'); return r.data }
+
+  it('B1: a stock move keeps the cost it had, so a later cost change does not revalue it', async () => {
+    expect((await seedChartOfAccounts()).success).toBe(true)
+    const product = await newProduct(10)
+    const sale = await posInvoice(product, { quantity: 2 })
+    if (!sale.success || !sale.data) throw new Error(sale.error)
+    const row = await db.stockLedger.findFirstOrThrow({ where: { productId: product.id, quantity: { lt: 0 } } })
+    expect(row.unitCost).toBe(300)
+    await db.product.update({ where: { id: product.id }, data: { costPrice: 900 } })
+    await postAutoJournals(db as never)
+    expect((await db.journalEntry.findUniqueOrThrow({ where: { sourceKey: `SLG:${row.id}` } })).totalDebit).toBe(600)
+  })
+
+  it('B2: an expense edited, rejected and re-approved stays on the books once; auto entries cannot be voided', async () => {
+    expect((await seedChartOfAccounts()).success).toBe(true)
+    const category = await db.expenseCategory.create({ data: { name: `Rent ${crypto.randomUUID().slice(0, 6)}` } })
+    const base = { date: new Date().toISOString().slice(0, 10), categoryId: category.id, description: 'Showroom rent', paymentMode: 'Cash' as const }
+    const created = await createExpense({ ...base, amount: 500 })
+    if (!created.success || !created.data) throw new Error(created.error)
+    const id = created.data.id
+    await postAutoJournals(db as never)
+    expect((await updateExpense(id, { ...base, amount: 700 })).success).toBe(true)
+    await postAutoJournals(db as never)
+    expect((await rejectExpense(id)).success).toBe(true)
+    await postAutoJournals(db as never)
+    expect((await approveExpense(id)).success).toBe(true)
+    await postAutoJournals(db as never)
+    expect((await postAutoJournals(db as never)).posted).toBe(0)
+
+    const keys = (await db.journalEntry.findMany({ where: { referenceType: 'Expense', referenceId: id }, select: { sourceKey: true } })).map(row => row.sourceKey).sort()
+    expect(keys).toEqual([`EXP:${id}`, `EXP:${id}~2`, `EXP:${id}~3`, `REV:EXP:${id}`, `REV:EXP:${id}~2`].sort())
+    // Net effect on rent: only the current 700.
+    const lines = await db.journalLine.findMany({ where: { journalEntry: { referenceType: 'Expense', referenceId: id }, account: { code: '5200' } } })
+    expect(lines.reduce((sum, line) => sum + line.debit - line.credit, 0)).toBe(700)
+
+    const live = await db.journalEntry.findUniqueOrThrow({ where: { sourceKey: `EXP:${id}~3` } })
+    const voided = await voidJournalEntry(live.id)
+    expect(voided.success).toBe(false)
+    expect(voided.error).toMatch(/automatically/)
+  })
+
+  it('B3: a refunded bill nets to zero in the P&L; only the goods share of a credit note comes off sales', async () => {
+    const product = await newProduct(10)
+    const before = await pl()
+    const full = await posInvoice(product, { quantity: 1 }, { payments: [{ amount: 1180, method: 'Cash' }] })
+    const part = await posInvoice(product, { quantity: 1 }, { payments: [{ amount: 1180, method: 'Cash' }] })
+    if (!full.success || !full.data || !part.success || !part.data) throw new Error('POS bill failed')
+    expect((await createCreditNote({ invoiceId: full.data.id, amount: 1180, reason: 'Returned' })).success).toBe(true)
+    expect((await createCreditNote({ invoiceId: part.data.id, amount: 590, reason: 'Price adjustment' })).success).toBe(true)
+    const after = await pl()
+    // Sales: 1000 + 1000; returns: 1000 (full, ex-GST) + 500 (half, ex-GST).
+    expect(after.revenue.salesExGST - before.revenue.salesExGST).toBe(2000)
+    expect(after.revenue.returns - before.revenue.returns).toBe(1500)
+    expect(after.revenue.netRevenue - before.revenue.netRevenue).toBe(500)
+  })
+
+  it('B6: credit notes are not cash; credit beyond what was owed is owed back; draft POs are not payables', async () => {
+    const product = await newProduct(10)
+    const before = await bs()
+    const flowBefore = await getCashFlow(...WIDE)
+    const sale = await posInvoice(product, { quantity: 1 }, { payments: [{ amount: 1180, method: 'Cash' }] })
+    if (!sale.success || !sale.data) throw new Error(sale.error)
+    expect((await createCreditNote({ invoiceId: sale.data.id, amount: 1180, reason: 'Returned' })).success).toBe(true)
+    const draftPo = await createPurchaseOrder({ supplierId, items: [{ productId: product.id, name: product.name, sku: product.sku, quantity: 5, unitCost: 200, gstRate: 18 }] })
+    expect(draftPo.success).toBe(true)
+
+    const after = await bs()
+    expect(after.currentAssets.cashAndBank - before.currentAssets.cashAndBank).toBe(1180)
+    expect(after.currentLiabilities.refundsOwed - before.currentLiabilities.refundsOwed).toBe(1180)
+    expect(after.currentLiabilities.accountsPayable).toBe(before.currentLiabilities.accountsPayable)
+    expect(after.currentLiabilities.gstOutput - before.currentLiabilities.gstOutput).toBe(0)
+
+    const flowAfter = await getCashFlow(...WIDE)
+    if (!flowBefore.success || !flowAfter.success || !flowBefore.data || !flowAfter.data) throw new Error('Cash flow failed')
+    expect(flowAfter.data.operating.inflow.salesCollections - flowBefore.data.operating.inflow.salesCollections).toBe(1180)
+    expect(flowAfter.data.operating.outflow.total).toBe(flowBefore.data.operating.outflow.total)
+
+    const trial = await getTrialBalance(WIDE[1])
+    if (!trial.success || !trial.data) throw new Error('Trial balance failed')
+    expect(trial.data.totalDebit).toBe(trial.data.totalCredit)
+  })
+
+  it('B4: GSTR-1 leaves out parked bills and nets credit notes; ITC comes from posted supplier bills', async () => {
+    const product = await newProduct(10)
+    const g1 = async () => { const r = await generateGSTR1(period()); if (!r.success || !r.data) throw new Error('GSTR-1 failed'); return r.data.data as { totals: { taxableValue: number; creditNotes: { taxableValue: number; cgst: number; sgst: number } } } }
+    const g2 = async () => { const r = await generateGSTR2(period()); if (!r.success || !r.data) throw new Error('GSTR-2 failed'); return (r.data.data as { summary: { totalITC: number } }).summary.totalITC }
+    const [beforeG1, beforeItc] = [await g1(), await g2()]
+
+    const parked = await posInvoice(product, { quantity: 1 }, { isHeld: true, payments: [{ amount: 0, method: 'Cash' }] })
+    expect(parked.success, parked.success ? "" : parked.error).toBe(true)
+    const sale = await posInvoice(product, { quantity: 1 }, { payments: [{ amount: 1180, method: 'Cash' }] })
+    if (!sale.success || !sale.data) throw new Error(sale.error)
+    expect((await createCreditNote({ invoiceId: sale.data.id, amount: 590, reason: 'Price adjustment' })).success).toBe(true)
+    // A received PO without a supplier bill is not ITC; a posted bill is.
+    await db.purchaseOrder.create({ data: { displayId: `PO-T-${crypto.randomUUID()}`, supplierId, status: 'RECEIVED', subtotal: 1000, gst: 180, cgst: 90, sgst: 90, total: 1180, balanceDue: 1180 } })
+    await db.vendorBill.create({ data: { displayId: `VB-T-${crypto.randomUUID()}`, supplierId, status: 'POSTED', subtotal: 1000, gst: 180, cgst: 90, sgst: 90, total: 1180, postedAt: new Date() } })
+
+    const afterG1 = await g1()
+    expect(afterG1.totals.taxableValue - beforeG1.totals.taxableValue).toBe(1000)
+    expect(afterG1.totals.creditNotes.taxableValue - beforeG1.totals.creditNotes.taxableValue).toBe(500)
+    expect(afterG1.totals.creditNotes.cgst + afterG1.totals.creditNotes.sgst - beforeG1.totals.creditNotes.cgst - beforeG1.totals.creditNotes.sgst).toBe(90)
+    expect(await g2() - beforeItc).toBe(180)
+  })
+
+  it('B5: GSTIN state codes decide interstate supply on bills, sales orders and purchase orders', async () => {
+    const original = await db.storeSettings.findFirst({ where: { id: 1 }, select: { gstNumber: true } })
+    await db.storeSettings.upsert({ where: { id: 1 }, create: { id: 1, gstNumber: '27AAAAA0000A1Z5' }, update: { gstNumber: '27AAAAA0000A1Z5' } })
+    try {
+      const product = await newProduct(20)
+      // Customer in Karnataka: IGST whatever was picked on screen.
+      const outOfState = await posInvoice(product, { quantity: 1 }, { gstNumber: '29BBBBB0000B1Z5', supplyType: 'INTRASTATE' })
+      if (!outOfState.success || !outOfState.data) throw new Error(outOfState.error)
+      const igstBill = await db.invoice.findUniqueOrThrow({ where: { id: outOfState.data.id } })
+      expect([igstBill.supplyType, igstBill.igst, igstBill.cgst]).toEqual(['INTERSTATE', 180, 0])
+      // Same state: CGST + SGST even if interstate was picked.
+      const local = await posInvoice(product, { quantity: 1 }, { gstNumber: '27CCCCC0000C1Z5', supplyType: 'INTERSTATE' })
+      if (!local.success || !local.data) throw new Error(local.error)
+      expect((await db.invoice.findUniqueOrThrow({ where: { id: local.data.id } })).supplyType).toBe('INTRASTATE')
+      // No customer GSTIN: the choice stands.
+      const walkIn = await posInvoice(product, { quantity: 1 }, { supplyType: 'INTERSTATE' })
+      if (!walkIn.success || !walkIn.data) throw new Error(walkIn.error)
+      expect((await db.invoice.findUniqueOrThrow({ where: { id: walkIn.data.id } })).supplyType).toBe('INTERSTATE')
+
+      // A quotation for an out-of-state customer becomes an interstate order.
+      const contact = await db.contact.create({ data: { name: 'Bengaluru Builders', phone: contactPhone(), gstNumber: '29DDDDD0000D1Z5' } })
+      const quotation = await db.quotation.create({ data: { displayId: `QT-${crypto.randomUUID()}`, contactId: contact.id, status: 'SENT', gstPercent: 18, items: { create: [{ productId: product.id, name: product.name, quantity: 2, rate: 500, amount: 1000 }] } } })
+      const order = await createSalesOrderFromQuotation({ quotationId: quotation.id, godownId })
+      if (!order.success) throw new Error(order.error)
+      const so = await db.salesOrder.findFirstOrThrow({ where: { quotationId: quotation.id } })
+      expect(so.supplyType).toBe('INTERSTATE')
+
+      // A supplier in another state bills IGST on the PO.
+      const supplier = await db.supplier.create({ data: { name: 'Morbi Ceramics', gstNumber: '24EEEEE0000E1Z5' } })
+      const po = await createPurchaseOrder({ supplierId: supplier.id, items: [{ productId: product.id, name: product.name, sku: product.sku, quantity: 10, unitCost: 100, gstRate: 18 }] })
+      if (!po.success || !po.data) throw new Error(po.error)
+      const saved = await db.purchaseOrder.findUniqueOrThrow({ where: { id: po.data.id } })
+      expect([saved.gst, saved.igst, saved.cgst, saved.sgst]).toEqual([180, 180, 0, 0])
+    } finally {
+      await db.storeSettings.update({ where: { id: 1 }, data: { gstNumber: original?.gstNumber ?? null } })
+    }
+  })
+
+  it('B7: a credit note takes the freight share off other income, not sales', async () => {
+    expect((await seedChartOfAccounts()).success).toBe(true)
+    const product = await newProduct(10)
+    const sale = await posInvoice(product, { quantity: 1 }, { freightCharge: 200, payments: [{ amount: 100, method: 'Cash' }] })
+    if (!sale.success || !sale.data) throw new Error(sale.error)
+    const invoice = await db.invoice.findUniqueOrThrow({ where: { id: sale.data.id } })
+    expect((await createCreditNote({ invoiceId: invoice.id, amount: invoice.total - 100, reason: 'Returned' })).success).toBe(true)
+    await postAutoJournals(db as never)
+    const note = await db.creditNote.findFirstOrThrow({ where: { invoiceId: invoice.id } })
+    const entry = await db.journalEntry.findUniqueOrThrow({ where: { sourceKey: `CN:${note.id}` }, include: { lines: { include: { account: true } } } })
+    const share = creditNoteSplit(note.amount, invoice)
+    expect(share.charges).toBeGreaterThan(0)
+    expect(entry.lines.find(line => line.account.code === '4100')?.debit).toBe(share.charges)
+    expect(entry.lines.find(line => line.account.code === '4001')?.debit).toBe(share.goods)
+  })
+
 })

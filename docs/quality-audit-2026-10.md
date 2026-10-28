@@ -180,13 +180,42 @@ re-audited. 117 integration checks pass, including 7 new `P3:` cases.
 
 | # | Sev | Finding |
 |---|---|---|
-| B1 ☐ | High | COGS/stock journals valued at the product's cost **when the cron runs**, not at the time of the movement (AVCO and landed costs change it) — store unit cost on each ledger row |
-| B2 ☐ | High | Posted journals never follow edits: invoice edits, expense edits/deletes, approve→reject→approve, voided auto entries (versioned source keys + reversals) |
-| B3 ☐ | High | P&L: credit notes subtracted gross of GST from net sales; refunded invoices excluded while their credit notes are subtracted |
-| B4 ☐ | Medium | GSTR-1 includes parked bills; GSTR-3B ignores credit notes; ITC built from POs instead of posted vendor bills |
-| B5 ☐ | Medium | Interstate vs intrastate never derived from customer/supplier state (SO from quotation forced intrastate; POs never IGST) |
-| B6 ☐ | Medium | Legacy balance sheet: credit notes treated as cash refunds, payments on cancelled invoices dropped, AP includes draft POs |
-| B7 ☐ | Low | Credit-note journal debits Sales for the charges share (should be Other Income) |
+| B1 ☑ | High | COGS/stock journals valued at the product's cost **when the cron runs**, not at the time of the movement (AVCO and landed costs change it) — store unit cost on each ledger row |
+| B2 ☑ | High | Posted journals never follow edits: invoice edits, expense edits/deletes, approve→reject→approve, voided auto entries (versioned source keys + reversals) |
+| B3 ☑ | High | P&L: credit notes subtracted gross of GST from net sales; refunded invoices excluded while their credit notes are subtracted |
+| B4 ☑ | Medium | GSTR-1 includes parked bills; GSTR-3B ignores credit notes; ITC built from POs instead of posted vendor bills |
+| B5 ☑ | Medium | Interstate vs intrastate never derived from customer/supplier state (SO from quotation forced intrastate; POs never IGST) |
+| B6 ☑ | Medium | Legacy balance sheet: credit notes treated as cash refunds, payments on cancelled invoices dropped, AP includes draft POs |
+| B7 ☑ | Low | Credit-note journal debits Sales for the charges share (should be Other Income) |
+
+
+### Phase 3 result (branch `books-phase`)
+
+B1–B7 fixed, each with an integration test in `lib/erp.integration.test.ts` (127 checks pass) and unit tests
+for the GST helpers in `lib/erp/erp-math.test.ts`.
+
+- **B1:** every stock-ledger row stores `unitCost` at the time of the move (migration
+  `20261028100000_stock_ledger_unit_cost`); journals use it. Older rows fall back to the PO price / current cost.
+- **B2:** invoices, payments, credit notes, vendor bills, supplier payments, expenses and landed costs follow their
+  document: an edit reverses the live entry (`REV:<key>`) and posts `<key>~2`, `~3`…; cancel/reject/delete
+  reverses it. Auto-posted entries can't be voided by hand. Expense edits no longer touch the cash register for
+  unapproved expenses.
+- **B3:** P&L keeps fully refunded bills in sales and subtracts only the goods share of credit notes.
+- **B4:** GSTR-1 skips parked bills, counts cancelled ones in the document summary and lists credit-note tax;
+  GSTR-3B nets it; GSTR-2/ITC come from posted vendor bills (IGST no longer counted twice).
+- **B5:** with both GSTINs known, the state codes decide interstate vs intrastate on POS bills, parked-bill edits,
+  sales orders (incl. from quotations), POs and replenishment POs; otherwise the user's choice stands. The billing
+  screen locks the selector when it is decided.
+- **B6:** balance sheet, trial balance and cash flow no longer treat credit notes as cash refunds; credit beyond what
+  was owed shows as "Refunds owed to customers"; payments on refunded bills count; AP skips draft POs; ITC from
+  posted vendor bills.
+- **B7:** credit notes debit Other Income for the freight/loading/installation share.
+
+**Open:**
+- Run migration `20261028100000_stock_ledger_unit_cost` on each database before deploying.
+- The sales-order form doesn't lock its supply-type selector yet; the server corrects it when both GSTINs are known.
+- Cash refunds to customers aren't recorded anywhere; "refunds owed" stays until a refund record exists.
+- P&L COGS still uses the product's current cost; it could use the stock ledger's `unitCost` (Phase 4 candidate).
 
 ---
 

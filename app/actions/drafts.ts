@@ -1,7 +1,7 @@
 'use server'
 
 import { prisma } from '@/lib/db'
-import { lockInventoryProducts } from '@/lib/inventory-stock'
+import { ledgerUnitCost, lockInventoryProducts } from '@/lib/inventory-stock'
 import { revalidatePath } from 'next/cache'
 import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { syncProductStockFromGodowns } from './godowns'
@@ -66,6 +66,7 @@ async function adjustGodownStockWithTx(tx: any, params: {
       entryType: params.entryType,
       quantity: params.quantity,
       balanceAfter: newQty,
+      unitCost: await ledgerUnitCost(tx, params.productId),
       referenceType: params.referenceType,
       referenceId: params.referenceId,
       notes: params.notes,

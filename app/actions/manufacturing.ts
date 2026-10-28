@@ -1,7 +1,7 @@
 'use server'
 
 import { prisma } from '@/lib/db'
-import { lockInventoryProducts } from '@/lib/inventory-stock'
+import { ledgerUnitCost, lockInventoryProducts } from '@/lib/inventory-stock'
 import { revalidatePath } from 'next/cache'
 import { unstable_noStore } from 'next/cache'
 import { requireRole, requireAuth } from '@/lib/auth-helpers'
@@ -125,6 +125,7 @@ async function adjustManufacturingStockWithTx(tx: any, productId: number, quanti
           entryType,
           quantity: qty,
           balanceAfter: newQty,
+          unitCost: await ledgerUnitCost(tx, productId),
           referenceType: options?.referenceType,
           referenceId: options?.referenceId,
           notes: options?.notes,
@@ -159,6 +160,7 @@ async function adjustManufacturingStockWithTx(tx: any, productId: number, quanti
           entryType,
           quantity: -issuedQty,
           balanceAfter: newQty,
+          unitCost: await ledgerUnitCost(tx, productId),
           referenceType: options?.referenceType,
           referenceId: options?.referenceId,
           notes: options?.notes,

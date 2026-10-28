@@ -1,9 +1,11 @@
 'use server'
 
 import { prisma } from '@/lib/db'
+import type { Prisma } from '@prisma/client'
 import { revalidatePath } from 'next/cache'
 import { requireRole } from '@/lib/auth-helpers'
 import { createJournalSchema, createAccountSchema } from '@/lib/validations/financials'
+import { creditNoteSplit } from '@/lib/erp/gst-math'
 
 const prismaDynamic = prisma as unknown as {
   purchasePayment?: {
@@ -15,6 +17,45 @@ async function aggregatePurchasePayments(where: Record<string, unknown>) {
   if (!prismaDynamic.purchasePayment) return { _sum: { amount: 0 }, _count: { id: 0 } }
   return prismaDynamic.purchasePayment.aggregate({ where, _sum: { amount: true }, _count: { id: true } })
 }
+
+// Credit notes in a window, split into the shares their invoices booked:
+// goods revenue, freight/installation income and output GST.
+async function creditNoteShares(date: { gte?: Date; lte: Date }) {
+  const notes = await prisma.creditNote.findMany({
+    where: { date },
+    select: { amount: true, invoice: { select: { total: true, gst: true, transportCost: true, freightCharge: true, loadingCharge: true, installationCharge: true } } },
+  })
+  const shares = notes.map(note => creditNoteSplit(note.amount, note.invoice))
+  return {
+    count: notes.length,
+    amount: notes.reduce((s, n) => s + n.amount, 0),
+    goods: shares.reduce((s, x) => s + x.goods, 0),
+    charges: shares.reduce((s, x) => s + x.charges, 0),
+    gst: shares.reduce((s, x) => s + x.gst, 0),
+  }
+}
+
+// A credit note is not cash: it first cancels what the customer still owes.
+// Only credit beyond that (on bills already paid) is owed back to the customer.
+async function refundsOwedToCustomers(asOf: Date) {
+  const invoices = await prisma.invoice.findMany({
+    where: { date: { lte: asOf }, heldAt: null, invoiceStatus: { not: 'CANCELLED' }, creditNotes: { some: { date: { lte: asOf } } } },
+    select: { total: true, payments: { where: { date: { lte: asOf } }, select: { amount: true } }, creditNotes: { where: { date: { lte: asOf } }, select: { amount: true } } },
+  })
+  return invoices.reduce((sum, inv) => {
+    const paid = inv.payments.reduce((s, p) => s + p.amount, 0)
+    const credited = inv.creditNotes.reduce((s, c) => s + c.amount, 0)
+    return sum + Math.max(0, paid + credited - inv.total)
+  }, 0)
+}
+
+// Bills that count as sales: issued and not cancelled. Fully refunded bills stay
+// in, because their credit notes are subtracted separately.
+const SOLD: Prisma.InvoiceWhereInput = { heldAt: null, invoiceStatus: { in: ['ACTIVE', 'REFUNDED'] } }
+// Supplier dues: everything ordered except drafts and cancelled orders.
+const PAYABLE_PO: Prisma.EnumPOStatusFilter = { notIn: ['CANCELLED', 'DRAFT'] }
+// Input tax credit comes from posted supplier bills, as in GSTR-2/3B.
+const ITC_BILLS: Prisma.VendorBillWhereInput = { status: 'POSTED', OR: [{ poId: null }, { po: { itcEligible: true, itcCategory: { not: 'INELIGIBLE' } } }] }
 
 // ─── CHART OF ACCOUNTS ────────────────────────────────
 
@@ -150,20 +191,16 @@ export async function getProfitAndLoss(fromDate: string, toDate: string, compare
     if (!range) return null
     const { from, to } = range
 
-    const [invoiceAgg, creditNoteAgg, invoiceItems, purchaseAgg, payrollAgg, employerPayroll, expenseRows] = await Promise.all([
-      // Gross sales from invoices
+    const [invoiceAgg, notes, invoiceItems, purchaseAgg, payrollAgg, employerPayroll, expenseRows] = await Promise.all([
+      // Gross sales from invoices (refunded ones too; their credit notes come off below)
       prisma.invoice.aggregate({
-        where: { date: { gte: from, lte: to }, invoiceStatus: 'ACTIVE', heldAt: null },
+        where: { date: { gte: from, lte: to }, ...SOLD },
         _sum: { subtotal: true, discount: true, gst: true, total: true },
         _count: { id: true },
       }),
-      // Returns
-      prisma.creditNote.aggregate({
-        where: { date: { gte: from, lte: to } },
-        _sum: { amount: true },
-        _count: { id: true },
-      }),
-      // CORRECT COGS: cost of items actually sold
+      // Returns, split into goods / charges / GST like their invoices
+      creditNoteShares({ gte: from, lte: to }),
+      // CORRECT COGS: cost of items actually sold (fully refunded bills put the goods back)
       prisma.invoiceItem.findMany({
         where: { invoice: { date: { gte: from, lte: to }, invoiceStatus: 'ACTIVE', heldAt: null } },
         include: { product: { select: { costPrice: true } } },
@@ -203,7 +240,9 @@ export async function getProfitAndLoss(fromDate: string, toDate: string, compare
     const grossSales = invoiceAgg._sum.total || 0
     const salesExGST = (invoiceAgg._sum.subtotal || 0) - (invoiceAgg._sum.discount || 0)
     const salesGST = invoiceAgg._sum.gst || 0
-    const returns = creditNoteAgg._sum.amount || 0
+    // Only the goods share of a credit note reverses sales; its GST reverses
+    // output tax and its freight/installation share reverses other income.
+    const returns = notes.goods
     const netRevenue = salesExGST - returns
 
     // COGS — actual cost of items sold (correct method)
@@ -227,7 +266,7 @@ export async function getProfitAndLoss(fromDate: string, toDate: string, compare
     return {
       period: { from: fd, to: td },
       invoiceCount: invoiceAgg._count.id,
-      returnCount: creditNoteAgg._count.id,
+      returnCount: notes.count,
       revenue: { grossSales, salesExGST, salesGST, returns, netRevenue },
       cogs: { total: cogs, note: 'Based on cost price of items sold' },
       grossProfit, grossMarginPct,
@@ -267,37 +306,37 @@ export async function getBalanceSheet(asOfDate: string) {
     payments, supplierPaid, receivables, poPayables,
     products, gstOutputInvoices, gstInputPOs,
     payrollPayable, staffLoans, salaryPaid,
-    creditRefunds, loanRecoveries,
+    loanRecoveries, notes, refundsOwed,
   ] = await Promise.all([
-    // Cash collected from customers
-    prisma.payment.aggregate({ where: { date: { lte: asOf }, invoice: { heldAt: null, invoiceStatus: 'ACTIVE' } }, _sum: { amount: true } }),
+    // Cash collected from customers (payments on refunded bills were still received)
+    prisma.payment.aggregate({ where: { date: { lte: asOf }, invoice: { invoiceStatus: { not: 'CANCELLED' } } }, _sum: { amount: true } }),
     // Cash paid to suppliers (amountPaid on POs)
     aggregatePurchasePayments({ paidAt: { lte: asOf } }),
     // Accounts receivable (outstanding invoices)
     prisma.invoice.aggregate({ where: { invoiceStatus: 'ACTIVE', heldAt: null, date: { lte: asOf } }, _sum: { balanceDue: true } }),
-    // Accounts payable (outstanding POs)
-    prisma.purchaseOrder.aggregate({ where: { date: { lte: asOf }, status: { notIn: ['CANCELLED'] } }, _sum: { balanceDue: true } }),
+    // Accounts payable (outstanding POs, not drafts)
+    prisma.purchaseOrder.aggregate({ where: { date: { lte: asOf }, status: PAYABLE_PO }, _sum: { balanceDue: true } }),
     // Inventory at cost price
     prisma.product.findMany({ select: { stock: true, costPrice: true } }),
-    // GST output (from invoices)
-    prisma.invoice.aggregate({ where: { date: { lte: asOf }, invoiceStatus: 'ACTIVE', heldAt: null }, _sum: { gst: true } }),
-    // GST input (ITC from purchases)
-    prisma.purchaseOrder.aggregate({ where: { date: { lte: asOf }, status: { in: ['RECEIVED', 'PARTIALLY_RECEIVED'] }, itcEligible: true }, _sum: { gst: true } }),
+    // GST output (from invoices; credit-note GST comes off below)
+    prisma.invoice.aggregate({ where: { date: { lte: asOf }, ...SOLD }, _sum: { gst: true } }),
+    // GST input (ITC from posted supplier bills)
+    prisma.vendorBill.aggregate({ where: { billDate: { lte: asOf }, ...ITC_BILLS }, _sum: { gst: true } }),
     // Salary payable (approved but unpaid payroll)
     prisma.payrollRun.aggregate({ where: { status: 'APPROVED' }, _sum: { totalNet: true } }),
     // Staff loans outstanding (assets — money owed by staff)
     prisma.staffLoan.aggregate({ where: { status: 'Active' }, _sum: { remainingAmount: true } }),
     prisma.payrollRun.aggregate({ where: { status: 'PAID', paidAt: { lte: asOf } }, _sum: { totalNet: true } }),
-    prisma.creditNote.aggregate({ where: { date: { lte: asOf } }, _sum: { amount: true } }),
     prisma.payslip.aggregate({ where: { payrollRun: { status: 'PAID', paidAt: { lte: asOf } } }, _sum: { loanDeduction: true } }),
+    creditNoteShares({ lte: asOf }),
+    refundsOwedToCustomers(asOf),
   ])
 
   const cashCollected = payments._sum.amount || 0
   const cashPaidToSuppliers = supplierPaid._sum.amount || 0
   const salaryPaidOut = salaryPaid._sum.totalNet || 0
-  const refundsPaid = creditRefunds._sum.amount || 0
   const loanInflow = loanRecoveries._sum.loanDeduction || 0
-  const cashAndBank = cashCollected + loanInflow - cashPaidToSuppliers - salaryPaidOut - refundsPaid
+  const cashAndBank = cashCollected + loanInflow - cashPaidToSuppliers - salaryPaidOut
 
   const accountsReceivable = receivables._sum.balanceDue || 0
   const inventoryValue = products.reduce((sum: number, p: { stock: number, costPrice: number | null }) => sum + p.stock * (p.costPrice || 0), 0)
@@ -308,12 +347,12 @@ export async function getBalanceSheet(asOfDate: string) {
   const totalAssets = totalCurrentAssets
 
   const accountsPayable = poPayables._sum.balanceDue || 0
-  const gstOutput = gstOutputInvoices._sum.gst || 0
+  const gstOutput = (gstOutputInvoices._sum.gst || 0) - notes.gst
   const gstInput = itcAsset
   const netGSTPayable = Math.max(0, gstOutput - gstInput)
   const salaryPayable = payrollPayable._sum.totalNet || 0
 
-  const totalLiabilities = accountsPayable + netGSTPayable + salaryPayable
+  const totalLiabilities = accountsPayable + netGSTPayable + salaryPayable + refundsOwed
 
   // Equity = Assets - Liabilities (derived)
   const equity = totalAssets - totalLiabilities
@@ -337,6 +376,7 @@ export async function getBalanceSheet(asOfDate: string) {
         gstOutput,
         gstInput,
         salaryPayable,
+        refundsOwed,
         total: totalLiabilities,
       },
       equity: {
@@ -344,7 +384,7 @@ export async function getBalanceSheet(asOfDate: string) {
         note: 'Equity = Total Assets − Total Liabilities',
       },
       quality: {
-        cashModel: 'Cash = customer collections + payroll loan recoveries - supplier payouts - salary payouts - refunds',
+        cashModel: 'Cash = customer collections + payroll loan recoveries - supplier payouts - salary payouts. Credit notes reduce receivables; credit beyond what was owed is shown as refunds owed to customers.',
       },
     },
   }
@@ -359,9 +399,10 @@ export async function getCashFlow(fromDate: string, toDate: string) {
   if (!range) return { success: false, error: 'Invalid date range' }
   const { from, to } = range
 
-  const [salesCollections, supplierPayments, salaryPayments, creditNoteRefunds, loanCollections] = await Promise.all([
-    // Inflow: cash collected from customers
-    prisma.payment.aggregate({ where: { date: { gte: from, lte: to }, invoice: { heldAt: null, invoiceStatus: 'ACTIVE' } }, _sum: { amount: true } }),
+  // Credit notes are not an outflow: they cancel receivables, and no cash refund is recorded.
+  const [salesCollections, supplierPayments, salaryPayments, loanCollections] = await Promise.all([
+    // Inflow: cash collected from customers (payments on refunded bills were still received)
+    prisma.payment.aggregate({ where: { date: { gte: from, lte: to }, invoice: { invoiceStatus: { not: 'CANCELLED' } } }, _sum: { amount: true } }),
     // Outflow: actual supplier payments (event-based)
     aggregatePurchasePayments({ paidAt: { gte: from, lte: to } }),
     // Outflow: salaries paid
@@ -369,8 +410,6 @@ export async function getCashFlow(fromDate: string, toDate: string) {
       where: { status: 'PAID', paidAt: { gte: from, lte: to } },
       _sum: { totalNet: true },
     }),
-    // Outflow: credit note refunds
-    prisma.creditNote.aggregate({ where: { date: { gte: from, lte: to } }, _sum: { amount: true } }),
     // Inflow: staff loan repayments recognized only when payroll is actually paid.
     prisma.payslip.aggregate({
       where: { payrollRun: { status: 'PAID', paidAt: { gte: from, lte: to } } },
@@ -381,11 +420,10 @@ export async function getCashFlow(fromDate: string, toDate: string) {
   const salesInflow = salesCollections._sum.amount || 0
   const purchaseOutflow = supplierPayments._sum.amount || 0
   const salaryOutflow = salaryPayments._sum.totalNet || 0
-  const refundOutflow = creditNoteRefunds._sum.amount || 0
   const loanInflow = loanCollections._sum.loanDeduction || 0
 
   const totalInflow = salesInflow + loanInflow
-  const totalOutflow = purchaseOutflow + salaryOutflow + refundOutflow
+  const totalOutflow = purchaseOutflow + salaryOutflow
   const netOperating = totalInflow - totalOutflow
 
   return {
@@ -401,7 +439,6 @@ export async function getCashFlow(fromDate: string, toDate: string) {
         outflow: {
           purchases: purchaseOutflow,
           salaries: salaryOutflow,
-          creditRefunds: refundOutflow,
           total: totalOutflow,
         },
         net: netOperating,
@@ -528,39 +565,40 @@ export async function getTrialBalance(asOfDate: string) {
   if (!asOf) return { success: false, error: 'Invalid as-of date' }
 
   const [payments, receivables, inventory, poPayables, salesTotal, purchasesTotal,
-    payrollTotal, employerTotal, gstOutput, gstInput, creditNotes, staffLoans, salaryPaid, loanRecoveries] = await Promise.all([
-    prisma.payment.aggregate({ where: { date: { lte: asOf }, invoice: { heldAt: null, invoiceStatus: 'ACTIVE' } }, _sum: { amount: true } }),
+    payrollTotal, employerTotal, gstOutput, gstInput, notes, staffLoans, salaryPaid, loanRecoveries, refundsOwed] = await Promise.all([
+    prisma.payment.aggregate({ where: { date: { lte: asOf }, invoice: { invoiceStatus: { not: 'CANCELLED' } } }, _sum: { amount: true } }),
     prisma.invoice.aggregate({ where: { invoiceStatus: 'ACTIVE', heldAt: null, date: { lte: asOf } }, _sum: { balanceDue: true } }),
     prisma.product.findMany({ select: { stock: true, costPrice: true } }),
-    prisma.purchaseOrder.aggregate({ where: { date: { lte: asOf }, status: { notIn: ['CANCELLED'] } }, _sum: { balanceDue: true } }),
-    prisma.invoice.aggregate({ where: { invoiceStatus: 'ACTIVE', heldAt: null, date: { lte: asOf } }, _sum: { subtotal: true, discount: true } }),
+    prisma.purchaseOrder.aggregate({ where: { date: { lte: asOf }, status: PAYABLE_PO }, _sum: { balanceDue: true } }),
+    prisma.invoice.aggregate({ where: { date: { lte: asOf }, ...SOLD }, _sum: { subtotal: true, discount: true } }),
     prisma.purchaseOrder.aggregate({ where: { date: { lte: asOf }, status: { in: ['RECEIVED', 'PARTIALLY_RECEIVED'] } }, _sum: { subtotal: true, discount: true } }),
     prisma.payrollRun.aggregate({ where: { status: { in: ['APPROVED', 'PAID'] } }, _sum: { totalGross: true } }),
     prisma.payrollRun.aggregate({ where: { status: { in: ['APPROVED', 'PAID'] } }, _sum: { employerContributions: true } }),
-    prisma.invoice.aggregate({ where: { invoiceStatus: 'ACTIVE', heldAt: null, date: { lte: asOf } }, _sum: { gst: true } }),
-    prisma.purchaseOrder.aggregate({ where: { date: { lte: asOf }, status: { in: ['RECEIVED', 'PARTIALLY_RECEIVED'] }, itcEligible: true }, _sum: { gst: true } }),
-    prisma.creditNote.aggregate({ where: { date: { lte: asOf } }, _sum: { amount: true } }),
+    prisma.invoice.aggregate({ where: { date: { lte: asOf }, ...SOLD }, _sum: { gst: true } }),
+    prisma.vendorBill.aggregate({ where: { billDate: { lte: asOf }, ...ITC_BILLS }, _sum: { gst: true } }),
+    creditNoteShares({ lte: asOf }),
     prisma.staffLoan.aggregate({ where: { status: 'Active' }, _sum: { remainingAmount: true } }),
     prisma.payrollRun.aggregate({ where: { status: 'PAID', paidAt: { lte: asOf } }, _sum: { totalNet: true } }),
     prisma.payslip.aggregate({ where: { payrollRun: { status: 'PAID', paidAt: { lte: asOf } } }, _sum: { loanDeduction: true } }),
+    refundsOwedToCustomers(asOf),
   ])
 
   const supplierPayout = (await aggregatePurchasePayments({ paidAt: { lte: asOf } }))._sum.amount || 0
   const salaryPaidOut = salaryPaid._sum.totalNet || 0
   const loanInflow = loanRecoveries._sum.loanDeduction || 0
-  const refundsPaid = creditNotes._sum.amount || 0
-  const cashAndBank = (payments._sum.amount || 0) + loanInflow - supplierPayout - salaryPaidOut - refundsPaid
+  // Credit notes are not cash; they reduce receivables (or are owed back, below).
+  const cashAndBank = (payments._sum.amount || 0) + loanInflow - supplierPayout - salaryPaidOut
   const receivablesVal = receivables._sum.balanceDue || 0
   const inventoryVal = inventory.reduce((s, p) => s + p.stock * (p.costPrice || 0), 0)
   const gstITC = gstInput._sum.gst || 0
   const staffLoanAsset = staffLoans._sum.remainingAmount || 0
 
-  const netSalesRevenue = (salesTotal._sum.subtotal || 0) - (salesTotal._sum.discount || 0) - (creditNotes._sum.amount || 0)
+  const netSalesRevenue = (salesTotal._sum.subtotal || 0) - (salesTotal._sum.discount || 0) - notes.goods
   const purchasesEx = (purchasesTotal._sum.subtotal || 0) - (purchasesTotal._sum.discount || 0)
   const salaryEx = payrollTotal._sum.totalGross || 0
   const employerEx = employerTotal._sum.employerContributions || 0
 
-  const netGST = Math.max(0, (gstOutput._sum.gst || 0) - gstITC)
+  const netGST = Math.max(0, (gstOutput._sum.gst || 0) - notes.gst - gstITC)
   const payables = poPayables._sum.balanceDue || 0
 
   const lines = [
@@ -571,6 +609,7 @@ export async function getTrialBalance(asOfDate: string) {
     { code: '1400', name: 'Staff Loans Outstanding', type: 'ASSET', debit: staffLoanAsset, credit: 0 },
     { code: '2001', name: 'Accounts Payable', type: 'LIABILITY', debit: 0, credit: payables },
     { code: '2100', name: 'Net GST Payable', type: 'LIABILITY', debit: 0, credit: netGST },
+    { code: '2500', name: 'Refunds Owed to Customers', type: 'LIABILITY', debit: 0, credit: refundsOwed },
     { code: '4001', name: 'Sales Revenue', type: 'INCOME', debit: 0, credit: netSalesRevenue },
     { code: '5020', name: 'Purchases (COGS)', type: 'EXPENSE', debit: purchasesEx, credit: 0 },
     { code: '5100', name: 'Salary Expense', type: 'EXPENSE', debit: salaryEx, credit: 0 },
@@ -785,9 +824,11 @@ export async function createManualJournal(data: unknown) {
 
 export async function voidJournalEntry(id: number) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
-  const entry = await prisma.journalEntry.findUnique({ where: { id }, select: { status: true } })
+  const entry = await prisma.journalEntry.findUnique({ where: { id }, select: { status: true, isAuto: true, referenceType: true } })
   if (!entry) return { success: false, error: 'Journal entry not found' }
   if (entry.status === 'VOIDED') return { success: false, error: 'Already voided' }
+  // Auto entries follow their document; voiding one would silently drop it from the books.
+  if (entry.isAuto) return { success: false, error: `This entry was posted automatically from a ${entry.referenceType || 'document'}. Edit, cancel or delete that document instead and the books follow.` }
 
   await prisma.journalEntry.update({ where: { id }, data: { status: 'VOIDED' } })
   revalidatePath('/financials')

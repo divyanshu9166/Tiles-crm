@@ -3,6 +3,7 @@ import { boxesForArea, computeTaxes, deliveryStatus, invoiceStatus, invoiceableQ
 import { suggestedOrderQty } from './forecast'
 import { averageCost, remainingAfter } from './stock-ops'
 import { formatSequence } from './sequence'
+import { creditNoteSplit, creditNoteTax, splitGst, supplyTypeFor, taxableOf } from './gst-math'
 import { activityState, diffTracked } from './chatter'
 import { billMatchStatus, billTotals, matchLine, poBillingStatus } from './bill-match'
 import { balanced, expenseAccount, invoiceEntry, normalizeLines, reverse, stockAccounts } from './accounting'
@@ -179,5 +180,24 @@ describe('landed costs', () => {
     expect(splitStockAndCogs(1000, 10, 0)).toEqual({ inStockQty: 0, toStock: 0, toCogs: 1000 })
     expect(costAfterLanding(20, 300, 1000)).toBe(350)
     expect(costAfterLanding(0, 300, 0)).toBe(300)
+  })
+})
+
+describe('GST helpers (Phase 3)', () => {
+  it('decides interstate from the GSTIN state codes, else keeps the choice', () => {
+    expect(supplyTypeFor('27AAAAA0000A1Z5', '29BBBBB0000B1Z5')).toBe('INTERSTATE')
+    expect(supplyTypeFor('27AAAAA0000A1Z5', '27CCCCC0000C1Z5', 'INTERSTATE')).toBe('INTRASTATE')
+    expect(supplyTypeFor('27AAAAA0000A1Z5', '', 'INTERSTATE')).toBe('INTERSTATE')
+    expect(supplyTypeFor(null, '29BBBBB0000B1Z5')).toBe('INTRASTATE')
+  })
+  it('splits GST into CGST+SGST or IGST', () => {
+    expect(splitGst(181, 'INTRASTATE')).toEqual({ cgst: 91, sgst: 90, igst: 0 })
+    expect(splitGst(181, 'INTERSTATE')).toEqual({ cgst: 0, sgst: 0, igst: 181 })
+  })
+  it('reverses the same shares of goods, charges and tax as the invoice', () => {
+    const invoice = { subtotal: 1000, discount: 0, total: 1416, gst: 216, transportCost: 0, freightCharge: 200, loadingCharge: 0, installationCharge: 0, chargesGst: 36, supplyType: 'INTRASTATE' }
+    expect(taxableOf(invoice)).toBe(1200)
+    expect(creditNoteSplit(708, invoice)).toEqual({ gst: 108, charges: 100, goods: 500 })
+    expect(creditNoteTax(708, invoice)).toEqual({ taxableValue: 600, tax: 108, cgst: 54, sgst: 54, igst: 0 })
   })
 })

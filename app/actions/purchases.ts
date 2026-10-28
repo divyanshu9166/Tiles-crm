@@ -1,6 +1,8 @@
 'use server'
 
 import { prisma } from '@/lib/db'
+import { splitGst } from '@/lib/erp/gst-math'
+import { supplierSupplyType } from '@/lib/erp/supply-type'
 import { adjustStock, lockInventoryProducts, resolveStockGodown, inventoryError } from '@/lib/inventory-stock'
 import { revalidatePath } from 'next/cache'
 import { requireRole } from '@/lib/auth-helpers'
@@ -318,8 +320,7 @@ export async function createPurchaseOrder(data: unknown) {
   }, 0)
   const discountFactor = subtotal > 0 ? (taxable / subtotal) : 1
   const gst = Math.max(0, Math.round(grossGst * discountFactor))
-  const cgst = Math.round(gst / 2)
-  const sgst = gst - cgst
+  const { cgst, sgst, igst } = splitGst(gst, await supplierSupplyType(prisma, supplierId))
   const total = taxable + gst
 
   // Sequenced under an advisory lock: count()+1 collided after deletes and
@@ -334,6 +335,7 @@ export async function createPurchaseOrder(data: unknown) {
       gst,
       cgst,
       sgst,
+      igst,
       total,
       balanceDue: total,
       isRCM,
@@ -388,8 +390,7 @@ export async function updatePurchaseOrder(id: number, data: unknown) {
   }, 0)
   const discountFactor = subtotal > 0 ? (taxable / subtotal) : 1
   const gst = Math.max(0, Math.round(grossGst * discountFactor))
-  const cgst = Math.round(gst / 2)
-  const sgst = gst - cgst
+  const { cgst, sgst, igst } = splitGst(gst, await supplierSupplyType(prisma, supplierId))
   const total = taxable + gst
 
   if (total < existing.amountPaid) {
@@ -409,6 +410,7 @@ export async function updatePurchaseOrder(id: number, data: unknown) {
         gst,
         cgst,
         sgst,
+        igst,
         total,
         balanceDue: Math.max(0, total - existing.amountPaid),
         isRCM,

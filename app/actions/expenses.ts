@@ -253,13 +253,8 @@ export async function updateExpense(id: number, data: unknown) {
   const existing = await prisma.expense.findUnique({ where: { id } })
   if (!existing) return { success: false, error: 'Expense not found' }
 
-  if (existing.paymentMode === 'Cash') {
-    const defaultDate = new Date(existing.date.toISOString().split('T')[0] + 'T00:00:00')
-    await prisma.dailyCashRegister.updateMany({
-      where: { date: defaultDate },
-      data: { cashOut: { decrement: existing.amount } },
-    })
-  }
+  // Only approved expenses are in the cash register (approveExpense adds them).
+  if (existing.status === 'Approved') await moveCashRegister(existing, -1)
 
   const expense = await prisma.expense.update({
     where: { id },
@@ -277,14 +272,7 @@ export async function updateExpense(id: number, data: unknown) {
     },
   })
 
-  if (paymentMode === 'Cash') {
-    const newDateOnly = new Date(date + 'T00:00:00')
-    await prisma.dailyCashRegister.upsert({
-      where: { date: newDateOnly },
-      create: { date: newDateOnly, cashOut: amount },
-      update: { cashOut: { increment: amount } },
-    })
-  }
+  if (expense.status === 'Approved') await moveCashRegister(expense, 1)
 
   revalidatePath('/expenses')
   return { success: true, data: expense }

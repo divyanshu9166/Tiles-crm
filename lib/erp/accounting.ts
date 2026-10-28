@@ -79,6 +79,98 @@ export function invoiceEntry(invoice: { id: number; displayId: string; date: Dat
   }
 }
 
+// Credit note: reverses the same shares of goods revenue, charges income and
+// output GST that the invoice booked.
+export function creditNoteEntry(note: { id: number; displayId: string; amount: number; date: Date; invoice: { displayId: string; total: number; gst: number; transportCost: number; freightCharge: number; loadingCharge: number; installationCharge: number } }): DraftEntry {
+  const inv = note.invoice
+  const charges = inv.transportCost + inv.freightCharge + inv.loadingCharge + inv.installationCharge
+  const gstPart = inv.total > 0 ? Math.round(note.amount * inv.gst / inv.total) : 0
+  const chargesPart = inv.total > 0 ? Math.round(note.amount * charges / inv.total) : 0
+  return {
+    sourceKey: `CN:${note.id}`, date: note.date, narration: `Credit note ${note.displayId} on ${inv.displayId}`, referenceType: 'CreditNote', referenceId: note.id,
+    lines: [
+      { code: ACC.sales, debit: note.amount - gstPart - chargesPart },
+      { code: ACC.otherIncome, debit: chargesPart, description: 'Freight / loading / installation' },
+      { code: ACC.gstOutput, debit: gstPart },
+      { code: ACC.receivable, credit: note.amount },
+    ],
+  }
+}
+
+// ─── Documents whose journal follows the document ──────────────────────────
+// A document's entry is posted as PREFIX:id. If the document is edited after
+// posting, the live entry is reversed (REV:<key>) and the new state posted as
+// PREFIX:id~2, ~3 … Cancelled, rejected or deleted documents are reversed.
+// Older reversal keys (INVREV:, BILLREV:, EXPREV:) are still recognised.
+export const FOLLOWED_PREFIXES = ['INV', 'PAY', 'CN', 'BILL', 'PPAY', 'EXP', 'LC'] as const
+const LEGACY_REVERSAL: Record<string, string> = { INV: 'INVREV', BILL: 'BILLREV', EXP: 'EXPREV' }
+
+export type DocState = { prefix: string; id: number; entry: DraftEntry | null; endedAt?: Date }
+export type PostedEntry = { status: string; date: Date; narration: string; referenceType: string | null; referenceId: number | null; lines: { accountId: number; debit: number; credit: number }[] }
+
+function entrySignature(date: Date, lines: { accountId: number; debit: number; credit: number }[]) {
+  return `${date.getTime()}|${lines.map(line => `${line.accountId}:${line.debit}:${line.credit}`).sort().join(',')}`
+}
+
+export function reconcileDocuments(docs: DocState[], status: Map<string, string>, postedEntries: Map<string, PostedEntry>, accountIds: Map<string, number>) {
+  const codeOf = new Map([...accountIds].map(([code, id]) => [id, code]))
+  const versions = new Map<string, { key: string; version: number }[]>()
+  for (const key of postedEntries.keys()) {
+    const match = key.match(/^([A-Z]+):(\d+)(?:~(\d+))?$/)
+    if (!match) continue
+    const doc = `${match[1]}:${match[2]}`
+    versions.set(doc, [...(versions.get(doc) || []), { key, version: match[3] ? Number(match[3]) : 1 }])
+  }
+  const all = new Map(docs.map(doc => [`${doc.prefix}:${doc.id}`, doc]))
+  // Deleted documents: nothing in the database any more, entry still live.
+  for (const doc of versions.keys()) {
+    if (all.has(doc)) continue
+    const [prefix, id] = doc.split(':')
+    all.set(doc, { prefix, id: Number(id), entry: null })
+  }
+
+  const drafts: DraftEntry[] = []
+  const skipped: string[] = []
+  for (const [docKey, doc] of all) {
+    const existing = versions.get(docKey) || []
+    const legacy = LEGACY_REVERSAL[doc.prefix]
+    const live = existing.map(row => row.key).filter(key =>
+      postedEntries.get(key)?.status === 'POSTED'
+      && status.get(`REV:${key}`) !== 'POSTED'
+      && !(legacy && key === docKey && status.get(`${legacy}:${doc.id}`) === 'POSTED'))
+
+    let want: string | null = null
+    if (doc.entry) {
+      const lines = normalizeLines(doc.entry.lines)
+      if (!balanced(lines) || lines.some(line => !accountIds.has(line.code))) { skipped.push(docKey); continue }
+      want = entrySignature(doc.entry.date, lines.map(line => ({ accountId: accountIds.get(line.code) as number, debit: line.debit || 0, credit: line.credit || 0 })))
+    }
+    const keep = want ? live.find(key => {
+      const posted = postedEntries.get(key) as PostedEntry
+      return entrySignature(posted.date, posted.lines) === want
+    }) : undefined
+
+    for (const key of live) {
+      if (key === keep) continue
+      const posted = postedEntries.get(key) as PostedEntry
+      if (posted.lines.some(line => !codeOf.has(line.accountId))) { skipped.push(`REV:${key}`); continue }
+      // Edits and deletions undo the old entry in its own period; a cancellation
+      // or rejection is booked on the day it happened.
+      const date = doc.entry ? posted.date : (doc.endedAt ?? posted.date)
+      drafts.push({
+        sourceKey: `REV:${key}`, reverses: key, date, narration: `Reversed: ${posted.narration}`,
+        referenceType: posted.referenceType || doc.prefix, referenceId: posted.referenceId ?? doc.id,
+        lines: posted.lines.map(line => ({ code: codeOf.get(line.accountId) as string, debit: line.credit, credit: line.debit })),
+      })
+    }
+    if (doc.entry && !keep) {
+      const next = existing.length === 0 ? null : Math.max(...existing.map(row => row.version)) + 1
+      drafts.push({ ...doc.entry, sourceKey: next ? `${docKey}~${next}` : docKey })
+    }
+  }
+  return { drafts, skipped }
+}
+
 async function ensureAccounts(db: Db) {
   const accounts = await db.ledgerAccount.findMany({ select: { id: true, code: true } })
   if (accounts.length === 0) throw new Error('Create the chart of accounts first (Financials → Chart of Accounts → Seed)')
@@ -91,13 +183,14 @@ async function ensureAccounts(db: Db) {
   return new Map(accounts.map(account => [account.code, account.id]))
 }
 
-async function collectEntries(db: Db, posted: Set<string>): Promise<DraftEntry[]> {
+async function collectEntries(db: Db, posted: Set<string>, status: Map<string, string>, accountIds: Map<string, number>): Promise<{ entries: DraftEntry[]; skipped: string[] }> {
   const entries: DraftEntry[] = []
+  const docs: DocState[] = []
   const [invoices, payments, creditNotes, ledger, bills, purchasePayments, expenses, payrolls] = await Promise.all([
     db.invoice.findMany({ where: { heldAt: null }, select: { id: true, displayId: true, date: true, updatedAt: true, total: true, gst: true, transportCost: true, freightCharge: true, loadingCharge: true, installationCharge: true, invoiceStatus: true } }),
     db.payment.findMany({ where: { amount: { gt: 0 } }, select: { id: true, amount: true, method: true, date: true, invoice: { select: { displayId: true, heldAt: true } } } }),
-    db.creditNote.findMany({ select: { id: true, displayId: true, amount: true, date: true, invoice: { select: { total: true, gst: true, displayId: true } } } }),
-    db.stockLedger.findMany({ select: { id: true, productId: true, entryType: true, referenceType: true, referenceId: true, quantity: true, createdAt: true, product: { select: { name: true, costPrice: true } } } }),
+    db.creditNote.findMany({ select: { id: true, displayId: true, amount: true, date: true, invoice: { select: { total: true, gst: true, displayId: true, transportCost: true, freightCharge: true, loadingCharge: true, installationCharge: true } } } }),
+    db.stockLedger.findMany({ select: { id: true, productId: true, entryType: true, referenceType: true, referenceId: true, quantity: true, unitCost: true, createdAt: true, product: { select: { name: true, costPrice: true } } } }),
     db.vendorBill.findMany({ where: { status: { in: ['POSTED', 'CANCELLED'] }, postedAt: { not: null } }, select: { id: true, displayId: true, vendorRef: true, poId: true, status: true, subtotal: true, gst: true, total: true, billDate: true, updatedAt: true } }),
     db.purchasePayment.findMany({ select: { id: true, amount: true, method: true, paidAt: true, po: { select: { displayId: true } } } }),
     db.expense.findMany({ select: { id: true, amount: true, date: true, status: true, paymentMode: true, description: true, updatedAt: true, category: { select: { name: true } } } }),
@@ -105,29 +198,23 @@ async function collectEntries(db: Db, posted: Set<string>): Promise<DraftEntry[]
   ])
 
   for (const invoice of invoices) {
-    const entry = invoiceEntry(invoice)
-    entries.push(entry)
-    if (invoice.invoiceStatus === 'CANCELLED') entries.push(reverse(entry, `INVREV:${invoice.id}`, invoice.updatedAt, `Cancelled invoice ${invoice.displayId}`))
+    docs.push({ prefix: 'INV', id: invoice.id, entry: invoice.invoiceStatus === 'CANCELLED' ? null : invoiceEntry(invoice), endedAt: invoice.updatedAt })
   }
   for (const payment of payments) {
-    if (payment.invoice.heldAt) continue
-    entries.push({ sourceKey: `PAY:${payment.id}`, date: payment.date, narration: `Receipt for ${payment.invoice.displayId} (${payment.method})`, referenceType: 'Payment', referenceId: payment.id,
-      lines: [{ code: cashAccount(payment.method), debit: payment.amount }, { code: ACC.receivable, credit: payment.amount }] })
+    docs.push({ prefix: 'PAY', id: payment.id, entry: payment.invoice.heldAt ? null : { sourceKey: `PAY:${payment.id}`, date: payment.date, narration: `Receipt for ${payment.invoice.displayId} (${payment.method})`, referenceType: 'Payment', referenceId: payment.id,
+      lines: [{ code: cashAccount(payment.method), debit: payment.amount }, { code: ACC.receivable, credit: payment.amount }] } })
   }
-  for (const note of creditNotes) {
-    const gstPart = note.invoice.total > 0 ? Math.round(note.amount * note.invoice.gst / note.invoice.total) : 0
-    entries.push({ sourceKey: `CN:${note.id}`, date: note.date, narration: `Credit note ${note.displayId} on ${note.invoice.displayId}`, referenceType: 'CreditNote', referenceId: note.id,
-      lines: [{ code: ACC.sales, debit: note.amount - gstPart }, { code: ACC.gstOutput, debit: gstPart }, { code: ACC.receivable, credit: note.amount }] })
-  }
+  for (const note of creditNotes) docs.push({ prefix: 'CN', id: note.id, entry: creditNoteEntry(note) })
 
-  // Receipts are valued at their PO price; other moves at the product's current cost.
-  const poIds = [...new Set(ledger.filter(row => row.referenceType === 'PurchaseOrder' && row.referenceId).map(row => row.referenceId as number))]
+  // Each move is valued at the cost stamped when it happened. Rows from before
+  // that stamp existed: receipts at their PO price, others at the current cost.
+  const poIds = [...new Set(ledger.filter(row => row.unitCost == null && row.referenceType === 'PurchaseOrder' && row.referenceId).map(row => row.referenceId as number))]
   const poItems = poIds.length ? await db.purchaseOrderItem.findMany({ where: { poId: { in: poIds } }, select: { poId: true, productId: true, unitCost: true } }) : []
   const poCost = new Map(poItems.map(item => [`${item.poId}:${item.productId}`, item.unitCost]))
   for (const row of ledger) {
     const accounts = stockAccounts(row.entryType, row.referenceType, row.quantity)
     if (!accounts) continue
-    const unit = row.referenceType === 'PurchaseOrder' ? poCost.get(`${row.referenceId}:${row.productId}`) ?? row.product.costPrice : row.product.costPrice
+    const unit = row.unitCost ?? (row.referenceType === 'PurchaseOrder' ? poCost.get(`${row.referenceId}:${row.productId}`) ?? row.product.costPrice : row.product.costPrice)
     const value = Math.round(Math.abs(row.quantity) * unit)
     if (value === 0) continue
     entries.push({ sourceKey: `SLG:${row.id}`, date: row.createdAt, narration: `Stock ${row.entryType.toLowerCase()} · ${row.product.name} × ${Math.abs(row.quantity)}`, referenceType: 'StockLedger', referenceId: row.id,
@@ -179,19 +266,18 @@ async function collectEntries(db: Db, posted: Set<string>): Promise<DraftEntry[]
   for (const bill of bills) {
     const entry: DraftEntry = { sourceKey: `BILL:${bill.id}`, date: bill.billDate, narration: `Vendor bill ${bill.displayId}${bill.vendorRef ? ` (${bill.vendorRef})` : ''}`, referenceType: 'VendorBill', referenceId: bill.id,
       lines: [{ code: bill.poId ? ACC.grni : ACC.purchases, debit: bill.subtotal }, { code: ACC.gstInput, debit: bill.gst }, { code: ACC.payable, credit: bill.total }] }
-    entries.push(entry)
-    if (bill.status === 'CANCELLED') entries.push(reverse(entry, `BILLREV:${bill.id}`, bill.updatedAt, `Cancelled bill ${bill.displayId}`))
+    docs.push({ prefix: 'BILL', id: bill.id, entry: bill.status === 'CANCELLED' ? null : entry, endedAt: bill.updatedAt })
   }
   for (const payment of purchasePayments) {
-    entries.push({ sourceKey: `PPAY:${payment.id}`, date: payment.paidAt, narration: `Payment against ${payment.po.displayId} (${payment.method})`, referenceType: 'PurchasePayment', referenceId: payment.id,
-      lines: [{ code: ACC.payable, debit: payment.amount }, { code: cashAccount(payment.method), credit: payment.amount }] })
+    docs.push({ prefix: 'PPAY', id: payment.id, entry: { sourceKey: `PPAY:${payment.id}`, date: payment.paidAt, narration: `Payment against ${payment.po.displayId} (${payment.method})`, referenceType: 'PurchasePayment', referenceId: payment.id,
+      lines: [{ code: ACC.payable, debit: payment.amount }, { code: cashAccount(payment.method), credit: payment.amount }] } })
   }
   for (const expense of expenses) {
     const credit = String(expense.paymentMode).toLowerCase() === 'credit' ? ACC.payable : cashAccount(expense.paymentMode)
     const entry: DraftEntry = { sourceKey: `EXP:${expense.id}`, date: expense.date, narration: `Expense · ${expense.category.name}: ${expense.description}`, referenceType: 'Expense', referenceId: expense.id,
       lines: [{ code: expenseAccount(expense.category.name), debit: expense.amount }, { code: credit, credit: expense.amount }] }
-    // An expense un-approved after posting is reversed; never-approved ones post nothing.
-    entries.push(expense.status === 'Approved' ? entry : reverse(entry, `EXPREV:${expense.id}`, expense.updatedAt, `Expense reversed (${expense.status})`))
+    // Only approved expenses are on the books; rejecting one later reverses it.
+    docs.push({ prefix: 'EXP', id: expense.id, entry: expense.status === 'Approved' ? entry : null, endedAt: expense.updatedAt })
   }
   for (const run of payrolls) {
     const date = new Date(`${run.period}-28T12:00:00`)
@@ -205,9 +291,18 @@ async function collectEntries(db: Db, posted: Set<string>): Promise<DraftEntry[]
         lines: [{ code: ACC.salaryPayable, debit: run.totalNet }, { code: ACC.bank, credit: run.totalNet }] })
     }
   }
-  const landed = await db.landedCost.findMany({ where: { status: 'POSTED' }, select: { id: true, displayId: true, date: true, creditTo: true, vendorRef: true, lines: { select: { amount: true, costType: true } }, allocations: { select: { toStock: true, toCogs: true } } } })
-  for (const cost of landed) entries.push(landedCostEntry(cost))
-  return entries
+  const landed = await db.landedCost.findMany({ where: { status: { in: ['POSTED', 'CANCELLED'] } }, select: { id: true, displayId: true, status: true, date: true, updatedAt: true, creditTo: true, vendorRef: true, lines: { select: { amount: true, costType: true } }, allocations: { select: { toStock: true, toCogs: true } } } })
+  for (const cost of landed) docs.push({ prefix: 'LC', id: cost.id, entry: cost.status === 'POSTED' ? landedCostEntry(cost) : null, endedAt: cost.updatedAt })
+
+  const postedRows = await db.journalEntry.findMany({
+    where: { OR: FOLLOWED_PREFIXES.map(prefix => ({ sourceKey: { startsWith: `${prefix}:` } })) },
+    select: { sourceKey: true, status: true, date: true, narration: true, referenceType: true, referenceId: true, lines: { select: { accountId: true, debit: true, credit: true } } },
+  })
+  const postedEntries = new Map(postedRows.map(row => [row.sourceKey as string, row]))
+  const followed = reconcileDocuments(docs, status, postedEntries, accountIds)
+  entries.push(...followed.drafts)
+  void posted
+  return { entries, skipped: followed.skipped }
 }
 
 // Landed cost: capitalised into stock (or COGS for goods already sold),
@@ -239,13 +334,16 @@ export function landedCostEntry(cost: { id: number; displayId: string; date: Dat
 // sourceKey, so re-running only adds what happened since the last run.
 export async function postAutoJournals(db: typeof prisma = prisma, author = 'Auto-posting') {
   const accountIds = await ensureAccounts(db)
-  const posted = new Set((await db.journalEntry.findMany({ where: { sourceKey: { not: null } }, select: { sourceKey: true } })).map(entry => entry.sourceKey as string))
-  const drafts = await collectEntries(db, posted)
+  const statusRows = await db.journalEntry.findMany({ where: { sourceKey: { not: null } }, select: { sourceKey: true, status: true } })
+  const status = new Map(statusRows.map(entry => [entry.sourceKey as string, entry.status]))
+  const posted = new Set(status.keys())
+  const collected = await collectEntries(db, posted, status, accountIds)
+  const drafts = collected.entries
   // Originals before reversals, then chronological.
   const pending = drafts.filter(entry => !posted.has(entry.sourceKey))
     .sort((a, b) => Number(Boolean(a.reverses)) - Number(Boolean(b.reverses)) || a.date.getTime() - b.date.getTime())
   let count = 0
-  const skipped: string[] = []
+  const skipped: string[] = [...collected.skipped]
   for (const draft of pending) {
     // A reversal only makes sense once its original is on the books.
     if (draft.reverses && !posted.has(draft.reverses)) continue

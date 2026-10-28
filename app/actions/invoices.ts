@@ -1,7 +1,8 @@
 'use server'
 
 import { prisma } from '@/lib/db'
-import { lockInventoryProducts } from '@/lib/inventory-stock'
+import { customerSupplyType } from '@/lib/erp/supply-type'
+import { ledgerUnitCost, lockInventoryProducts } from '@/lib/inventory-stock'
 import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { revalidatePath } from 'next/cache'
 import { createInvoiceSchema, updateInvoiceSchema, recordPaymentSchema, createCreditNoteSchema } from '@/lib/validations/invoice'
@@ -85,6 +86,7 @@ async function consumeInvoiceInventory(tx: any, invoiceId: number, items: Invent
             entryType: 'OPENING_BALANCE',
             quantity: product.stock,
             balanceAfter: product.stock,
+            unitCost: await ledgerUnitCost(tx, productId),
             referenceType: 'Invoice',
             referenceId: invoiceId,
             notes: 'Legacy product stock migrated to the selected godown before sale',
@@ -110,6 +112,7 @@ async function consumeInvoiceInventory(tx: any, invoiceId: number, items: Invent
         entryType: 'SALE',
         quantity: -quantity,
         balanceAfter: nextQty,
+        unitCost: await ledgerUnitCost(tx, productId),
         referenceType: 'Invoice',
         referenceId: invoiceId,
       },
@@ -164,7 +167,7 @@ async function restoreInvoiceInventory(tx: any, invoice: any) {
       update: { quantity: nextQty },
     })
     await tx.stockLedger.create({
-      data: { productId, godownId, entryType: 'RETURN', quantity, balanceAfter: nextQty, referenceType: 'Invoice', referenceId: invoice.id, notes: 'Inventory restored after invoice cancellation/refund' },
+      data: { productId, godownId, entryType: 'RETURN', quantity, balanceAfter: nextQty, unitCost: await ledgerUnitCost(tx, productId), referenceType: 'Invoice', referenceId: invoice.id, notes: 'Inventory restored after invoice cancellation/refund' },
     })
     await tx.product.update({ where: { id: productId }, data: { sold: { decrement: quantity } } })
     await syncProductStockInTransaction(tx, productId)
@@ -440,7 +443,8 @@ export async function createInvoice(data: unknown) {
     remainingDiscount -= share
     return share
   })
-  const resolvedSupplyType = supplyType === 'INTERSTATE' ? 'INTERSTATE' : 'INTRASTATE'
+  // Interstate is decided by the GSTIN state codes when both are known.
+  const resolvedSupplyType = await customerSupplyType(prisma, contact.id, supplyType)
   const itemRows = resolvedItems.map((item, index) => {
     const lineTotal = item.lineAmount
     const discountShare = discountSplits[index] || 0
@@ -669,8 +673,7 @@ export async function updateInvoice(invoiceId: number, data: unknown) {
       || (loadingCharge || 0) !== invoice.loadingCharge || (installationCharge || 0) !== invoice.installationCharge
     const requestedDiscount = discountType === 'flat' ? Number(discount) || 0 : discountType === 'percent' ? null : 0
     const discountChanged = requestedDiscount !== null && requestedDiscount !== invoice.discount
-    const supplyChanged = (supplyType === 'INTERSTATE' ? 'INTERSTATE' : 'INTRASTATE') !== (invoice.supplyType || 'INTRASTATE')
-    if (before !== after || chargesChanged || discountChanged || supplyChanged) {
+    if (before !== after || chargesChanged || discountChanged) {
       return { success: false, error: 'This bill is already issued, so its items, prices, discount and charges cannot change. Issue a credit note and create a new bill instead.' }
     }
   }
@@ -760,7 +763,8 @@ export async function updateInvoice(invoiceId: number, data: unknown) {
     return share
   })
 
-  const resolvedSupplyType = supplyType === 'INTERSTATE' ? 'INTERSTATE' : 'INTRASTATE'
+  // Interstate is decided by the GSTIN state codes when both are known.
+  const resolvedSupplyType = isHeld ? await customerSupplyType(prisma, contact.id, supplyType) : (invoice.supplyType === 'INTERSTATE' ? 'INTERSTATE' : 'INTRASTATE')
   const itemRows = resolvedItems.map((item, index) => {
     const lineTotal = item.lineAmount
     const discountShare = discountSplits[index] || 0

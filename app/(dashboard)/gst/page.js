@@ -493,7 +493,7 @@ export default function GSTPage() {
       <div className="space-y-4">
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           {[
-            { label: 'Total Purchase Orders', value: d.summary?.totalPOs || 0 },
+            { label: 'Posted vendor bills', value: d.summary?.totalPOs || 0 },
             { label: 'Total Taxable Value', value: fmt(d.summary?.totalTaxableValue) },
             { label: 'Total ITC Available', value: fmt(d.summary?.totalITC) },
             { label: 'CGST', value: fmt(d.summary?.cgst) },

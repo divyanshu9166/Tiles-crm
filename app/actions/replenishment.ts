@@ -3,6 +3,8 @@
 import { z } from 'zod'
 import { revalidatePath } from 'next/cache'
 import { prisma } from '@/lib/db'
+import { splitGst } from '@/lib/erp/gst-math'
+import { supplierSupplyType } from '@/lib/erp/supply-type'
 import { requireActor, actionError } from '@/lib/erp/actor'
 import { computeForecast, suggestedOrderQty } from '@/lib/erp/forecast'
 import { nextSequence } from '@/lib/erp/sequence'
@@ -270,9 +272,9 @@ export async function orderReplenishment(data: unknown) {
         const discount = Math.min(po.discount, subtotal)
         const factor = subtotal > 0 ? (subtotal - discount) / subtotal : 1
         const gst = Math.max(0, Math.round(lines.reduce((sum, line) => sum + Math.round(line.quantity * line.unitCost * line.gstRate / 100), 0) * factor))
-        const cgst = Math.round(gst / 2)
+        const { cgst, sgst, igst } = splitGst(gst, await supplierSupplyType(tx, supplierId))
         const total = subtotal - discount + gst
-        await tx.purchaseOrder.update({ where: { id: po.id }, data: { subtotal, discount, gst, cgst, sgst: gst - cgst, total, balanceDue: Math.max(0, total - po.amountPaid) } })
+        await tx.purchaseOrder.update({ where: { id: po.id }, data: { subtotal, discount, gst, cgst, sgst, igst, total, balanceDue: Math.max(0, total - po.amountPaid) } })
         await logMessage(tx, 'PurchaseOrder', po.id, `${created ? 'Draft created' : 'Updated'} from replenishment: ${items.map(item => `${productById.get(item.productId)?.name} × ${item.quantity}`).join(', ')}`, { author: actor })
         touched.push({ id: po.id, displayId: po.displayId, created })
       }

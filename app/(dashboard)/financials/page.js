@@ -529,6 +529,7 @@ export default function FinancialsPage() {
                 { label: 'Accounts Payable (Suppliers)', val: bsData.currentLiabilities?.accountsPayable },
                 { label: `GST Payable (Output: ${fmt(bsData.currentLiabilities?.gstOutput)} − ITC: ${fmt(bsData.currentLiabilities?.gstInput)})`, val: bsData.currentLiabilities?.netGSTPayable },
                 { label: 'Salary Payable (approved, unpaid)', val: bsData.currentLiabilities?.salaryPayable },
+                { label: 'Refunds Owed to Customers (credit notes on paid bills)', val: bsData.currentLiabilities?.refundsOwed },
               ].map(r => (
                 <div key={r.label} className="flex justify-between text-sm">
                   <span className="text-muted pl-3 max-w-[220px]">{r.label}</span>
@@ -590,7 +591,6 @@ export default function FinancialsPage() {
                 { label: 'Staff Loan Repayments Received', val: cfData.operating?.inflow?.loanRepayments, positive: true },
                 { label: 'Payments to Suppliers', val: -cfData.operating?.outflow?.purchases, positive: false },
                 { label: 'Salary Payments', val: -cfData.operating?.outflow?.salaries, positive: false },
-                { label: 'Credit Note Refunds', val: -cfData.operating?.outflow?.creditRefunds, positive: false },
               ].map(r => (
                 <div key={r.label} className="flex justify-between text-sm">
                   <span className="text-muted pl-3">{r.label}</span>

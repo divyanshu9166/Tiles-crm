@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { revalidatePath } from 'next/cache'
 import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
+import { customerSupplyType } from '@/lib/erp/supply-type'
 import { resolveStockGodown } from '@/lib/inventory-stock'
 import { requireActor, actionError, type Actor } from '@/lib/erp/actor'
 import { nextSequence } from '@/lib/erp/sequence'
@@ -176,7 +177,9 @@ async function createOrderTx(tx: Tx, input: z.infer<typeof orderSchema> & { quot
   if (input.salespersonId && !salesperson) throw new Error('Salesperson not found')
   const lines = await buildLines(tx, input.lines, settings?.gstRate ?? 18)
   const charges = input.freightCharge + input.loadingCharge + input.installationCharge
-  const totals = orderTotals(lines, input.discountType, input.discountValue, input.supplyType, charges)
+  // Interstate is decided by the GSTIN state codes when both are known.
+  const supplyType = await customerSupplyType(tx, contact.id, input.supplyType)
+  const totals = orderTotals(lines, input.discountType, input.discountValue, supplyType, charges)
   const displayId = await nextSequence(tx, 'SalesOrder')
   const order = await tx.salesOrder.create({
     data: {
@@ -193,7 +196,7 @@ async function createOrderTx(tx: Tx, input: z.infer<typeof orderSchema> & { quot
       projectName: input.projectName,
       dispatchAddress: input.dispatchAddress || contact.address,
       customerReference: input.customerReference,
-      supplyType: input.supplyType,
+      supplyType,
       placeOfSupply: input.placeOfSupply || contact.state,
       discountType: input.discountType,
       discountValue: input.discountValue,

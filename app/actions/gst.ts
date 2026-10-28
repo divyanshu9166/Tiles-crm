@@ -1,6 +1,7 @@
 'use server'
 
 import { prisma } from '@/lib/db'
+import { creditNoteTax, invoiceCharges, taxableOf } from '@/lib/erp/gst-math'
 import { revalidatePath } from 'next/cache'
 import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { createHsnCodeSchema, createEWayBillSchema } from '@/lib/validations/gst'
@@ -53,25 +54,14 @@ function gstUqc(unitOfMeasure?: string) {
 
 // ─── GSTR-1 (Outward Supplies) ───────────────────────
 
-// Taxable value of an invoice. Since Oct 2026 transport/freight/loading/
-// installation carry GST (chargesGst > 0) and are part of the taxable value;
-// older bills billed them untaxed and keep reporting goods only.
-type TaxableInvoice = { subtotal: number; discount: number; chargesGst?: number | null; transportCost?: number | null; freightCharge?: number | null; loadingCharge?: number | null; installationCharge?: number | null }
-function invoiceCharges(inv: TaxableInvoice) {
-  return (inv.transportCost || 0) + (inv.freightCharge || 0) + (inv.loadingCharge || 0) + (inv.installationCharge || 0)
-}
-function taxableOf(inv: TaxableInvoice) {
-  return taxableOf(inv) + ((inv.chargesGst || 0) > 0 ? invoiceCharges(inv) : 0)
-}
-
 export async function generateGSTR1(period: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
   const { from, to } = periodRange(period)
 
-  const [invoices, creditNotes, store] = await Promise.all([
+  const [invoices, creditNotes, store, cancelledCount] = await Promise.all([
     prisma.invoice.findMany({
-      where: { date: { gte: from, lt: to }, invoiceStatus: 'ACTIVE' },
+      where: { date: { gte: from, lt: to }, invoiceStatus: { in: ['ACTIVE', 'REFUNDED'] }, heldAt: null },
       include: {
         contact: { select: { name: true, gstNumber: true, state: true, address: true } },
         items: true,
@@ -87,6 +77,7 @@ export async function generateGSTR1(period: string) {
       },
     }),
     prisma.storeSettings.findFirst({ where: { id: 1 } }),
+    prisma.invoice.count({ where: { date: { gte: from, lt: to }, invoiceStatus: 'CANCELLED', heldAt: null } }),
   ])
 
   const storeGSTIN = store?.gstNumber || ''
@@ -108,8 +99,11 @@ export async function generateGSTR1(period: string) {
   }
 
   // ── Credit note classification ─────────────────────
-  const cdnr = creditNotes.filter(c => c.invoice.contact.gstNumber)  // to registered
-  const cdns = creditNotes.filter(c => !c.invoice.contact.gstNumber)  // to unregistered
+  const notes = creditNotes.map(c => ({ ...c, tax: creditNoteTax(c.amount, c.invoice) }))
+  const cdnr = notes.filter(c => c.invoice.contact.gstNumber)  // to registered
+  const cdns = notes.filter(c => !c.invoice.contact.gstNumber)  // to unregistered
+  const sumNotes = (key: 'taxableValue' | 'cgst' | 'sgst' | 'igst') => notes.reduce((s, c) => s + c.tax[key], 0)
+  const creditNoteTotals = { taxableValue: sumNotes('taxableValue'), cgst: sumNotes('cgst'), sgst: sumNotes('sgst'), igst: sumNotes('igst'), count: notes.length }
 
   // ── HSN Summary (all invoices) ─────────────────────
   const hsnMap: Record<string, { description: string; uqc: string; qty: number; taxableValue: number; igst: number; cgst: number; sgst: number; cess: number }> = {}
@@ -153,8 +147,8 @@ export async function generateGSTR1(period: string) {
   const docSummary = sortedIds.length > 0 ? {
     from: sortedIds[0],
     to: sortedIds[sortedIds.length - 1],
-    count: sortedIds.length,
-    cancelled: 0,
+    count: sortedIds.length + cancelledCount,
+    cancelled: cancelledCount,
   } : null
 
   // ── Totals ─────────────────────────────────────────
@@ -165,6 +159,8 @@ export async function generateGSTR1(period: string) {
     igst: invoices.reduce((s, i) => s + i.igst, 0),
     cess: invoices.reduce((s, i) => s + i.cess, 0),
     totalInvoices: invoices.length,
+    // Credit notes issued in the period reduce the tax payable (GSTR-3B 3.1).
+    creditNotes: creditNoteTotals,
   }
 
   const returnData = {
@@ -204,12 +200,14 @@ export async function generateGSTR1(period: string) {
     cdnr: cdnr.map(c => ({
       displayId: c.displayId, date: c.date,
       customer: c.invoice.contact.name, gstin: c.invoice.contact.gstNumber,
-      amount: c.amount, reason: c.reason,
+      invoice: c.invoice.displayId,
+      amount: c.amount, reason: c.reason, ...c.tax,
     })),
     cdns: cdns.map(c => ({
       displayId: c.displayId, date: c.date,
       customer: c.invoice.contact.name,
-      amount: c.amount, reason: c.reason,
+      invoice: c.invoice.displayId,
+      amount: c.amount, reason: c.reason, ...c.tax,
     })),
     hsnSummary: Object.entries(hsnMap).map(([hsn, vals]) => ({ hsn, ...vals })),
     docSummary,
@@ -232,11 +230,21 @@ export async function generateGSTR2(period: string) {
 
   const { from, to } = periodRange(period)
 
-  const pos = await prisma.purchaseOrder.findMany({
-    where: { date: { gte: from, lt: to }, status: 'RECEIVED' },
-    include: { supplier: { select: { name: true, gstNumber: true } }, items: true },
+  const bills = await prisma.vendorBill.findMany({
+    where: { billDate: { gte: from, lt: to }, status: 'POSTED' },
+    include: { supplier: { select: { name: true, gstNumber: true } }, po: { select: { displayId: true, isRCM: true, itcEligible: true, itcCategory: true } } },
     orderBy: { displayId: 'asc' },
   })
+  const pos = bills.map(bill => ({
+    displayId: bill.vendorRef ? `${bill.displayId} (${bill.vendorRef})` : bill.displayId,
+    date: bill.billDate,
+    supplier: bill.supplier,
+    subtotal: bill.subtotal, discount: 0,
+    gst: bill.gst, cgst: bill.cgst, sgst: bill.sgst, igst: bill.igst,
+    isRCM: bill.po?.isRCM ?? false,
+    itcEligible: bill.po?.itcEligible ?? true,
+    itcCategory: bill.po?.itcCategory ?? 'INPUTS',
+  }))
 
   // ITC classification
   const itcInputs    = pos.filter(p => p.itcCategory === 'INPUTS' && p.itcEligible)
@@ -251,7 +259,7 @@ export async function generateGSTR2(period: string) {
       cgst: list.reduce((s, p) => s + p.cgst, 0),
       sgst: list.reduce((s, p) => s + p.sgst, 0),
       igst: list.reduce((s, p) => s + p.igst, 0),
-      total: list.reduce((s, p) => s + p.gst + p.igst, 0),
+      total: list.reduce((s, p) => s + p.gst, 0),
     }
   }
 
@@ -260,10 +268,10 @@ export async function generateGSTR2(period: string) {
     summary: {
       totalPOs: pos.length,
       totalTaxableValue: pos.reduce((s, p) => s + (p.subtotal - p.discount), 0),
-      totalITC: pos.filter(p => p.itcEligible).reduce((s, p) => s + p.gst + p.igst, 0),
-      cgst: pos.reduce((s, p) => s + p.cgst, 0),
-      sgst: pos.reduce((s, p) => s + p.sgst, 0),
-      igst: pos.reduce((s, p) => s + p.igst, 0),
+      totalITC: pos.filter(p => p.itcEligible && p.itcCategory !== 'INELIGIBLE').reduce((s, p) => s + p.gst, 0),
+      cgst: pos.filter(p => p.itcEligible && p.itcCategory !== 'INELIGIBLE').reduce((s, p) => s + p.cgst, 0),
+      sgst: pos.filter(p => p.itcEligible && p.itcCategory !== 'INELIGIBLE').reduce((s, p) => s + p.sgst, 0),
+      igst: pos.filter(p => p.itcEligible && p.itcCategory !== 'INELIGIBLE').reduce((s, p) => s + p.igst, 0),
     },
     itcClassification: {
       inputs: sumITC(itcInputs),
@@ -282,8 +290,8 @@ export async function generateGSTR2(period: string) {
       supplier: po.supplier.name, gstin: po.supplier.gstNumber || '',
       taxableValue: po.subtotal - po.discount,
       cgst: po.cgst, sgst: po.sgst, igst: po.igst,
-      totalGST: po.gst + po.igst,
-      itcEligible: po.itcEligible ? po.gst + po.igst : 0,
+      totalGST: po.gst,
+      itcEligible: po.itcEligible && po.itcCategory !== 'INELIGIBLE' ? po.gst : 0,
       itcCategory: po.itcCategory,
       isRCM: po.isRCM,
     })),
@@ -304,6 +312,12 @@ export async function generateGSTR2(period: string) {
 export async function generateGSTR3B(period: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
+  const [g1Existing, g2Existing] = await Promise.all([
+    prisma.gSTReturn.findFirst({ where: { returnType: 'GSTR1', period } }),
+    prisma.gSTReturn.findFirst({ where: { returnType: 'GSTR2', period } }),
+  ])
+  if (g1Existing?.status !== 'FILED') await generateGSTR1(period)
+  if (g2Existing?.status !== 'FILED') await generateGSTR2(period)
   const [gstr1Rec, gstr2Rec] = await Promise.all([
     prisma.gSTReturn.findFirst({ where: { returnType: 'GSTR1', period } }),
     prisma.gSTReturn.findFirst({ where: { returnType: 'GSTR2', period } }),
@@ -315,13 +329,14 @@ export async function generateGSTR3B(period: string) {
   const g2summary = (g2.summary as Record<string, number>) || {}
   const g2itc = (g2.itcClassification as Record<string, Record<string, number>>) || {}
   const g1nil = (g1.nilExempt as Record<string, number>) || {}
+  const g1notes = ((g1.totals as Record<string, unknown>)?.creditNotes as Record<string, number>) || {}
 
-  // Table 3.1 — Outward taxable supplies
+  // Table 3.1 — Outward taxable supplies, net of credit notes issued in the period
   const outwardTaxable = {
-    a_taxable: g1totals.taxableValue || 0,
-    a_cgst: g1totals.cgst || 0,
-    a_sgst: g1totals.sgst || 0,
-    a_igst: g1totals.igst || 0,
+    a_taxable: (g1totals.taxableValue || 0) - (g1notes.taxableValue || 0),
+    a_cgst: (g1totals.cgst || 0) - (g1notes.cgst || 0),
+    a_sgst: (g1totals.sgst || 0) - (g1notes.sgst || 0),
+    a_igst: (g1totals.igst || 0) - (g1notes.igst || 0),
     a_cess: g1totals.cess || 0,
     b_zeroRated: 0,
     c_nil: (g1nil.nilRated || 0) + (g1nil.exempt || 0),

@@ -35,7 +35,7 @@ const routePermissions: Record<string, string[]> = {
   '/staff-portal': ['STAFF', 'MANAGER'],
   '/settings': ['ADMIN'],
   '/staff': ['ADMIN', 'MANAGER'],
-  '/payroll': ['ADMIN', 'MANAGER'],
+  '/payroll': ['ADMIN'], // salaries and loans: same as the menu, which only shows it to admins
   '/billing': ['ADMIN', 'MANAGER'],
   '/drafts': ['ADMIN', 'MANAGER'],
   '/whatsapp-marketing': ['ADMIN', 'MANAGER'],
@@ -51,6 +51,15 @@ const routePermissions: Record<string, string[]> = {
   '/financials': ['ADMIN'],
   '/accounting': ['ADMIN', 'MANAGER'],
   '/accounts': ['ADMIN', 'MANAGER'],
+  // Screens the menu hides from staff were still reachable by typing the address.
+  '/gst': ['ADMIN', 'MANAGER'],
+  '/indiamart-leads': ['ADMIN', 'MANAGER'],
+  '/social-inbox': ['ADMIN', 'MANAGER'],
+  '/facebook-inbox': ['ADMIN', 'MANAGER'],
+  '/instagram-inbox': ['ADMIN', 'MANAGER'],
+  '/broadcasts': ['ADMIN', 'MANAGER'],
+  '/automations': ['ADMIN', 'MANAGER'],
+  '/marketing': ['ADMIN', 'MANAGER'],
 }
 
 export async function middleware(req: NextRequest) {

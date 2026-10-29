@@ -441,7 +441,8 @@ export async function assignStaff(...args: Parameters<typeof _assignStaff>): Pro
 }
 
 async function _assignStaff(orderId: number, staffId: number) {
-  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
+  // Handing a job to someone is a manager's call; staff update the jobs they were given.
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Only a manager can assign a fabrication job' } as never }
   const staff = await prisma.staff.findUnique({ where: { id: staffId }, select: { name: true } })
   if (!staff) return { success: false, error: 'Staff not found' }
 

@@ -17,7 +17,7 @@ export async function getAttendanceSummaryForPayroll(...args: Parameters<typeof 
 }
 
 async function _getAttendanceSummaryForPayroll(period: string) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied', data: [] } }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required', data: [] } }
 
   const [year, month] = period.split('-').map(Number)
   const monthStart = new Date(year, month - 1, 1)
@@ -171,7 +171,7 @@ export async function getPayrollReadiness(...args: Parameters<typeof _getPayroll
 }
 
 async function _getPayrollReadiness(period?: string) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
 
   const targetPeriod = period || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`
   const [year, month] = targetPeriod.split('-').map(Number)
@@ -259,7 +259,7 @@ export async function getStaffForPayroll(...args: Parameters<typeof _getStaffFor
 }
 
 async function _getStaffForPayroll() {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied', data: [] } }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required', data: [] } }
 
   const staff = await prisma.staff.findMany({
     where: { status: 'Active' },
@@ -281,7 +281,7 @@ export async function updateStaffPayrollInfo(...args: Parameters<typeof _updateS
 }
 
 async function _updateStaffPayrollInfo(data: unknown) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   const parsed = updateStaffPayrollSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -310,7 +310,7 @@ export async function getStaffLoans(...args: Parameters<typeof _getStaffLoans>):
 }
 
 async function _getStaffLoans(staffId?: number) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied', data: [] } }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required', data: [] } }
 
   const loans = await prisma.staffLoan.findMany({
     where: staffId ? { staffId } : undefined,
@@ -325,7 +325,7 @@ export async function createStaffLoan(...args: Parameters<typeof _createStaffLoa
 }
 
 async function _createStaffLoan(data: unknown) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   const parsed = loanSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
@@ -562,7 +562,7 @@ export async function getPayrollHistory(...args: Parameters<typeof _getPayrollHi
 }
 
 async function _getPayrollHistory() {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied', data: [] } }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required', data: [] } }
 
   const runs = await prisma.payrollRun.findMany({
     orderBy: { period: 'desc' },
@@ -576,7 +576,7 @@ export async function getPayrollRun(...args: Parameters<typeof _getPayrollRun>):
 }
 
 async function _getPayrollRun(id: number) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
 
   const run = await prisma.payrollRun.findUnique({
     where: { id },
@@ -605,7 +605,7 @@ export async function getAllPayslips(...args: Parameters<typeof _getAllPayslips>
 }
 
 async function _getAllPayslips(period?: string) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied', data: [] } }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required', data: [] } }
 
   const payslips = await prisma.payslip.findMany({
     where: period ? { payrollRun: { period } } : undefined,

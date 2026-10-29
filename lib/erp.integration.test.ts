@@ -22,7 +22,12 @@ import { createStoneLot } from '@/app/actions/stone-inventory'
 import { approvePurchaseOrder, receivePurchaseOrder, cancelPurchaseOrder, createPurchaseOrder, updatePurchaseOrder, recordPurchaseOrderPayment } from '@/app/actions/purchases'
 import { cancelInvoice, createInvoice, updateInvoice, finalizeHeldInvoice, createCreditNote, recordPayment, recordCustomerRefund } from '@/app/actions/invoices'
 import { createOrder, updateOrderStatus } from '@/app/actions/orders'
-import { createProduct, bulkImportProducts } from '@/app/actions/products'
+import { createProduct, bulkImportProducts, getProducts, updateProduct } from '@/app/actions/products'
+import { createLead, getLeads } from '@/app/actions/leads'
+import { createDailyPayment } from '@/app/actions/payments'
+import { createCustomOrder, assignStaff } from '@/app/actions/custom-orders'
+import { generateGSTR3B } from '@/app/actions/gst'
+import { generatePayroll, getStaffForPayroll } from '@/app/actions/payroll'
 import { moveOrderToDraft, moveQuotationToDraft, movePurchaseOrderToDraft } from '@/app/actions/drafts'
 import { createQuotation, updateQuotationStatus, convertQuotationToInvoice } from '@/app/actions/quotations'
 import { getReplenishment, orderReplenishment, saveReorderRule, saveVendorPrice } from '@/app/actions/replenishment'
@@ -1294,6 +1299,102 @@ describe.skipIf(!url)('ERP document flows (Odoo parity)', () => {
     const receipt = await db.stockPicking.findFirstOrThrow({ where: { purchaseOrderId: plain.data.id, status: 'READY' }, include: { lines: true } })
     expect((await validatePicking({ id: receipt.id, createBackorder: false, lines: [{ lineId: receipt.lines[0].id, doneQty: 2 }] })).success).toBe(true)
     expect(await db.productBatch.count({ where: { productId: product.id, batchNumber: { startsWith: 'PO-' } } })).toBe(1)
+  })
+
+
+  // ─── Staff flows: what a signed-in STAFF user can and cannot do ───────
+  const asRole = async (role: 'ADMIN' | 'MANAGER' | 'STAFF', staffId: number | null, run: () => Promise<void>) => {
+    const { requireAuth, requireRole } = await import('@/lib/auth-helpers')
+    const session = { user: { id: '1', name: `Test ${role}`, role, email: '', staffId: staffId === null ? null : String(staffId) } }
+    vi.mocked(requireAuth).mockImplementation(async () => session as never)
+    vi.mocked(requireRole).mockImplementation(async (...roles: string[]) => {
+      if (!roles.includes(role)) throw new Error('Forbidden')
+      return session as never
+    })
+    try { await run() } finally {
+      const admin = { user: { id: '1', name: 'Test Manager', role: 'ADMIN' } }
+      vi.mocked(requireAuth).mockImplementation(async () => admin as never)
+      vi.mocked(requireRole).mockImplementation(async () => admin as never)
+    }
+  }
+
+  it('STAFF: can do their own work (expenses, leads, payments, store orders, reading products)', async () => {
+    const staff = await db.staff.create({ data: { name: 'Floor Staff', role: 'Sales Executive', phone: contactPhone(), email: `staff-${crypto.randomUUID()}@test.local`, joinDate: new Date() } })
+    const category = await db.expenseCategory.create({ data: { name: `Tea ${crypto.randomUUID().slice(0, 6)}` } })
+    const product = await newProduct(20)
+    await asRole('STAFF', staff.id, async () => {
+      const expense = await createExpense({ date: new Date().toISOString().slice(0, 10), categoryId: category.id, amount: 80, description: 'Tea for customers', paymentMode: 'Cash' })
+      expect(expense.success, expense.success ? '' : expense.error).toBe(true)
+      // A staff expense waits for approval and is recorded against that staff member.
+      const saved = await db.expense.findFirstOrThrow({ where: { categoryId: category.id } })
+      expect([saved.status, saved.staffId]).toEqual(['Pending', staff.id])
+
+      expect((await createLead({ name: 'Walk Lead', phone: contactPhone(), source: 'Showroom Visit', interest: 'Floor tiles' })).success).toBe(true)
+      expect((await getLeads()).success).toBe(true)
+      expect((await getProducts()).success).toBe(true)
+
+      const payment = await createDailyPayment({ amount: 500, method: 'Cash', type: 'IN' })
+      expect(payment.success, payment.success ? '' : payment.error).toBe(true)
+      expect((await db.dailyPayment.findFirstOrThrow({ orderBy: { id: 'desc' } })).receivedByStaffId).toBe(staff.id)
+
+      const order = await createOrder({ customer: 'Counter Customer', phone: contactPhone(), productId: product.id, quantity: 1, amount: 590, source: 'STORE', payment: 'PAID', godownId })
+      expect(order.success, order.success ? '' : order.error).toBe(true)
+    })
+  })
+
+  it('STAFF: cannot touch money, purchasing, accounts, GST, payroll or catalogue changes', async () => {
+    const product = await newProduct(5)
+    const sale = await posInvoice(product, { quantity: 1 })
+    if (!sale.success || !sale.data) throw new Error(sale.error)
+    const po = await createPurchaseOrder({ supplierId, items: [{ productId: product.id, name: product.name, sku: product.sku, quantity: 2, unitCost: 100, gstRate: 18 }] })
+    if (!po.success || !po.data) throw new Error(po.error)
+
+    await asRole('STAFF', null, async () => {
+      const denied = async (label: string, run: () => Promise<{ success: boolean; error?: string } | undefined>) => {
+        const result = await run()
+        expect(result?.success, `${label} should be refused for staff`).toBe(false)
+      }
+      await denied('create invoice', () => posInvoice(product, { quantity: 1 }))
+      await denied('credit note', () => createCreditNote({ invoiceId: sale.data.id, amount: 100, reason: 'x' }))
+      await denied('cancel invoice', () => cancelInvoice(sale.data.id))
+      await denied('refund', () => recordCustomerRefund({ invoiceId: sale.data.id, amount: 10 }))
+      await denied('approve PO', () => approvePurchaseOrder(po.data.id))
+      await denied('pay supplier', () => recordPurchaseOrderPayment(po.data.id, 10))
+      await denied('create PO', () => createPurchaseOrder({ supplierId, items: [{ productId: product.id, name: product.name, sku: product.sku, quantity: 1, unitCost: 1, gstRate: 18 }] }))
+      await denied('profit and loss', () => getProfitAndLoss(...WIDE))
+      await denied('balance sheet', () => getBalanceSheet(WIDE[1]))
+      await denied('void journal', () => voidJournalEntry(1))
+      await denied('approve expense', () => approveExpense(1))
+      await denied('reject expense', () => rejectExpense(1))
+      await denied('GST return', () => generateGSTR1(period()))
+      await denied('GSTR-3B', () => generateGSTR3B(period()))
+      await denied('payroll run', () => generatePayroll({ period: period() }))
+      await denied('payroll staff list', () => getStaffForPayroll())
+      await denied('post vendor bill', () => postVendorBill(1))
+      await denied('quotation to invoice', () => convertQuotationToInvoice(1))
+      await denied('create sales order', () => createSalesOrder({ customer: 'X', phone: contactPhone(), godownId, lines: [{ productId: product.id, quantity: 1, price: 100, gstRate: 18 }] }))
+      await denied('validate a receipt', () => validatePicking({ id: 1, createBackorder: false, lines: [{ lineId: 1, doneQty: 1 }] }))
+      await denied('edit a product', () => updateProduct(product.id, { price: 1 }))
+      await denied('import products', () => bulkImportProducts([{ name: 'X', sku: `S-${crypto.randomUUID().slice(0, 5)}`, category: 'ERP Tiles', price: 1, instock: 0 }] as never))
+      await denied('assign a fabrication job', () => assignStaff(1, 1))
+    })
+    // Nothing changed: the invoice and PO are as they were.
+    expect((await db.invoice.findUniqueOrThrow({ where: { id: sale.data.id } })).invoiceStatus).toBe('ACTIVE')
+    expect((await db.purchaseOrder.findUniqueOrThrow({ where: { id: po.data.id } })).status).toBe('DRAFT')
+  })
+
+  it('MANAGER: runs billing and purchasing but not payroll or the financial reports', async () => {
+    const product = await newProduct(5)
+    await asRole('MANAGER', null, async () => {
+      const sale = await posInvoice(product, { quantity: 1 })
+      expect(sale.success, sale.success ? '' : sale.error).toBe(true)
+      const po = await createPurchaseOrder({ supplierId, items: [{ productId: product.id, name: product.name, sku: product.sku, quantity: 1, unitCost: 100, gstRate: 18 }] })
+      expect(po.success).toBe(true)
+      expect((await generateGSTR1(period())).success).toBe(true)
+      expect((await getProfitAndLoss(...WIDE)).success).toBe(false)
+      expect((await getBalanceSheet(WIDE[1])).success).toBe(false)
+      expect((await getStaffForPayroll()).success).toBe(false)
+    })
   })
 
 })

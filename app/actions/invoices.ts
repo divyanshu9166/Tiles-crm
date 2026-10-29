@@ -72,7 +72,7 @@ async function consumeInvoiceInventory(tx: any, invoiceId: number, items: Invent
   }
 
   for (const [productId, quantity] of standardQty) {
-    const product = await tx.product.findUnique({ where: { id: productId }, select: { id: true, stock: true, isSlabTracked: true } })
+    const product = await tx.product.findUnique({ where: { id: productId }, select: { id: true, name: true, stock: true, isSlabTracked: true } })
     if (!product) throw new Error('One of the invoice products no longer exists')
     if (product.isSlabTracked) throw new Error('Slab-tracked stone must be invoiced with a selected physical slab')
 
@@ -99,7 +99,8 @@ async function consumeInvoiceInventory(tx: any, invoiceId: number, items: Invent
 
     const currentQty = stock?.quantity || 0
     if (currentQty < quantity) {
-      throw new Error(`Insufficient stock for product ${productId} in the selected godown`)
+      const where = await tx.godown.findUnique({ where: { id: godownId }, select: { name: true } })
+      throw new Error(`Not enough stock of ${product.name} in ${where?.name || 'the selected godown'}: ${currentQty} available, ${quantity} needed. Pick another godown or receive stock first.`)
     }
     const nextQty = currentQty - quantity
     await tx.godownStock.upsert({

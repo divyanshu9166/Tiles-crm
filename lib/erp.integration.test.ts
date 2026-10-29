@@ -39,7 +39,7 @@ import { generateGSTR1, generateGSTR2 } from '@/app/actions/gst'
 import { createExpense, updateExpense, rejectExpense, approveExpense } from '@/app/actions/expenses'
 import { creditNoteSplit } from '@/lib/erp/gst-math'
 import { computeForecast } from '@/lib/erp/forecast'
-import { getMRPAnalysis } from '@/app/actions/manufacturing'
+import { getMRPAnalysis, createBOM, createProductionOrder, startProduction, completeProduction } from '@/app/actions/manufacturing'
 import { saveSalesTeam, assignUnassignedLeads, getTeamDashboard } from '@/app/actions/sales-teams'
 import { getAccountsDesk, executeFollowUp, registerBillPayment, applyPoAdvancesToBill } from '@/app/actions/accounts-desk'
 import { savePricelist, savePricelistItem, assignContactPricelist, getPricesFor } from '@/app/actions/pricelists'
@@ -1188,6 +1188,11 @@ describe.skipIf(!url)('ERP document flows (Odoo parity)', () => {
     const results = await Promise.all([1, 2].map(() => convertQuotationToInvoice(double.id)))
     expect(results.filter(result => result.success)).toHaveLength(1)
     expect(await db.invoice.count({ where: { notes: { contains: `Converted from quotation ${double.displayId}` } } })).toBe(1)
+    // Once invoiced, the status can no longer be changed either.
+    const invoicedStatus = await updateQuotationStatus({ id: double.id, status: 'REJECTED' })
+    expect(invoicedStatus.success).toBe(false)
+    expect(invoicedStatus.error).toMatch(/already invoiced/)
+    expect((await db.quotation.findUniqueOrThrow({ where: { id: double.id } })).status).not.toBe('REJECTED')
   })
 
   it('M25: cancelling a parked bill that was finalized a moment earlier still puts the stock back', async () => {
@@ -1395,6 +1400,35 @@ describe.skipIf(!url)('ERP document flows (Odoo parity)', () => {
       expect((await getBalanceSheet(WIDE[1])).success).toBe(false)
       expect((await getStaffForPayroll()).success).toBe(false)
     })
+  })
+
+
+  it('production: materials leave and finished goods arrive through the stock ledger, legacy stock included', async () => {
+    const finished = await newProduct(0)
+    const raw = await newProduct(20)
+    const legacy = await newProduct(0)
+    await db.product.update({ where: { id: legacy.id }, data: { stock: 8 } }) // stock from before locations existed
+    const bom = await createBOM({ name: `BOM ${crypto.randomUUID().slice(0, 6)}`, finishedProductId: finished.id, items: [{ rawMaterialId: raw.id, quantity: 2 }, { rawMaterialId: legacy.id, quantity: 1 }] })
+    if (!bom.success || !bom.data) throw new Error(bom.error)
+    const order = await createProductionOrder({ bomId: bom.data.id, plannedQty: 3 })
+    if (!order.success || !order.data) throw new Error(order.error)
+    expect(order.data.displayId).toMatch(/^PRD-\d{4}$/)
+    expect((await startProduction(order.data.id)).success).toBe(true)
+    const done = await completeProduction({
+      productionOrderId: order.data.id, actualQty: 3,
+      consumptions: [{ rawMaterialId: raw.id, issuedQty: 6, actualQty: 6 }, { rawMaterialId: legacy.id, issuedQty: 3, actualQty: 3 }],
+    })
+    expect(done.success, done.success ? '' : done.error).toBe(true)
+    expect(await stockOf(raw.id)).toBe(14)
+    expect(await stockOf(legacy.id)).toBe(5)
+    expect(await stockOf(finished.id)).toBe(3)
+    // Every move left a ledger row tied to the order, so the books can value it.
+    const rows = await db.stockLedger.findMany({ where: { referenceType: 'Production', referenceId: order.data.id } })
+    expect(rows.map(row => row.quantity).sort((a, b) => a - b)).toEqual([-6, -3, 3])
+    // Completing twice cannot consume the materials a second time.
+    const again = await completeProduction({ productionOrderId: order.data.id, actualQty: 3, consumptions: [{ rawMaterialId: raw.id, issuedQty: 6, actualQty: 6 }, { rawMaterialId: legacy.id, issuedQty: 3, actualQty: 3 }] })
+    expect(again.success).toBe(false)
+    expect(await stockOf(raw.id)).toBe(14)
   })
 
 })

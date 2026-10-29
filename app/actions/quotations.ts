@@ -215,7 +215,7 @@ async function quotationLockReason(quotationId: number, displayId: string) {
   const order = await prisma.salesOrder.findUnique({ where: { quotationId }, select: { displayId: true, status: true } })
   if (order && order.status !== 'CANCELLED') return `It is confirmed as sales order ${order.displayId}. Change the order instead.`
   const marker = `Converted from quotation ${displayId}`
-  const exact = new RegExp(`${marker.replace(/[.*+?^${}()|[\]\\]/g, '\\async function _getQuotations() {')}(?!\\d)`)
+  const exact = new RegExp(`${marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\d)`)
   const invoices = await prisma.invoice.findMany({ where: { notes: { contains: marker }, invoiceStatus: 'ACTIVE' }, select: { displayId: true, notes: true } })
   const invoice = invoices.find(row => exact.test(row.notes || ''))
   if (invoice) return `It is already invoiced as ${invoice.displayId}.`

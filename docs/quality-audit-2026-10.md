@@ -29,7 +29,7 @@ Status: ☐ open · ☑ fixed (with a regression test)
 | S14 ☑ | Medium | Sessions never revoked: deactivated user / role change only applies after 7-day cookie expiry | `lib/auth-helpers` |
 | S15 ☑ | Medium | Password oracles: `updatePassword` unauthenticated for any `userId`; staff-portal password check; no rate limits | `app/actions/auth.ts:68`, `staff.ts:248` |
 | S16 ☑ | Medium | Cleanup cron fails open without `CRON_SECRET` and deletes WhatsApp data on GET; `/api/download-echo` is an SSRF proxy; `/api/debug` dumps data | `app/api/cron/cleanup`, `app/api/download-echo`, `app/api/debug` |
-| S17 ◐ | Low | Non-constant-time secret comparisons; 5 cron routes redirected to /login (never run); role mismatches (financials, payroll); mass assignment in `updateMarketplaceChannel` | various |
+| S17 ☑ | Low | Non-constant-time secret comparisons; 5 cron routes redirected to /login (never run); role mismatches (financials, payroll); mass assignment in `updateMarketplaceChannel` | various |
 
 Unauthenticated actions per file: expenses 18, custom-orders 15, manufacturing 15, drafts 10, payments 9, email-campaigns 8, leads 8, quotations 7, staff 7, calls 5, channels 5, invoices 5, notifications 5, appointments 4, gst 4, settings 4, campaigns 3, orders 3, purchases 3, reviews 3, walkins 3, indiamart 2, auth/contacts/dashboard/financials/godowns 1 each.
 Already fully guarded: accounting, accounts-desk, batches, chatter, dealers, erp-settings, inventory-counts, landed-costs, operations, payroll, pricelists, products, replenishment, sales-orders, sales-teams, stock-groups, stone-inventory, vendor-bills.
@@ -78,15 +78,15 @@ for the cleanup cron; `SESSION_SECRET` (32+ chars) is mandatory.
 | M14 ☑ | High | Vendor bill ignores PO discount → AP and input GST overstated, bill never fully payable | `vendor-bills.ts:136` |
 | M15 ☑ | High | GST on charges: quotation taxes installation/freight/loading, invoice and SO don't | quote ₹1,26,260 vs bill ₹1,25,000 |
 | M16 ☑ | High | Re-invoicing a sales order after cancelling the first invoice loses freight/loading charges | `sales-orders.ts:395,445` |
-| M17 ☐ | Medium | Applying a physical count erases sales made after counting | `inventory-counts.ts:187` |
-| M18 ☐ | Medium | AVCO wrong when a receipt has the same product twice | `stock-ops.ts:177-212` |
-| M19 ☐ | Medium | PO edit racing approval → receipt loses its PO link → second full receipt | `purchases.ts:367-399` |
-| M20 ☐ | Medium | PO cancel strands advance payments; payments accepted on unapproved POs | `purchases.ts:648-701` |
-| M21 ☐ | Medium | Manufacturing bypasses `adjustStock` (legacy stock wiped, no ledger without godowns, random location) | `manufacturing.ts:95-185` |
-| M22 ☐ | Medium | Staff "Stock Out" skips the batch check; any role can post stock in/out | `staff.ts:596` |
-| M23 ☐ | Medium | Quotations editable / status-changeable after confirmation; double-click "Create invoice" makes two | `quotations.ts:408-674` |
-| M24 ◐ | Medium | Paise truncated instead of rounded; screen vs saved off by ₹1 | `invoices.ts:34`, `quotations/page.js:279` |
-| M25 ☐ | Low | Held-invoice delete racing finalize; count line edit after apply; PO approval total re-read; slab moves have no ledger history | various |
+| M17 ☑ | Medium | Applying a physical count erases sales made after counting | `inventory-counts.ts:187` |
+| M18 ☑ | Medium | AVCO wrong when a receipt has the same product twice | `stock-ops.ts:177-212` |
+| M19 ☑ | Medium | PO edit racing approval → receipt loses its PO link → second full receipt | `purchases.ts:367-399` |
+| M20 ☑ | Medium | PO cancel strands advance payments; payments accepted on unapproved POs | `purchases.ts:648-701` |
+| M21 ☑ | Medium | Manufacturing bypasses `adjustStock` (legacy stock wiped, no ledger without godowns, random location) | `manufacturing.ts:95-185` |
+| M22 ☑ | Medium | Staff "Stock Out" skips the batch check; any role can post stock in/out | `staff.ts:596` |
+| M23 ☑ | Medium | Quotations editable / status-changeable after confirmation; double-click "Create invoice" makes two | `quotations.ts:408-674` |
+| M24 ☑ | Medium | Paise truncated instead of rounded; screen vs saved off by ₹1 | `invoices.ts:34`, `quotations/page.js:279` |
+| M25 ☑ | Low | Held-invoice delete racing finalize; count line edit after apply; PO approval total re-read; slab moves have no ledger history | various |
 
 ---
 
@@ -118,6 +118,29 @@ M1–M16 fixed, each with an integration test in `lib/erp.integration.test.ts` (
 - M17–M23, M25 (medium/low) not started.
 - SQFT-priced products (none in the data today) keep deducting their typed quantity, not boxes for the area;
   confirm how such products are stocked before changing it.
+
+
+### Phase 2 follow-up (branch `books-phase`)
+
+M14 follow-up and M17–M25 closed. M17 (count snapshot), M18 (same product twice on a receipt) and M22 (batch check
+on staff stock-out) were already fixed in the Sales & Inventory pass; M24 is covered by the shared `line-math`.
+
+- **M14:** receipt lines carry the PO's discounted unit cost, so stock is valued net of the discount and the supplier
+  bill clears GRNI.
+- **M19:** PO edit and approval re-check the status (and the approval limit against the current total) under the row lock.
+- **M20:** no payments on draft POs; the balance is checked under the lock; a PO with money paid cannot be cancelled
+  (the advance would be lost track of).
+- **M21:** production receipts and issues use `adjustStock` (ledger row, legacy stock kept, default location).
+- **M23:** a quotation confirmed as a sales order or invoiced can't be edited or re-statused; a double click on
+  "Create invoice" makes one invoice (queued per quotation within a server process).
+- **M25:** cancelling a parked bill that was finalized a moment earlier puts the stock back (fresh read after the claim).
+  Count line edits after apply and the PO approval total were already guarded.
+- **S17:** `secretMatches()` (constant time) for every API secret; the five cron routes are reachable (middleware);
+  financial report actions are admin-only like their screen.
+
+**Open:** slab status changes (sold, damaged, moved) still have no stock-ledger history; a double click on
+"Create invoice" is serialized per server process only (fine for one instance).
+
 
 ---
 
@@ -165,14 +188,16 @@ re-audited. 117 integration checks pass, including 7 new `P3:` cases.
 - Lead and walk-in screens have "New quotation", which opens the form with the customer filled in.
 - The sales order form footer shows untaxed amount, GST and total, using the same math as the server.
 
-**Open (next pass)**
+**Done in the follow-up pass**
+- Transfer lines show what the source godown holds and block more than that; bulk import skips blank rows, reports
+  duplicate SKUs by sheet row; a BOX product needs coverage per box.
+- Invoices made from a quotation carry the converting user's salesperson (team dashboards count them).
+
+**Open (needs a product decision or a larger change)**
 - Per-godown replenishment and PO destination godown; shade/batch capture at receipt; batches per godown.
-- Transfer lines don't show source on-hand; bulk import doesn't flag duplicates/blank rows; BOX products don't
-  require coverage.
 - Store orders still deduct stock without a GST invoice; staff can't reach Billing, so this is their only way to
   sell. Decide whether staff should use POS or quotations instead.
 - Large pages (`quotations`, `billing`, `inventory`, 2,300–2,800 lines each) should be split into routes.
-- Invoices from quotations carry no salesperson (team dashboard undercounts).
 
 ---
 

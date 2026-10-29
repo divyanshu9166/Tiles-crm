@@ -22,6 +22,7 @@ import { createStoneLot } from '@/app/actions/stone-inventory'
 import { approvePurchaseOrder, receivePurchaseOrder, cancelPurchaseOrder, createPurchaseOrder, updatePurchaseOrder, recordPurchaseOrderPayment } from '@/app/actions/purchases'
 import { cancelInvoice, createInvoice, updateInvoice, finalizeHeldInvoice, createCreditNote, recordPayment, recordCustomerRefund } from '@/app/actions/invoices'
 import { createOrder, updateOrderStatus } from '@/app/actions/orders'
+import { createProduct, bulkImportProducts } from '@/app/actions/products'
 import { moveOrderToDraft, moveQuotationToDraft, movePurchaseOrderToDraft } from '@/app/actions/drafts'
 import { createQuotation, updateQuotationStatus, convertQuotationToInvoice } from '@/app/actions/quotations'
 import { getReplenishment, orderReplenishment, saveReorderRule, saveVendorPrice } from '@/app/actions/replenishment'
@@ -1220,6 +1221,25 @@ describe.skipIf(!url)('ERP document flows (Odoo parity)', () => {
     const billEntry = await db.journalEntry.findUniqueOrThrow({ where: { sourceKey: `BILL:${bill.data.id}` }, include: { lines: true } })
     expect(stockEntry.totalDebit).toBe(900)
     expect(billEntry.lines.some(line => line.debit === 900)).toBe(true)
+  })
+
+
+  it('catalogue: a box product needs coverage, and an import reports duplicate SKUs and skips blank rows by sheet row', async () => {
+    const base = { name: 'Boxed tile', category: 'ERP Tiles', price: 500, costPrice: 300, stock: 0, unitOfMeasure: 'BOX' }
+    const missing = await createProduct({ ...base, sku: `BX-${crypto.randomUUID().slice(0, 6)}` })
+    expect(missing.success).toBe(false)
+    expect(missing.error).toMatch(/coverage/i)
+    expect((await createProduct({ ...base, sku: `BX-${crypto.randomUUID().slice(0, 6)}`, coveragePerBox: 15 })).success).toBe(true)
+
+    const sku = `IMP-${crypto.randomUUID().slice(0, 6)}`
+    const result = await bulkImportProducts([
+      { name: 'Import A', sku, category: 'ERP Tiles', price: 100, instock: 0, unitOfMeasure: 'PCS' },
+      { name: '', sku: '', category: '', price: '', instock: '' },
+      { name: 'Import B', sku, category: 'ERP Tiles', price: 100, instock: 0, unitOfMeasure: 'PCS' },
+    ] as never)
+    if (!result.success || !result.data) throw new Error(String(result.error))
+    expect(result.data.created).toBe(1)
+    expect(result.data.errors).toEqual([{ row: 3, message: `SKU ${sku} already exists` }])
   })
 
 })

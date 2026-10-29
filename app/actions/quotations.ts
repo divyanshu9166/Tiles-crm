@@ -660,11 +660,14 @@ export async function convertQuotationToInvoice(...args: Parameters<typeof _conv
 }
 
 async function _convertQuotationToInvoice(quotationId: number) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
-  return serialized(quotationId, () => convertQuotationNow(quotationId))
+  let session
+  try { session = await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
+  // The person who invoices it is the seller of record, so team dashboards count the sale.
+  const salespersonId = Number(session.user.staffId) || undefined
+  return serialized(quotationId, () => convertQuotationNow(quotationId, salespersonId))
 }
 
-async function convertQuotationNow(quotationId: number) {
+async function convertQuotationNow(quotationId: number, salespersonId?: number) {
   const quotation = await prisma.quotation.findUnique({
     where: { id: quotationId },
     include: {
@@ -728,6 +731,7 @@ async function convertQuotationNow(quotationId: number) {
     discountType: quotation.discountType === 'FLAT' ? 'flat' : 'percent',
     payments: [{ amount: 0, method: 'Cash', notes: marker }],
     isHeld: true,
+    salespersonId,
     freightCharge: quotation.freightCharge,
     loadingCharge: quotation.loadingCharge,
     installationCharge: quotation.installationCharge,

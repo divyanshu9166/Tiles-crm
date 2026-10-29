@@ -99,6 +99,15 @@ export default function GodownsPage() {
     setSubmitting(false)
   }
 
+  // What the source godown holds right now, so a transfer is never asked for more than exists.
+  const onHandAtSource = (productId) => {
+    if (!transferForm.fromGodownId || !productId) return null
+    return stocks
+      .filter(row => String(row.godownId) === String(transferForm.fromGodownId) && String(row.productId ?? row.product?.id) === String(productId))
+      .reduce((sum, row) => sum + (row.quantity || 0), 0)
+  }
+  const transferTooMuch = transferForm.items.some(item => item.productId && onHandAtSource(item.productId) !== null && Number(item.quantity) > onHandAtSource(item.productId))
+
   const handleCreateTransfer = async () => {
     setSubmitting(true)
     const items = transferForm.items.filter(i => i.productId).map(i => {
@@ -553,9 +562,12 @@ export default function GodownsPage() {
               <div key={i} className="grid grid-cols-12 gap-2 mb-2">
                 <select value={item.productId} onChange={e => { const v = [...transferForm.items]; v[i].productId = e.target.value; setTransferForm(f => ({ ...f, items: v })) }} className="col-span-8 px-2 py-2 bg-surface border border-border rounded-lg text-sm text-foreground">
                   <option value="">Select Product</option>
-                  {products.map(p => <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>)}
+                  {products.map(p => {
+                    const held = onHandAtSource(p.id)
+                    return <option key={p.id} value={p.id}>{p.name} ({p.sku}){held === null ? '' : ` — ${held} at source`}</option>
+                  })}
                 </select>
-                <input type="number" min="1" value={item.quantity} onChange={e => { const v = [...transferForm.items]; v[i].quantity = e.target.value; setTransferForm(f => ({ ...f, items: v })) }} placeholder="Qty" className="col-span-3 px-2 py-2 bg-surface border border-border rounded-lg text-sm text-foreground" />
+                <input type="number" min="1" value={item.quantity} onChange={e => { const v = [...transferForm.items]; v[i].quantity = e.target.value; setTransferForm(f => ({ ...f, items: v })) }} placeholder="Qty" className={`col-span-3 px-2 py-2 bg-surface border rounded-lg text-sm text-foreground ${item.productId && onHandAtSource(item.productId) !== null && Number(item.quantity) > onHandAtSource(item.productId) ? 'border-red-500' : 'border-border'}`} title={item.productId && onHandAtSource(item.productId) !== null ? `${onHandAtSource(item.productId)} at the source godown` : undefined} />
                 <button onClick={() => setTransferForm(f => ({ ...f, items: f.items.filter((_, j) => j !== i) }))} className="col-span-1 text-red-400 hover:text-red-300 text-lg">×</button>
               </div>
             ))}
@@ -564,8 +576,8 @@ export default function GodownsPage() {
             <label className="text-sm text-muted mb-1 block">Notes</label>
             <textarea value={transferForm.notes} onChange={e => setTransferForm(p => ({ ...p, notes: e.target.value }))} rows={2} className={INP} />
           </div>
-          <button onClick={handleCreateTransfer} disabled={submitting || !transferForm.fromGodownId || !transferForm.toGodownId || !transferForm.items.some(i => i.productId)} className="w-full py-2.5 bg-accent text-white rounded-lg text-sm font-medium hover:bg-accent/90 disabled:opacity-50">
-            {submitting ? 'Creating...' : 'Create Transfer'}
+          <button onClick={handleCreateTransfer} disabled={submitting || transferTooMuch || !transferForm.fromGodownId || !transferForm.toGodownId || !transferForm.items.some(i => i.productId)} className="w-full py-2.5 bg-accent text-white rounded-lg text-sm font-medium hover:bg-accent/90 disabled:opacity-50">
+            {submitting ? 'Creating...' : transferTooMuch ? 'A quantity is more than the source holds' : 'Create Transfer'}
           </button>
         </div>
       </Modal>

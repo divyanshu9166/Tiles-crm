@@ -140,6 +140,7 @@ export async function createProduct(data: unknown) {
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
   const { category, warehouse, godownId, ...rest } = parsed.data
   if (rest.isSlabTracked && rest.stock > 0) return { success: false, error: 'Create the stone product with zero stock, then receive slabs into a Stone Lot.' }
+  if (rest.unitOfMeasure === 'BOX' && !rest.coveragePerBox && !rest.isSlabTracked) return { success: false, error: 'A product sold by the box needs its coverage per box (sq.ft). Enter it, or choose another unit.' }
   try {
     const product = await prisma.$transaction(async tx => {
       // Location and opening stock belong to the same transaction as the product.
@@ -278,7 +279,9 @@ async function _bulkImportProducts(rows: BulkProductRow[]) {
   if (!rows || rows.length === 0) return { success: false, error: 'No products to import' }
 
   const validRows = rows
-    .map(r => ({
+    .map((r, index) => ({
+      sheetRow: index + 1,
+      blank: !Object.values(r).some(value => String(value ?? '').trim() !== ''),
       name: String(r.name || '').trim(),
       sku: String(r.sku || '').trim(),
       category: String(r.category || 'General').trim(),
@@ -295,7 +298,7 @@ async function _bulkImportProducts(rows: BulkProductRow[]) {
       tilesPerBox: r.tilesPerBox === undefined || r.tilesPerBox === '' ? undefined : toRequiredNumber(r.tilesPerBox),
       materialCategory: r.materialCategory, godownId: r.godownId,
     }))
-
+    .filter(row => !row.blank)
 
   if (validRows.length === 0) {
     return { success: false, error: 'No valid rows found. Product name, price, and in-stock quantity are required.' }
@@ -313,7 +316,7 @@ async function _bulkImportProducts(rows: BulkProductRow[]) {
 
   const makeUniqueSku = (preferredSku: string) => {
     const baseSku = String(preferredSku || '').trim()
-    if (baseSku) { existingSkus.add(baseSku); return baseSku }
+    if (baseSku) return baseSku
     let candidate = baseSku || `PRD-${String(counter).padStart(4, '0')}`
     let suffix = 1
 
@@ -327,6 +330,13 @@ async function _bulkImportProducts(rows: BulkProductRow[]) {
 
   for (const row of validRows) {
     const sku = makeUniqueSku(row.sku)
+    // A SKU already in the catalogue, or repeated earlier in this file, is reported by row instead of creating a clash.
+    if (row.sku && existingSkus.has(sku)) {
+      skipped++
+      errors.push({ row: row.sheetRow, message: `SKU ${sku} already exists` })
+      continue
+    }
+    existingSkus.add(sku)
 
     const res = await createProduct({
       name: row.name,
@@ -348,7 +358,7 @@ async function _bulkImportProducts(rows: BulkProductRow[]) {
       created++
     } else {
       skipped++
-      errors.push({ row: created + skipped, message: res.error || 'Invalid row' })
+      errors.push({ row: row.sheetRow, message: res.error || 'Invalid row' })
     }
 
     counter++

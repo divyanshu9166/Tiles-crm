@@ -17,6 +17,7 @@ import { searchContacts, getCustomerProfile } from '@/app/actions/invoices';
 import { moveOrderToDraft } from '@/app/actions/drafts';
 import { useSearchParams } from 'next/navigation';
 import { getActiveVertical } from '@/lib/brand';
+import { confirmDialog } from '@/components/AlertToastProvider';
 
 const DEFAULT_STORE_NAME = getActiveVertical() === 'tiles' ? 'Tiles, Granite & Marble Showroom' : 'Furniture Store';
 
@@ -329,7 +330,7 @@ function OrdersPageInner() {
   };
 
   const handleOrderStatus = async (order, status) => {
-    if (status === 'CANCELLED' && !window.confirm(`Cancel order ${order.id}? The stock goes back to the godown. This cannot be undone.`)) return;
+    if (status === 'CANCELLED' && !await confirmDialog(`Cancel order ${order.id}? The stock goes back to the godown. This cannot be undone.`)) return;
     setStatusBusy(order.dbId);
     const res = await updateOrderStatus({ id: order.dbId, status });
     setStatusBusy(null);

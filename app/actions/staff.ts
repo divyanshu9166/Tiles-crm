@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { createStaffSchema, updateStaffSchema } from '@/lib/validations/staff'
@@ -124,7 +126,11 @@ const mapStaffForPortal = (s: any) => ({
 })
 
 // Public (login screen): only names of staff who can sign in.
-export async function getStaffLoginOptions() {
+export async function getStaffLoginOptions(...args: Parameters<typeof _getStaffLoginOptions>): Promise<Awaited<ReturnType<typeof _getStaffLoginOptions>>> {
+  return guarded('getStaffLoginOptions', () => _getStaffLoginOptions(...args))
+}
+
+async function _getStaffLoginOptions() {
   const staff = await prisma.staff.findMany({
     where: { status: 'Active', user: { isActive: true } },
     select: { id: true, name: true, role: true },
@@ -133,7 +139,11 @@ export async function getStaffLoginOptions() {
   return { success: true as const, data: staff }
 }
 
-export async function getStaff() {
+export async function getStaff(...args: Parameters<typeof _getStaff>): Promise<Awaited<ReturnType<typeof _getStaff>>> {
+  return guarded('getStaff', () => _getStaff(...args))
+}
+
+async function _getStaff() {
   let session
   try { session = await requireAuth() } catch { return { success: false, error: 'Please sign in again', data: [] } }
   const staff = await prisma.staff.findMany({
@@ -152,7 +162,11 @@ export async function getStaff() {
   }
 }
 
-export async function getStaffPortalProfile(staffId: number) {
+export async function getStaffPortalProfile(...args: Parameters<typeof _getStaffPortalProfile>): Promise<Awaited<ReturnType<typeof _getStaffPortalProfile>>> {
+  return guarded('getStaffPortalProfile', () => _getStaffPortalProfile(...args))
+}
+
+async function _getStaffPortalProfile(staffId: number) {
   let session
   try { session = await requireAuth() } catch { return { success: false, error: 'Unauthorized' } }
 
@@ -170,7 +184,11 @@ export async function getStaffPortalProfile(staffId: number) {
   return { success: true, data: mapStaffForPortal(staff) }
 }
 
-export async function getStaffMember(id: number) {
+export async function getStaffMember(...args: Parameters<typeof _getStaffMember>): Promise<Awaited<ReturnType<typeof _getStaffMember>>> {
+  return guarded('getStaffMember', () => _getStaffMember(...args))
+}
+
+async function _getStaffMember(id: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const staff = await prisma.staff.findUnique({
     where: { id },
@@ -185,7 +203,11 @@ export async function getStaffMember(id: number) {
   return { success: true, data: staff }
 }
 
-export async function createStaff(data: unknown) {
+export async function createStaff(...args: Parameters<typeof _createStaff>): Promise<Awaited<ReturnType<typeof _createStaff>>> {
+  return guarded('createStaff', () => _createStaff(...args))
+}
+
+async function _createStaff(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const parsed = createStaffSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -238,7 +260,11 @@ export async function createStaff(data: unknown) {
   return { success: true, data: staff }
 }
 
-export async function assignStaffLogin(staffId: number, loginUsername: string, loginPassword: string) {
+export async function assignStaffLogin(...args: Parameters<typeof _assignStaffLogin>): Promise<Awaited<ReturnType<typeof _assignStaffLogin>>> {
+  return guarded('assignStaffLogin', () => _assignStaffLogin(...args))
+}
+
+async function _assignStaffLogin(staffId: number, loginUsername: string, loginPassword: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
 
   const username = loginUsername.trim()
@@ -275,7 +301,11 @@ export async function assignStaffLogin(staffId: number, loginUsername: string, l
   return { success: true }
 }
 
-export async function verifyStaffPortalPassword(staffId: number, password: string) {
+export async function verifyStaffPortalPassword(...args: Parameters<typeof _verifyStaffPortalPassword>): Promise<Awaited<ReturnType<typeof _verifyStaffPortalPassword>>> {
+  return guarded('verifyStaffPortalPassword', () => _verifyStaffPortalPassword(...args))
+}
+
+async function _verifyStaffPortalPassword(staffId: number, password: string) {
   let session
   try { session = await requireStaffScope(staffId) } catch (error) { return { success: false, error: scopeError(error) } }
 
@@ -303,7 +333,11 @@ export async function verifyStaffPortalPassword(staffId: number, password: strin
   return { success: true }
 }
 
-export async function updateStaffMember(data: unknown) {
+export async function updateStaffMember(...args: Parameters<typeof _updateStaffMember>): Promise<Awaited<ReturnType<typeof _updateStaffMember>>> {
+  return guarded('updateStaffMember', () => _updateStaffMember(...args))
+}
+
+async function _updateStaffMember(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
 
   const parsed = updateStaffSchema.safeParse(data)
@@ -379,7 +413,11 @@ export async function updateStaffMember(data: unknown) {
   return { success: true }
 }
 
-export async function updateStaffTarget(staffId: number, data: {
+export async function updateStaffTarget(...args: Parameters<typeof _updateStaffTarget>): Promise<Awaited<ReturnType<typeof _updateStaffTarget>>> {
+  return guarded('updateStaffTarget', () => _updateStaffTarget(...args))
+}
+
+async function _updateStaffTarget(staffId: number, data: {
   monthlyTarget: number
   achieved: number
   commissionRate: number
@@ -412,7 +450,11 @@ function getDistance(lat1: number, lng1: number, lat2: number, lng2: number): nu
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
 
-export async function clockIn(staffId: number, gps?: { lat: number; lng: number }) {
+export async function clockIn(...args: Parameters<typeof _clockIn>): Promise<Awaited<ReturnType<typeof _clockIn>>> {
+  return guarded('clockIn', () => _clockIn(...args))
+}
+
+async function _clockIn(staffId: number, gps?: { lat: number; lng: number }) {
   let session
   try { session = await requireStaffScope(staffId) } catch (error) { return { success: false, error: scopeError(error) } }
   const { today, time } = getISTDate()
@@ -474,7 +516,11 @@ export async function clockIn(staffId: number, gps?: { lat: number; lng: number 
   return { success: true, data: { ...attendance, isLate, distance } }
 }
 
-export async function clockOut(staffId: number, gps?: { lat: number; lng: number }) {
+export async function clockOut(...args: Parameters<typeof _clockOut>): Promise<Awaited<ReturnType<typeof _clockOut>>> {
+  return guarded('clockOut', () => _clockOut(...args))
+}
+
+async function _clockOut(staffId: number, gps?: { lat: number; lng: number }) {
   try { await requireStaffScope(staffId) } catch (error) { return { success: false, error: scopeError(error) } }
   const { today, time } = getISTDate()
 
@@ -532,7 +578,11 @@ export async function clockOut(staffId: number, gps?: { lat: number; lng: number
   return { success: true, data: attendance }
 }
 
-export async function getMonthAttendance(staffId: number, year: number, month: number) {
+export async function getMonthAttendance(...args: Parameters<typeof _getMonthAttendance>): Promise<Awaited<ReturnType<typeof _getMonthAttendance>>> {
+  return guarded('getMonthAttendance', () => _getMonthAttendance(...args))
+}
+
+async function _getMonthAttendance(staffId: number, year: number, month: number) {
   try { await requireStaffScope(staffId) } catch (error) { return { success: false, error: scopeError(error), data: [] } }
   // month is 1-based (1 = January)
   const startDate = new Date(year, month - 1, 1)
@@ -558,7 +608,11 @@ export async function getMonthAttendance(staffId: number, year: number, month: n
   }
 }
 
-export async function getAttendance(staffId: number, days: number = 30) {
+export async function getAttendance(...args: Parameters<typeof _getAttendance>): Promise<Awaited<ReturnType<typeof _getAttendance>>> {
+  return guarded('getAttendance', () => _getAttendance(...args))
+}
+
+async function _getAttendance(staffId: number, days: number = 30) {
   try { await requireStaffScope(staffId) } catch (error) { return { success: false, error: scopeError(error), data: [] } }
   const since = new Date()
   since.setDate(since.getDate() - days)
@@ -571,7 +625,11 @@ export async function getAttendance(staffId: number, days: number = 30) {
   return { success: true, data: attendance }
 }
 
-export async function getDailyAttendanceReport() {
+export async function getDailyAttendanceReport(...args: Parameters<typeof _getDailyAttendanceReport>): Promise<Awaited<ReturnType<typeof _getDailyAttendanceReport>>> {
+  return guarded('getDailyAttendanceReport', () => _getDailyAttendanceReport(...args))
+}
+
+async function _getDailyAttendanceReport() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const { today } = getISTDate()
 
@@ -611,7 +669,11 @@ export async function getDailyAttendanceReport() {
   return { success: true, data: { report, summary: { total: allStaff.length, present, late, absent } } }
 }
 
-export async function staffStockUpdate(data: {
+export async function staffStockUpdate(...args: Parameters<typeof _staffStockUpdate>): Promise<Awaited<ReturnType<typeof _staffStockUpdate>>> {
+  return guarded('staffStockUpdate', () => _staffStockUpdate(...args))
+}
+
+async function _staffStockUpdate(data: {
   staffId: number
   productId: number
   action: string

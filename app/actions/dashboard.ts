@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { requireAuth } from '@/lib/auth-helpers'
 
@@ -18,7 +20,11 @@ const leadStatusLabel: Record<string, string> = {
   LOST: 'Lost',
 }
 
-export async function getDashboardStats() {
+export async function getDashboardStats(...args: Parameters<typeof _getDashboardStats>): Promise<Awaited<ReturnType<typeof _getDashboardStats>>> {
+  return guarded('getDashboardStats', () => _getDashboardStats(...args))
+}
+
+async function _getDashboardStats() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const today = new Date()
   today.setHours(0, 0, 0, 0)

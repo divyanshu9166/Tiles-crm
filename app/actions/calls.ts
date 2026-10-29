@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { createCallLogSchema } from '@/lib/validations/call'
@@ -9,7 +11,11 @@ import { callingAgentStatus } from '@/lib/calling-agent-status'
 import { requireAuth, requireRole } from '@/lib/auth-helpers'
 import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
 
-export async function getCallLogs() {
+export async function getCallLogs(...args: Parameters<typeof _getCallLogs>): Promise<Awaited<ReturnType<typeof _getCallLogs>>> {
+  return guarded('getCallLogs', () => _getCallLogs(...args))
+}
+
+async function _getCallLogs() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const calls = await prisma.callLog.findMany({
     include: { contact: true, transcript: true },
@@ -44,7 +50,11 @@ export async function getCallLogs() {
   }
 }
 
-export async function createCallLog(data: unknown) {
+export async function createCallLog(...args: Parameters<typeof _createCallLog>): Promise<Awaited<ReturnType<typeof _createCallLog>>> {
+  return guarded('createCallLog', () => _createCallLog(...args))
+}
+
+async function _createCallLog(data: unknown) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = createCallLogSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -78,7 +88,11 @@ export async function createCallLog(data: unknown) {
   return { success: true, data: callLog }
 }
 
-export async function getCallStats() {
+export async function getCallStats(...args: Parameters<typeof _getCallStats>): Promise<Awaited<ReturnType<typeof _getCallStats>>> {
+  return guarded('getCallStats', () => _getCallStats(...args))
+}
+
+async function _getCallStats() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const [total, completed, missed, totalDuration, aiHandled] = await Promise.all([
     prisma.callLog.count(),
@@ -124,7 +138,11 @@ export async function initiateAICall(phoneNumber: string, reason: string, custom
   }
 }
 
-export async function getAIAgentStatus() {
+export async function getAIAgentStatus(...args: Parameters<typeof _getAIAgentStatus>): Promise<Awaited<ReturnType<typeof _getAIAgentStatus>>> {
+  return guarded('getAIAgentStatus', () => _getAIAgentStatus(...args))
+}
+
+async function _getAIAgentStatus() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   return { success: true, data: await callingAgentStatus() }
 }

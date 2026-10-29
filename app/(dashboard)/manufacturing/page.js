@@ -87,6 +87,7 @@ function mapImportColumns(headers) {
 
 // ─── CSV Export Helper ────────────────────────────────
 import { downloadBOMCSV, downloadBOMPDF } from '@/lib/manufacturing/downloads'
+import { confirmDialog } from '@/components/AlertToastProvider';
 // ─── Main Page ────────────────────────────────────────
 export default function ManufacturingPage() {
   const [tab, setTab] = useState('production')
@@ -477,7 +478,7 @@ export default function ManufacturingPage() {
 
   const handleScrapStatus = async (id, status) => {
     const label = status === 'DISPOSED' ? 'dispose' : 'mark as used'
-    if (!window.confirm(`Are you sure you want to ${label} this reusable offcut?`)) return
+    if (!await confirmDialog(`Are you sure you want to ${label} this reusable offcut?`)) return
     const res = await updateScrapInventoryStatus({ id, status })
     if (res.success) loadData()
     else alert(res.error)
@@ -784,7 +785,7 @@ export default function ManufacturingPage() {
   }
 
   const handleDeleteRawMaterial = async (id, name) => {
-    if (!confirm(`Delete raw material "${name}"? This cannot be undone.`)) return
+    if (!await confirmDialog(`Delete raw material "${name}"? This cannot be undone.`)) return
     setSubmitting(true)
     const res = await deleteRawMaterial(id)
     if (res.success) loadData()
@@ -1153,7 +1154,7 @@ export default function ManufacturingPage() {
             <BOMCard
               key={bom.id} bom={bom} products={products} workCenters={workCenters}
               onToggle={async () => { const r = await toggleBOMStatus(bom.id); if (r.success) loadData(); else alert(r.error) }}
-              onDelete={async () => { if (!confirm('Delete this BOM?')) return; const r = await deleteBOM(bom.id); if (r.success) loadData(); else alert(r.error) }}
+              onDelete={async () => { if (!await confirmDialog('Delete this BOM?')) return; const r = await deleteBOM(bom.id); if (r.success) loadData(); else alert(r.error) }}
               onExport={() => downloadBOMCSV(bom)}
               onSaveAsTemplate={async (steps) => {
                 const name = prompt('Template name:')
@@ -1198,7 +1199,7 @@ export default function ManufacturingPage() {
                 {wc.status !== 'Inactive' && (
                   <button onClick={async () => { await updateWorkCenterStatus(wc.id, 'Inactive'); loadData() }} className="flex-1 py-1.5 text-xs bg-gray-500/10 text-gray-400 hover:bg-gray-500/20 rounded-lg">Inactive</button>
                 )}
-                <button onClick={async () => { if (!confirm('Delete work center?')) return; const r = await deleteWorkCenter(wc.id); if (!r.success) alert(r.error); else loadData() }} className="p-1.5 text-red-400/50 hover:text-red-400 hover:bg-red-500/10 rounded-lg"><Trash2 className="w-4 h-4" /></button>
+                <button onClick={async () => { if (!await confirmDialog('Delete work center?')) return; const r = await deleteWorkCenter(wc.id); if (!r.success) alert(r.error); else loadData() }} className="p-1.5 text-red-400/50 hover:text-red-400 hover:bg-red-500/10 rounded-lg"><Trash2 className="w-4 h-4" /></button>
               </div>
             </div>
           ))}
@@ -3385,7 +3386,7 @@ export default function ManufacturingPage() {
                     {t.description && <p className="text-xs text-muted mt-0.5">{t.description}</p>}
                     <p className="text-[10px] text-muted mt-1">{Array.isArray(t.steps) ? t.steps.length : 0} steps</p>
                   </div>
-                  <button onClick={async () => { if (!confirm('Delete this template?')) return; const r = await deleteBomTemplate(t.id); if (r.success) loadData(); else alert(r.error) }} className="p-1.5 text-red-400/50 hover:text-red-400 hover:bg-red-500/10 rounded">
+                  <button onClick={async () => { if (!await confirmDialog('Delete this template?')) return; const r = await deleteBomTemplate(t.id); if (r.success) loadData(); else alert(r.error) }} className="p-1.5 text-red-400/50 hover:text-red-400 hover:bg-red-500/10 rounded">
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
@@ -3686,7 +3687,7 @@ function BOMCard({ bom, products, workCenters, onToggle, onDelete, onExport, onS
                           <Edit2 className="w-3 h-3" /> Edit
                         </button>
                         <button
-                          onClick={async () => { if (!confirm(`Remove "${item.rawMaterial?.name}" from this BOM?`)) return; setSaving(true); const r = await removeBOMItem(item.id); if (r.success) onRefresh(); else alert(r.error); setSaving(false) }}
+                          onClick={async () => { if (!await confirmDialog(`Remove "${item.rawMaterial?.name}" from this BOM?`)) return; setSaving(true); const r = await removeBOMItem(item.id); if (r.success) onRefresh(); else alert(r.error); setSaving(false) }}
                           disabled={saving}
                           className="px-2.5 py-1 rounded-md bg-red-500/10 border border-red-500/20 text-xs text-red-400 hover:bg-red-500/20 transition-colors flex items-center gap-1 disabled:opacity-50">
                           <Trash2 className="w-3 h-3" /> Delete
@@ -3828,7 +3829,7 @@ function BOMCard({ bom, products, workCenters, onToggle, onDelete, onExport, onS
                         )}
                         <div className="flex gap-1 opacity-0 group-hover:opacity-100 ml-auto">
                           <button onClick={() => { setEditingStepId(s.id); setStepEdit({ operationName: s.operationName, workCenterId: s.workCenterId || '', durationMins: s.durationMins, labourRatePerHour: s.labourRatePerHour, machineCostPerUnit: s.machineCostPerUnit }) }} className="p-1 text-muted hover:text-accent"><Edit2 className="w-3 h-3" /></button>
-                          <button onClick={async () => { if (!confirm('Remove this step?')) return; setSaving(true); const r = await removeBOMStep(s.id); if (r.success) onRefresh(); else alert(r.error); setSaving(false) }} className="p-1 text-muted hover:text-red-400"><Trash2 className="w-3 h-3" /></button>
+                          <button onClick={async () => { if (!await confirmDialog('Remove this step?')) return; setSaving(true); const r = await removeBOMStep(s.id); if (r.success) onRefresh(); else alert(r.error); setSaving(false) }} className="p-1 text-muted hover:text-red-400"><Trash2 className="w-3 h-3" /></button>
                         </div>
                       </div>
                     )}

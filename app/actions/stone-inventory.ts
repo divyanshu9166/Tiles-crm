@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { revalidatePath } from 'next/cache'
@@ -86,7 +88,11 @@ const stoneOffcutSchema = z.object({
   notes: z.string().trim().optional(),
 })
 
-export async function getStoneLots(filters?: { query?: string; status?: string; godownId?: number }) {
+export async function getStoneLots(...args: Parameters<typeof _getStoneLots>): Promise<Awaited<ReturnType<typeof _getStoneLots>>> {
+  return guarded('getStoneLots', () => _getStoneLots(...args))
+}
+
+async function _getStoneLots(filters?: { query?: string; status?: string; godownId?: number }) {
   await requireAuth()
   const query = filters?.query?.trim()
   const lots = await prisma.stoneLot.findMany({
@@ -126,7 +132,11 @@ export async function getStoneLots(filters?: { query?: string; status?: string; 
   }
 }
 
-export async function createStoneLot(data: unknown) {
+export async function createStoneLot(...args: Parameters<typeof _createStoneLot>): Promise<Awaited<ReturnType<typeof _createStoneLot>>> {
+  return guarded('createStoneLot', () => _createStoneLot(...args))
+}
+
+async function _createStoneLot(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createLotSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -330,7 +340,11 @@ export async function pairSlabs(data: unknown) {
   } catch (error) { return { success: false, error: inventoryError(error) } }
 }
 
-export async function getSampleLoans() {
+export async function getSampleLoans(...args: Parameters<typeof _getSampleLoans>): Promise<Awaited<ReturnType<typeof _getSampleLoans>>> {
+  return guarded('getSampleLoans', () => _getSampleLoans(...args))
+}
+
+async function _getSampleLoans() {
   await requireAuth()
   const loans = await prisma.sampleLoan.findMany({
     include: {
@@ -343,7 +357,11 @@ export async function getSampleLoans() {
   return { success: true, data: loans }
 }
 
-export async function createSampleLoan(data: unknown) {
+export async function createSampleLoan(...args: Parameters<typeof _createSampleLoan>): Promise<Awaited<ReturnType<typeof _createSampleLoan>>> {
+  return guarded('createSampleLoan', () => _createSampleLoan(...args))
+}
+
+async function _createSampleLoan(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER', 'STAFF') } catch { return { success: false, error: 'Access denied' } }
   const parsed = sampleLoanSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }

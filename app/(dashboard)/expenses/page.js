@@ -24,6 +24,7 @@ import {
 } from '@/app/actions/expenses';
 import { moveExpenseToDraft } from '@/app/actions/drafts';
 import { getActiveVertical } from '@/lib/brand';
+import { confirmDialog } from '@/components/AlertToastProvider';
 
 const IS_TGM = getActiveVertical() === 'tiles';
 
@@ -1008,7 +1009,7 @@ export default function ExpensesPage() {
                       className="flex-1 py-1.5 text-xs font-medium rounded-lg border border-border hover:border-accent/30 text-muted hover:text-foreground transition-all text-center">
                       {rec.isActive ? 'Pause' : 'Resume'}
                     </button>
-                    <button onClick={async () => { if (confirm('Delete?')) { await deleteRecurringExpense(rec.id); await loadData(dateRange.from, dateRange.to); } }}
+                    <button onClick={async () => { if (await confirmDialog('Delete?')) { await deleteRecurringExpense(rec.id); await loadData(dateRange.from, dateRange.to); } }}
                       className="py-1.5 px-3 text-xs font-medium rounded-lg bg-red-500/10 text-red-600 hover:bg-red-500/20 transition-all">
                       Delete
                     </button>
@@ -1053,7 +1054,7 @@ export default function ExpensesPage() {
                     <button
                       onClick={async () => {
                         const actionLabel = cat._count.expenses > 0 || cat.isDefault ? 'archive' : 'delete'
-                        if (confirm(`Are you sure you want to ${actionLabel} "${cat.name}"?`)) {
+                        if (await confirmDialog(`Are you sure you want to ${actionLabel} "${cat.name}"?`)) {
                           await deleteExpenseCategory(cat.id)
                           await loadData(dateRange.from, dateRange.to)
                         }

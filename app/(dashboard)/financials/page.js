@@ -14,6 +14,7 @@ import {
   getJournalEntries, createManualJournal, voidJournalEntry,
 } from '@/app/actions/financials'
 import Modal from '@/components/Modal'
+import { confirmDialog } from '@/components/AlertToastProvider';
 
 const fmt = (v) => `₹${Math.abs(v || 0).toLocaleString('en-IN')}`
 const fmtSigned = (v) => {
@@ -219,7 +220,7 @@ export default function FinancialsPage() {
   }
 
   const handleVoidJournal = async (id) => {
-    if (!confirm('Void this journal entry? This cannot be undone.')) return
+    if (!await confirmDialog('Void this journal entry? This cannot be undone.')) return
     const res = await voidJournalEntry(id)
     if (res.success) fetchJournals()
     else alert(res.error)

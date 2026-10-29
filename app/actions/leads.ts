@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { createLeadSchema, updateLeadStatusSchema, addFollowUpSchema } from '@/lib/validations/lead'
@@ -27,7 +29,11 @@ const statusDisplayMap: Record<LeadStatus, string> = {
   LOST: 'Lost',
 }
 
-export async function getLeads(status?: string) {
+export async function getLeads(...args: Parameters<typeof _getLeads>): Promise<Awaited<ReturnType<typeof _getLeads>>> {
+  return guarded('getLeads', () => _getLeads(...args))
+}
+
+async function _getLeads(status?: string) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const where = status && statusMap[status] ? { status: statusMap[status] } : {}
 
@@ -64,7 +70,11 @@ export async function getLeads(status?: string) {
   }
 }
 
-export async function getLead(id: number) {
+export async function getLead(...args: Parameters<typeof _getLead>): Promise<Awaited<ReturnType<typeof _getLead>>> {
+  return guarded('getLead', () => _getLead(...args))
+}
+
+async function _getLead(id: number) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const lead = await prisma.lead.findUnique({
     where: { id },
@@ -74,7 +84,11 @@ export async function getLead(id: number) {
   return { success: true, data: lead }
 }
 
-export async function createLead(data: unknown) {
+export async function createLead(...args: Parameters<typeof _createLead>): Promise<Awaited<ReturnType<typeof _createLead>>> {
+  return guarded('createLead', () => _createLead(...args))
+}
+
+async function _createLead(data: unknown) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = createLeadSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -109,7 +123,11 @@ export async function createLead(data: unknown) {
   return { success: true, data: lead }
 }
 
-export async function updateLeadStatus(data: unknown) {
+export async function updateLeadStatus(...args: Parameters<typeof _updateLeadStatus>): Promise<Awaited<ReturnType<typeof _updateLeadStatus>>> {
+  return guarded('updateLeadStatus', () => _updateLeadStatus(...args))
+}
+
+async function _updateLeadStatus(data: unknown) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = updateLeadStatusSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -123,7 +141,11 @@ export async function updateLeadStatus(data: unknown) {
   return { success: true, data: lead }
 }
 
-export async function updateLead(id: number, data: Partial<{
+export async function updateLead(...args: Parameters<typeof _updateLead>): Promise<Awaited<ReturnType<typeof _updateLead>>> {
+  return guarded('updateLead', () => _updateLead(...args))
+}
+
+async function _updateLead(id: number, data: Partial<{
   interest: string; materialCategory: string; applicationArea: string; areaSqft: number; budget: string; notes: string; source: string;
 }>) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
@@ -141,7 +163,11 @@ export async function deleteLead(id: number) {
   return moveLeadToDraft(id)
 }
 
-export async function addFollowUp(data: unknown) {
+export async function addFollowUp(...args: Parameters<typeof _addFollowUp>): Promise<Awaited<ReturnType<typeof _addFollowUp>>> {
+  return guarded('addFollowUp', () => _addFollowUp(...args))
+}
+
+async function _addFollowUp(data: unknown) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = addFollowUpSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -160,7 +186,11 @@ export async function addFollowUp(data: unknown) {
   return { success: true, data: followUp }
 }
 
-export async function getLeadPipelineCounts() {
+export async function getLeadPipelineCounts(...args: Parameters<typeof _getLeadPipelineCounts>): Promise<Awaited<ReturnType<typeof _getLeadPipelineCounts>>> {
+  return guarded('getLeadPipelineCounts', () => _getLeadPipelineCounts(...args))
+}
+
+async function _getLeadPipelineCounts() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const counts = await prisma.lead.groupBy({
     by: ['status'],

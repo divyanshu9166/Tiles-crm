@@ -21,6 +21,7 @@ import { getActiveVertical } from '@/lib/brand';
 import { getTerm } from '@/lib/terminology';
 import { FINISH_VALUES, APPLICATION_AREA_VALUES, TILES_UNIT_VALUES } from '@/lib/validations/product';
 import * as XLSX from 'xlsx';
+import { confirmDialog } from '@/components/AlertToastProvider';
 
 // Resolved once per module load from NEXT_PUBLIC_BUSINESS_TYPE (client) — tiles inputs
 // are shown only for the tiles vertical so furniture renders unchanged (Requirement 6.7).
@@ -1038,7 +1039,7 @@ export default function InventoryPage() {
                         const question = damaging
                           ? `Write off slab ${slab.slabNumber} (${slab.sqft.toFixed(2)} sq.ft) as damaged? It leaves sellable stock. A manager can restore it if this was a mistake.`
                           : `Restore slab ${slab.slabNumber} to available stock?`;
-                        if (!confirm(question)) return;
+                        if (!await confirmDialog(question)) return;
                         const result = await updateSlab({ slabId: slab.id, status: damaging ? 'DAMAGED' : 'AVAILABLE' });
                         if (result.success) { notify(damaging ? 'Slab written off' : 'Slab restored', { variant: 'success' }); loadStoneLots(); } else notify(result.error || 'Could not update slab', { variant: 'danger' });
                       }} className={`px-2 py-1.5 border rounded-lg text-xs ${slab.status === 'AVAILABLE' ? 'border-red-500/30 text-red-500 hover:bg-red-500/10' : 'border-border text-foreground hover:bg-surface-hover'}`}>{slab.status === 'AVAILABLE' ? 'Mark damaged' : 'Restore'}</button> : <span className="text-[11px] text-muted">Use the linked job / sample workflow</span>}</td>

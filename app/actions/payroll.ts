@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { requireRole } from '@/lib/auth-helpers'
@@ -10,7 +12,11 @@ import { z } from 'zod'
 // Used to display per-staff attendance breakdown before payroll generation
 // (Like Keka / GreytHR's "Attendance Summary" pre-payroll screen)
 
-export async function getAttendanceSummaryForPayroll(period: string) {
+export async function getAttendanceSummaryForPayroll(...args: Parameters<typeof _getAttendanceSummaryForPayroll>): Promise<Awaited<ReturnType<typeof _getAttendanceSummaryForPayroll>>> {
+  return guarded('getAttendanceSummaryForPayroll', () => _getAttendanceSummaryForPayroll(...args))
+}
+
+async function _getAttendanceSummaryForPayroll(period: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied', data: [] } }
 
   const [year, month] = period.split('-').map(Number)
@@ -160,7 +166,11 @@ function overtimeHoursFromAttendance(entries: { status: string; hours: number | 
 
 // ─── PRE-PAYROLL READINESS ──────────────────────────
 
-export async function getPayrollReadiness(period?: string) {
+export async function getPayrollReadiness(...args: Parameters<typeof _getPayrollReadiness>): Promise<Awaited<ReturnType<typeof _getPayrollReadiness>>> {
+  return guarded('getPayrollReadiness', () => _getPayrollReadiness(...args))
+}
+
+async function _getPayrollReadiness(period?: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
   const targetPeriod = period || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`
@@ -244,7 +254,11 @@ export async function getPayrollReadiness(period?: string) {
 
 // ─── STAFF PAYROLL SETTINGS ──────────────────────────
 
-export async function getStaffForPayroll() {
+export async function getStaffForPayroll(...args: Parameters<typeof _getStaffForPayroll>): Promise<Awaited<ReturnType<typeof _getStaffForPayroll>>> {
+  return guarded('getStaffForPayroll', () => _getStaffForPayroll(...args))
+}
+
+async function _getStaffForPayroll() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied', data: [] } }
 
   const staff = await prisma.staff.findMany({
@@ -262,7 +276,11 @@ export async function getStaffForPayroll() {
   return { success: true, data: staff }
 }
 
-export async function updateStaffPayrollInfo(data: unknown) {
+export async function updateStaffPayrollInfo(...args: Parameters<typeof _updateStaffPayrollInfo>): Promise<Awaited<ReturnType<typeof _updateStaffPayrollInfo>>> {
+  return guarded('updateStaffPayrollInfo', () => _updateStaffPayrollInfo(...args))
+}
+
+async function _updateStaffPayrollInfo(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = updateStaffPayrollSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -287,7 +305,11 @@ const loanSchema = z.object({
   path: ['monthlyInstallment'],
 })
 
-export async function getStaffLoans(staffId?: number) {
+export async function getStaffLoans(...args: Parameters<typeof _getStaffLoans>): Promise<Awaited<ReturnType<typeof _getStaffLoans>>> {
+  return guarded('getStaffLoans', () => _getStaffLoans(...args))
+}
+
+async function _getStaffLoans(staffId?: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied', data: [] } }
 
   const loans = await prisma.staffLoan.findMany({
@@ -298,7 +320,11 @@ export async function getStaffLoans(staffId?: number) {
   return { success: true, data: loans }
 }
 
-export async function createStaffLoan(data: unknown) {
+export async function createStaffLoan(...args: Parameters<typeof _createStaffLoan>): Promise<Awaited<ReturnType<typeof _createStaffLoan>>> {
+  return guarded('createStaffLoan', () => _createStaffLoan(...args))
+}
+
+async function _createStaffLoan(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = loanSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -318,7 +344,11 @@ export async function createStaffLoan(data: unknown) {
   return { success: true, data: loan }
 }
 
-export async function closeStaffLoan(id: number) {
+export async function closeStaffLoan(...args: Parameters<typeof _closeStaffLoan>): Promise<Awaited<ReturnType<typeof _closeStaffLoan>>> {
+  return guarded('closeStaffLoan', () => _closeStaffLoan(...args))
+}
+
+async function _closeStaffLoan(id: number) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   await prisma.staffLoan.update({ where: { id }, data: { status: 'Closed', remainingAmount: 0 } })
   revalidatePath('/payroll')
@@ -327,7 +357,11 @@ export async function closeStaffLoan(id: number) {
 
 // ─── GENERATE PAYROLL ────────────────────────────────
 
-export async function generatePayroll(data: unknown) {
+export async function generatePayroll(...args: Parameters<typeof _generatePayroll>): Promise<Awaited<ReturnType<typeof _generatePayroll>>> {
+  return guarded('generatePayroll', () => _generatePayroll(...args))
+}
+
+async function _generatePayroll(data: unknown) {
   let session
   try { session = await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   const parsed = generatePayrollSchema.safeParse(data)
@@ -523,7 +557,11 @@ export async function generatePayroll(data: unknown) {
 
 // ─── PAYROLL RUNS ────────────────────────────────────
 
-export async function getPayrollHistory() {
+export async function getPayrollHistory(...args: Parameters<typeof _getPayrollHistory>): Promise<Awaited<ReturnType<typeof _getPayrollHistory>>> {
+  return guarded('getPayrollHistory', () => _getPayrollHistory(...args))
+}
+
+async function _getPayrollHistory() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied', data: [] } }
 
   const runs = await prisma.payrollRun.findMany({
@@ -533,7 +571,11 @@ export async function getPayrollHistory() {
   return { success: true, data: runs }
 }
 
-export async function getPayrollRun(id: number) {
+export async function getPayrollRun(...args: Parameters<typeof _getPayrollRun>): Promise<Awaited<ReturnType<typeof _getPayrollRun>>> {
+  return guarded('getPayrollRun', () => _getPayrollRun(...args))
+}
+
+async function _getPayrollRun(id: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
   const run = await prisma.payrollRun.findUnique({
@@ -558,7 +600,11 @@ export async function getPayrollRun(id: number) {
   return { success: true, data: run }
 }
 
-export async function getAllPayslips(period?: string) {
+export async function getAllPayslips(...args: Parameters<typeof _getAllPayslips>): Promise<Awaited<ReturnType<typeof _getAllPayslips>>> {
+  return guarded('getAllPayslips', () => _getAllPayslips(...args))
+}
+
+async function _getAllPayslips(period?: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied', data: [] } }
 
   const payslips = await prisma.payslip.findMany({
@@ -584,7 +630,11 @@ export async function getAllPayslips(period?: string) {
   return { success: true, data: payslips }
 }
 
-export async function approvePayroll(id: number) {
+export async function approvePayroll(...args: Parameters<typeof _approvePayroll>): Promise<Awaited<ReturnType<typeof _approvePayroll>>> {
+  return guarded('approvePayroll', () => _approvePayroll(...args))
+}
+
+async function _approvePayroll(id: number) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   const run = await prisma.payrollRun.findUnique({ where: { id }, select: { status: true } })
   if (!run) return { success: false, error: 'Payroll run not found' }
@@ -595,7 +645,11 @@ export async function approvePayroll(id: number) {
   return { success: true }
 }
 
-export async function markPayrollPaid(id: number) {
+export async function markPayrollPaid(...args: Parameters<typeof _markPayrollPaid>): Promise<Awaited<ReturnType<typeof _markPayrollPaid>>> {
+  return guarded('markPayrollPaid', () => _markPayrollPaid(...args))
+}
+
+async function _markPayrollPaid(id: number) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   const run = await prisma.payrollRun.findUnique({
     where: { id },

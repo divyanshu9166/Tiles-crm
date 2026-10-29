@@ -1,10 +1,16 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { requireAuth } from '@/lib/auth-helpers'
 
-export async function getReviews() {
+export async function getReviews(...args: Parameters<typeof _getReviews>): Promise<Awaited<ReturnType<typeof _getReviews>>> {
+  return guarded('getReviews', () => _getReviews(...args))
+}
+
+async function _getReviews() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const reviews = await prisma.review.findMany({
     include: { contact: true },
@@ -26,7 +32,11 @@ export async function getReviews() {
   }
 }
 
-export async function getReviewStats() {
+export async function getReviewStats(...args: Parameters<typeof _getReviewStats>): Promise<Awaited<ReturnType<typeof _getReviewStats>>> {
+  return guarded('getReviewStats', () => _getReviewStats(...args))
+}
+
+async function _getReviewStats() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const [total, avgRating, breakdown] = await Promise.all([
     prisma.review.count(),
@@ -49,7 +59,11 @@ export async function getReviewStats() {
   }
 }
 
-export async function markReplied(id: number) {
+export async function markReplied(...args: Parameters<typeof _markReplied>): Promise<Awaited<ReturnType<typeof _markReplied>>> {
+  return guarded('markReplied', () => _markReplied(...args))
+}
+
+async function _markReplied(id: number) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const review = await prisma.review.update({
     where: { id },

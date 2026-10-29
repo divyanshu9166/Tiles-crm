@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { nextNumber } from '@/lib/erp/sequence'
 import { revalidatePath } from 'next/cache'
@@ -50,7 +52,11 @@ function compactMeasurements(measurements: MeasurementsInput): Prisma.InputJsonV
 
 // ─── GET ALL CUSTOM ORDERS ──────────────────────────────
 
-export async function getCustomOrders() {
+export async function getCustomOrders(...args: Parameters<typeof _getCustomOrders>): Promise<Awaited<ReturnType<typeof _getCustomOrders>>> {
+  return guarded('getCustomOrders', () => _getCustomOrders(...args))
+}
+
+async function _getCustomOrders() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const orders = await prisma.customOrder.findMany({
     include: {
@@ -189,7 +195,11 @@ export async function getCustomOrders() {
 
 // ─── CREATE CUSTOM ORDER ────────────────────────────────
 
-export async function createCustomOrder(data: unknown) {
+export async function createCustomOrder(...args: Parameters<typeof _createCustomOrder>): Promise<Awaited<ReturnType<typeof _createCustomOrder>>> {
+  return guarded('createCustomOrder', () => _createCustomOrder(...args))
+}
+
+async function _createCustomOrder(data: unknown) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = createCustomOrderSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -339,7 +349,11 @@ export async function createCustomOrder(data: unknown) {
 
 // ─── UPDATE STATUS (Manager) ────────────────────────────
 
-export async function updateCustomOrderStatus(id: number, status: string) {
+export async function updateCustomOrderStatus(...args: Parameters<typeof _updateCustomOrderStatus>): Promise<Awaited<ReturnType<typeof _updateCustomOrderStatus>>> {
+  return guarded('updateCustomOrderStatus', () => _updateCustomOrderStatus(...args))
+}
+
+async function _updateCustomOrderStatus(id: number, status: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const dbStatus = statusMap[status]
   if (!dbStatus) return { success: false, error: 'Invalid status' }
@@ -422,7 +436,11 @@ export async function updateCustomOrderStatus(id: number, status: string) {
 
 // ─── ASSIGN STAFF ───────────────────────────────────────
 
-export async function assignStaff(orderId: number, staffId: number) {
+export async function assignStaff(...args: Parameters<typeof _assignStaff>): Promise<Awaited<ReturnType<typeof _assignStaff>>> {
+  return guarded('assignStaff', () => _assignStaff(...args))
+}
+
+async function _assignStaff(orderId: number, staffId: number) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const staff = await prisma.staff.findUnique({ where: { id: staffId }, select: { name: true } })
   if (!staff) return { success: false, error: 'Staff not found' }
@@ -452,7 +470,11 @@ export async function assignStaff(orderId: number, staffId: number) {
 
 // ─── SCHEDULE VISIT (Manager) ───────────────────────────
 
-export async function scheduleVisit(data: unknown) {
+export async function scheduleVisit(...args: Parameters<typeof _scheduleVisit>): Promise<Awaited<ReturnType<typeof _scheduleVisit>>> {
+  return guarded('scheduleVisit', () => _scheduleVisit(...args))
+}
+
+async function _scheduleVisit(data: unknown) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = scheduleVisitSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -514,7 +536,11 @@ export async function scheduleVisit(data: unknown) {
 
 // ─── UPDATE MEASUREMENTS (Manager or Staff) ─────────────
 
-export async function updateMeasurements(data: unknown) {
+export async function updateMeasurements(...args: Parameters<typeof _updateMeasurements>): Promise<Awaited<ReturnType<typeof _updateMeasurements>>> {
+  return guarded('updateMeasurements', () => _updateMeasurements(...args))
+}
+
+async function _updateMeasurements(data: unknown) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = updateMeasurementsSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -543,7 +569,11 @@ export async function updateMeasurements(data: unknown) {
 
 // ─── UPDATE MEASUREMENTS WITH PHOTOS ────────────────────
 
-export async function updateMeasurementsWithPhotos(
+export async function updateMeasurementsWithPhotos(...args: Parameters<typeof _updateMeasurementsWithPhotos>): Promise<Awaited<ReturnType<typeof _updateMeasurementsWithPhotos>>> {
+  return guarded('updateMeasurementsWithPhotos', () => _updateMeasurementsWithPhotos(...args))
+}
+
+async function _updateMeasurementsWithPhotos(
   customOrderId: number,
   measurements: MeasurementsInput,
   photoUrls: string[]
@@ -581,7 +611,11 @@ export async function updateMeasurementsWithPhotos(
 
 // ─── UPDATE VISIT (Staff) ───────────────────────────────
 
-export async function updateFieldVisit(data: unknown) {
+export async function updateFieldVisit(...args: Parameters<typeof _updateFieldVisit>): Promise<Awaited<ReturnType<typeof _updateFieldVisit>>> {
+  return guarded('updateFieldVisit', () => _updateFieldVisit(...args))
+}
+
+async function _updateFieldVisit(data: unknown) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = updateVisitSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -676,7 +710,11 @@ export async function updateFieldVisit(data: unknown) {
 
 // ─── ADD TIMELINE ENTRY ─────────────────────────────────
 
-export async function addTimelineEntry(data: unknown) {
+export async function addTimelineEntry(...args: Parameters<typeof _addTimelineEntry>): Promise<Awaited<ReturnType<typeof _addTimelineEntry>>> {
+  return guarded('addTimelineEntry', () => _addTimelineEntry(...args))
+}
+
+async function _addTimelineEntry(data: unknown) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = addTimelineEntrySchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -699,7 +737,11 @@ export async function addTimelineEntry(data: unknown) {
 
 // ─── UPDATE REFERENCE IMAGES ────────────────────────────
 
-export async function updateReferenceImages(orderId: number, imageUrls: string[]) {
+export async function updateReferenceImages(...args: Parameters<typeof _updateReferenceImages>): Promise<Awaited<ReturnType<typeof _updateReferenceImages>>> {
+  return guarded('updateReferenceImages', () => _updateReferenceImages(...args))
+}
+
+async function _updateReferenceImages(orderId: number, imageUrls: string[]) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const order = await prisma.customOrder.findUnique({ where: { id: orderId }, select: { referenceImages: true } })
   if (!order) return { success: false, error: 'Order not found' }
@@ -716,7 +758,11 @@ export async function updateReferenceImages(orderId: number, imageUrls: string[]
 
 // ─── GET STAFF ASSIGNED VISITS ──────────────────────────
 
-export async function getStaffVisits(staffId: number) {
+export async function getStaffVisits(...args: Parameters<typeof _getStaffVisits>): Promise<Awaited<ReturnType<typeof _getStaffVisits>>> {
+  return guarded('getStaffVisits', () => _getStaffVisits(...args))
+}
+
+async function _getStaffVisits(staffId: number) {
   {
     let scope
     try { scope = await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
@@ -779,7 +825,11 @@ export async function getStaffVisits(staffId: number) {
 
 // ─── LOG SELF VISIT ─────────────────────────────────────
 
-export async function logSelfVisit(data: {
+export async function logSelfVisit(...args: Parameters<typeof _logSelfVisit>): Promise<Awaited<ReturnType<typeof _logSelfVisit>>> {
+  return guarded('logSelfVisit', () => _logSelfVisit(...args))
+}
+
+async function _logSelfVisit(data: {
   staffId: number
   customer: string
   address: string
@@ -827,7 +877,11 @@ export async function logSelfVisit(data: {
 
 // ─── GET SELF VISITS ────────────────────────────────────
 
-export async function getSelfVisits(staffId: number) {
+export async function getSelfVisits(...args: Parameters<typeof _getSelfVisits>): Promise<Awaited<ReturnType<typeof _getSelfVisits>>> {
+  return guarded('getSelfVisits', () => _getSelfVisits(...args))
+}
+
+async function _getSelfVisits(staffId: number) {
   {
     let scope
     try { scope = await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
@@ -860,7 +914,11 @@ export async function getSelfVisits(staffId: number) {
 
 // ─── UPDATE SELF VISIT PHOTOS ───────────────────────────
 
-export async function updateSelfVisitPhotos(visitId: number, newUrls: string[]) {
+export async function updateSelfVisitPhotos(...args: Parameters<typeof _updateSelfVisitPhotos>): Promise<Awaited<ReturnType<typeof _updateSelfVisitPhotos>>> {
+  return guarded('updateSelfVisitPhotos', () => _updateSelfVisitPhotos(...args))
+}
+
+async function _updateSelfVisitPhotos(visitId: number, newUrls: string[]) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const visit = await prisma.fieldVisit.findUnique({ where: { id: visitId } })
   if (!visit) return { success: false, error: 'Visit not found' }
@@ -881,7 +939,11 @@ export async function updateSelfVisitPhotos(visitId: number, newUrls: string[]) 
 
 // ─── SEND PROGRESS NOTIFICATION ────────────────────────────────────
 
-export async function sendProgressNotification(data: {
+export async function sendProgressNotification(...args: Parameters<typeof _sendProgressNotification>): Promise<Awaited<ReturnType<typeof _sendProgressNotification>>> {
+  return guarded('sendProgressNotification', () => _sendProgressNotification(...args))
+}
+
+async function _sendProgressNotification(data: {
   orderId: number
   message: string
   channels: ('whatsapp' | 'email')[]
@@ -1045,7 +1107,11 @@ export async function sendProgressNotification(data: {
 
 // ─── GET CUSTOM ORDER STATS ─────────────────────────────
 
-export async function getCustomOrderStats() {
+export async function getCustomOrderStats(...args: Parameters<typeof _getCustomOrderStats>): Promise<Awaited<ReturnType<typeof _getCustomOrderStats>>> {
+  return guarded('getCustomOrderStats', () => _getCustomOrderStats(...args))
+}
+
+async function _getCustomOrderStats() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const orders = await prisma.customOrder.findMany({
     select: { status: true, quotedPrice: true, advancePaid: true },

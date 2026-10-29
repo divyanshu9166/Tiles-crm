@@ -15,6 +15,7 @@ import {
 import { getProducts } from '@/app/actions/products'
 import Modal from '@/components/Modal'
 import { useAlertToast } from '@/components/AlertToastProvider'
+import { confirmDialog } from '@/components/AlertToastProvider';
 
 export default function GodownsPage() {
   const { notify } = useAlertToast()
@@ -118,7 +119,7 @@ export default function GodownsPage() {
   }
 
   const handleCompleteTransfer = async (id) => {
-    if (!confirm('Complete this transfer? Stock moves from the source godown to the destination now.')) return
+    if (!await confirmDialog('Complete this transfer? Stock moves from the source godown to the destination now.')) return
     const res = await completeTransfer(id)
     if (res.success) loadData()
     else notify(res.error, { variant: 'danger' })
@@ -131,7 +132,7 @@ export default function GodownsPage() {
   }
 
   const handleMigrate = async () => {
-    if (!confirm('This will allocate all existing product stock to the default godown. Continue?')) return
+    if (!await confirmDialog('This will allocate all existing product stock to the default godown. Continue?')) return
     setMigrating(true)
     const res = await migrateExistingStockToGodowns()
     if (res.success) {
@@ -219,7 +220,7 @@ export default function GodownsPage() {
                 </div>
                 <div className="flex items-center gap-1">
                   <span className="text-xs text-muted bg-surface-hover px-2 py-1 rounded-full">{b._count?.godowns || 0} godowns</span>
-                  <button onClick={async () => { if (confirm('Delete this branch?')) { const r = await deleteBranch(b.id); if (r.success) loadData(); else notify(r.error, { variant: 'danger' }) }}}
+                  <button onClick={async () => { if (await confirmDialog('Delete this branch?')) { const r = await deleteBranch(b.id); if (r.success) loadData(); else notify(r.error, { variant: 'danger' }) }}}
                     className="p-1 text-red-400/50 hover:text-red-400 rounded"><Trash2 className="w-3.5 h-3.5" /></button>
                 </div>
               </div>
@@ -266,7 +267,7 @@ export default function GodownsPage() {
                         <Star className="w-3.5 h-3.5" />
                       </button>
                     )}
-                    <button onClick={async () => { if (confirm('Delete this godown?')) { const r = await deleteGodown(g.id); if (r.success) loadData(); else notify(r.error, { variant: 'danger' }) }}}
+                    <button onClick={async () => { if (await confirmDialog('Delete this godown?')) { const r = await deleteGodown(g.id); if (r.success) loadData(); else notify(r.error, { variant: 'danger' }) }}}
                       className="p-1.5 text-red-400/50 hover:text-red-400 rounded"><Trash2 className="w-3.5 h-3.5" /></button>
                   </div>
                 </div>

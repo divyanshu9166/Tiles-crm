@@ -12,6 +12,7 @@ import { getPicking, validatePicking, cancelPicking, reschedulePicking, reserveD
 import { useRouter } from 'next/navigation';
 import { getGodowns } from '@/app/actions/godowns';
 import { getStoreSettings } from '@/app/actions/settings';
+import { confirmDialog } from '@/components/AlertToastProvider';
 
 export default function PickingPage() {
   const { id } = useParams();
@@ -105,7 +106,7 @@ export default function PickingPage() {
   };
 
   const cancel = async () => {
-    if (!confirm(`Cancel ${picking.displayId}? This cannot be undone.`)) return;
+    if (!await confirmDialog(`Cancel ${picking.displayId}? This cannot be undone.`)) return;
     setBusy('cancel');
     const res = await cancelPicking(pickingId);
     setBusy('');

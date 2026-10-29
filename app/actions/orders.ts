@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { createOrderSchema, updateOrderStatusSchema } from '@/lib/validations/order'
@@ -8,7 +10,11 @@ import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { adjustStock, resolveStockGodown, lockInventoryProducts, inventoryError } from '@/lib/inventory-stock'
 import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
 
-export async function getOrders(source?: string) {
+export async function getOrders(...args: Parameters<typeof _getOrders>): Promise<Awaited<ReturnType<typeof _getOrders>>> {
+  return guarded('getOrders', () => _getOrders(...args))
+}
+
+async function _getOrders(source?: string) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const where = source && source !== 'All'
     ? { source: source.toUpperCase() as OrderSource }
@@ -38,7 +44,11 @@ export async function getOrders(source?: string) {
   }
 }
 
-export async function getOrder(id: number) {
+export async function getOrder(...args: Parameters<typeof _getOrder>): Promise<Awaited<ReturnType<typeof _getOrder>>> {
+  return guarded('getOrder', () => _getOrder(...args))
+}
+
+async function _getOrder(id: number) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const order = await prisma.order.findUnique({
     where: { id },
@@ -112,7 +122,11 @@ export async function updateOrderStatus(data: unknown) {
   } catch (error) { return { success: false, error: inventoryError(error) } }
 }
 
-export async function getOrdersBySource() {
+export async function getOrdersBySource(...args: Parameters<typeof _getOrdersBySource>): Promise<Awaited<ReturnType<typeof _getOrdersBySource>>> {
+  return guarded('getOrdersBySource', () => _getOrdersBySource(...args))
+}
+
+async function _getOrdersBySource() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const counts = await prisma.order.groupBy({
     by: ['source'],

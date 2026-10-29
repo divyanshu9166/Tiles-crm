@@ -5,6 +5,18 @@ import { AlertCircle, AlertTriangle, CheckCircle2, Info, X } from 'lucide-react'
 
 const AlertToastContext = createContext(null);
 
+// confirmDialog(message) replaces window.confirm: it resolves true/false from an
+// in-app dialog. It works from any handler without a hook; before the provider
+// has mounted it falls back to the browser's own prompt.
+let openConfirm = null;
+
+export function confirmDialog(message, options = {}) {
+  if (!openConfirm) return Promise.resolve(typeof window !== 'undefined' ? window.confirm(message) : false);
+  return openConfirm({ message: normalizeMessage(message), ...options });
+}
+
+const DANGER_WORDS = /delete|remove|void|cancel|permanent|cannot be undone|clear/i;
+
 const DEFAULT_DURATION = 4500;
 const MAX_TOASTS = 4;
 
@@ -59,6 +71,38 @@ function inferVariantFromMessage(rawMessage) {
 export default function AlertToastProvider({ children }) {
   const [toasts, setToasts] = useState([]);
   const timersRef = useRef(new Map());
+  const [confirmRequest, setConfirmRequest] = useState(null);
+  const confirmButtonRef = useRef(null);
+
+  const answerConfirm = useCallback((answer) => {
+    setConfirmRequest((current) => {
+      current?.resolve(answer);
+      return null;
+    });
+  }, []);
+
+  useEffect(() => {
+    openConfirm = (request) => new Promise((resolve) => {
+      // A second prompt while one is open cancels the first.
+      setConfirmRequest((current) => {
+        current?.resolve(false);
+        return { ...request, resolve };
+      });
+    });
+    return () => {
+      openConfirm = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!confirmRequest) return undefined;
+    confirmButtonRef.current?.focus();
+    const onKey = (event) => {
+      if (event.key === 'Escape') answerConfirm(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [confirmRequest, answerConfirm]);
 
   const dismissToast = useCallback((id) => {
     const timer = timersRef.current.get(id);
@@ -148,6 +192,28 @@ export default function AlertToastProvider({ children }) {
           })}
         </div>
       </div>
+
+      {confirmRequest && (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/40 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) answerConfirm(false); }}>
+          <div role="alertdialog" aria-modal="true" aria-label={confirmRequest.title || 'Please confirm'} className="w-full max-w-sm rounded-2xl border border-border bg-surface p-5 shadow-2xl">
+            <h3 className="text-base font-semibold text-foreground">{confirmRequest.title || 'Please confirm'}</h3>
+            <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-muted">{confirmRequest.message}</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => answerConfirm(false)} className="rounded-xl border border-border bg-surface px-4 py-2 text-sm font-medium text-muted hover:text-foreground">
+                {confirmRequest.cancelLabel || 'Cancel'}
+              </button>
+              <button
+                ref={confirmButtonRef}
+                type="button"
+                onClick={() => answerConfirm(true)}
+                className={`rounded-xl px-4 py-2 text-sm font-semibold text-white ${(confirmRequest.danger ?? DANGER_WORDS.test(confirmRequest.message)) ? 'bg-red-600 hover:bg-red-700' : 'bg-accent hover:bg-accent-hover'}`}
+              >
+                {confirmRequest.confirmLabel || 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </AlertToastContext.Provider>
   );
 }

@@ -22,6 +22,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { confirmDialog } from '@/components/AlertToastProvider';
 
 const MASKED_TOKEN = '••••••••••••••••';
 const DRAFT_STORAGE_KEY = 'wa-config-draft';
@@ -413,7 +414,7 @@ export function WhatsAppConfig() {
   }
 
   async function handleReset() {
-    if (!confirm('This will delete the current WhatsApp config so you can re-enter it. Continue?')) {
+    if (!await confirmDialog('This will delete the current WhatsApp config so you can re-enter it. Continue?')) {
       return;
     }
 

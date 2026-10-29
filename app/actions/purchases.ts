@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { splitGst } from '@/lib/erp/gst-math'
 import { supplierSupplyType } from '@/lib/erp/supply-type'
@@ -257,7 +259,11 @@ async function notifySupplierForPurchaseOrder(poId: number, source: 'approved' |
 
 // ─── SUPPLIERS ───────────────────────────────────────
 
-export async function getSuppliers() {
+export async function getSuppliers(...args: Parameters<typeof _getSuppliers>): Promise<Awaited<ReturnType<typeof _getSuppliers>>> {
+  return guarded('getSuppliers', () => _getSuppliers(...args))
+}
+
+async function _getSuppliers() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const suppliers = await prisma.supplier.findMany({
     orderBy: { name: 'asc' },
@@ -268,7 +274,11 @@ export async function getSuppliers() {
   return { success: true, data: suppliers }
 }
 
-export async function createSupplier(data: unknown) {
+export async function createSupplier(...args: Parameters<typeof _createSupplier>): Promise<Awaited<ReturnType<typeof _createSupplier>>> {
+  return guarded('createSupplier', () => _createSupplier(...args))
+}
+
+async function _createSupplier(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createSupplierSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -278,7 +288,11 @@ export async function createSupplier(data: unknown) {
   return { success: true, data: supplier }
 }
 
-export async function updateSupplier(id: number, data: unknown) {
+export async function updateSupplier(...args: Parameters<typeof _updateSupplier>): Promise<Awaited<ReturnType<typeof _updateSupplier>>> {
+  return guarded('updateSupplier', () => _updateSupplier(...args))
+}
+
+async function _updateSupplier(id: number, data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createSupplierSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -290,7 +304,11 @@ export async function updateSupplier(id: number, data: unknown) {
 
 // ─── PURCHASE ORDERS ─────────────────────────────────
 
-export async function getPurchaseOrders() {
+export async function getPurchaseOrders(...args: Parameters<typeof _getPurchaseOrders>): Promise<Awaited<ReturnType<typeof _getPurchaseOrders>>> {
+  return guarded('getPurchaseOrders', () => _getPurchaseOrders(...args))
+}
+
+async function _getPurchaseOrders() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied', data: [] } }
   const pos = await prisma.purchaseOrder.findMany({
     orderBy: { date: 'desc' },
@@ -302,7 +320,11 @@ export async function getPurchaseOrders() {
   return { success: true, data: pos }
 }
 
-export async function createPurchaseOrder(data: unknown) {
+export async function createPurchaseOrder(...args: Parameters<typeof _createPurchaseOrder>): Promise<Awaited<ReturnType<typeof _createPurchaseOrder>>> {
+  return guarded('createPurchaseOrder', () => _createPurchaseOrder(...args))
+}
+
+async function _createPurchaseOrder(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createPurchaseOrderSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -362,7 +384,11 @@ export async function createPurchaseOrder(data: unknown) {
   return { success: true, data: po }
 }
 
-export async function updatePurchaseOrder(id: number, data: unknown) {
+export async function updatePurchaseOrder(...args: Parameters<typeof _updatePurchaseOrder>): Promise<Awaited<ReturnType<typeof _updatePurchaseOrder>>> {
+  return guarded('updatePurchaseOrder', () => _updatePurchaseOrder(...args))
+}
+
+async function _updatePurchaseOrder(id: number, data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createPurchaseOrderSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -438,7 +464,11 @@ export async function updatePurchaseOrder(id: number, data: unknown) {
   return { success: true, data: po }
 }
 
-export async function approvePurchaseOrder(id: number) {
+export async function approvePurchaseOrder(...args: Parameters<typeof _approvePurchaseOrder>): Promise<Awaited<ReturnType<typeof _approvePurchaseOrder>>> {
+  return guarded('approvePurchaseOrder', () => _approvePurchaseOrder(...args))
+}
+
+async function _approvePurchaseOrder(id: number) {
   let session
   try { session = await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const po = await prisma.purchaseOrder.findUnique({ where: { id } })
@@ -480,7 +510,11 @@ export async function approvePurchaseOrder(id: number) {
   }
 }
 
-export async function sendPurchaseOrderToSupplier(id: number) {
+export async function sendPurchaseOrderToSupplier(...args: Parameters<typeof _sendPurchaseOrderToSupplier>): Promise<Awaited<ReturnType<typeof _sendPurchaseOrderToSupplier>>> {
+  return guarded('sendPurchaseOrderToSupplier', () => _sendPurchaseOrderToSupplier(...args))
+}
+
+async function _sendPurchaseOrderToSupplier(id: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
   const po = await prisma.purchaseOrder.findUnique({ where: { id } })
@@ -494,7 +528,11 @@ export async function sendPurchaseOrderToSupplier(id: number) {
   return { success: true, message: notifyResult.message }
 }
 
-export async function receivePurchaseOrder(id: number, godownId?: number) {
+export async function receivePurchaseOrder(...args: Parameters<typeof _receivePurchaseOrder>): Promise<Awaited<ReturnType<typeof _receivePurchaseOrder>>> {
+  return guarded('receivePurchaseOrder', () => _receivePurchaseOrder(...args))
+}
+
+async function _receivePurchaseOrder(id: number, godownId?: number) {
   let session
   try { session = await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
@@ -561,7 +599,11 @@ const stonePurchaseReceiveSchema = z.object({
   })).min(1),
 })
 
-export async function receiveStoneLotFromPurchaseOrder(data: unknown) {
+export async function receiveStoneLotFromPurchaseOrder(...args: Parameters<typeof _receiveStoneLotFromPurchaseOrder>): Promise<Awaited<ReturnType<typeof _receiveStoneLotFromPurchaseOrder>>> {
+  return guarded('receiveStoneLotFromPurchaseOrder', () => _receiveStoneLotFromPurchaseOrder(...args))
+}
+
+async function _receiveStoneLotFromPurchaseOrder(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = stonePurchaseReceiveSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -629,7 +671,11 @@ export async function receiveStoneLotFromPurchaseOrder(data: unknown) {
   }
 }
 
-export async function recordPurchaseOrderPayment(
+export async function recordPurchaseOrderPayment(...args: Parameters<typeof _recordPurchaseOrderPayment>): Promise<Awaited<ReturnType<typeof _recordPurchaseOrderPayment>>> {
+  return guarded('recordPurchaseOrderPayment', () => _recordPurchaseOrderPayment(...args))
+}
+
+async function _recordPurchaseOrderPayment(
   id: number,
   amount: number,
   note?: string,
@@ -682,7 +728,11 @@ export async function recordPurchaseOrderPayment(
   return { success: true, data: updated }
 }
 
-export async function cancelPurchaseOrder(id: number) {
+export async function cancelPurchaseOrder(...args: Parameters<typeof _cancelPurchaseOrder>): Promise<Awaited<ReturnType<typeof _cancelPurchaseOrder>>> {
+  return guarded('cancelPurchaseOrder', () => _cancelPurchaseOrder(...args))
+}
+
+async function _cancelPurchaseOrder(id: number) {
   let session
   try { session = await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const po = await prisma.purchaseOrder.findUnique({ where: { id }, include: { items: { select: { receivedQty: true } } } })
@@ -713,7 +763,11 @@ export async function cancelPurchaseOrder(id: number) {
 
 // ─── PURCHASE RETURNS ─────────────────────────────────
 
-export async function getPurchaseReturns() {
+export async function getPurchaseReturns(...args: Parameters<typeof _getPurchaseReturns>): Promise<Awaited<ReturnType<typeof _getPurchaseReturns>>> {
+  return guarded('getPurchaseReturns', () => _getPurchaseReturns(...args))
+}
+
+async function _getPurchaseReturns() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const returns = await prisma.purchaseReturn.findMany({
     orderBy: { date: 'desc' },
@@ -726,7 +780,11 @@ export async function getPurchaseReturns() {
   return { success: true, data: returns }
 }
 
-export async function createPurchaseReturn(data: unknown) {
+export async function createPurchaseReturn(...args: Parameters<typeof _createPurchaseReturn>): Promise<Awaited<ReturnType<typeof _createPurchaseReturn>>> {
+  return guarded('createPurchaseReturn', () => _createPurchaseReturn(...args))
+}
+
+async function _createPurchaseReturn(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createPurchaseReturnSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -797,7 +855,11 @@ export async function createPurchaseReturn(data: unknown) {
   return { success: true, data: ret }
 }
 
-export async function getPurchaseStats() {
+export async function getPurchaseStats(...args: Parameters<typeof _getPurchaseStats>): Promise<Awaited<ReturnType<typeof _getPurchaseStats>>> {
+  return guarded('getPurchaseStats', () => _getPurchaseStats(...args))
+}
+
+async function _getPurchaseStats() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const [totalPOs, totalSpend, pendingPOs, totalSuppliers, overduePOs, outstandingPayables] = await Promise.all([
     prisma.purchaseOrder.count(),

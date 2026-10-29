@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { nextInvoiceNumber, nextNumber, nextSequence } from '@/lib/erp/sequence'
 import { nextCreditNoteNumber } from '@/lib/erp/credit-notes'
@@ -83,7 +85,11 @@ async function adjustGodownStockWithTx(tx: any, params: {
 
 // ─── MOVE CUSTOM ORDER TO DRAFT ────────────────────────
 
-export async function moveCustomOrderToDraft(orderId: number) {
+export async function moveCustomOrderToDraft(...args: Parameters<typeof _moveCustomOrderToDraft>): Promise<Awaited<ReturnType<typeof _moveCustomOrderToDraft>>> {
+  return guarded('moveCustomOrderToDraft', () => _moveCustomOrderToDraft(...args))
+}
+
+async function _moveCustomOrderToDraft(orderId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const order = await prisma.customOrder.findUnique({
     where: { id: orderId },
@@ -181,7 +187,11 @@ export async function moveCustomOrderToDraft(orderId: number) {
 
 // ─── MOVE SELF VISIT TO DRAFT ─────────────────────────
 
-export async function moveSelfVisitToDraft(visitId: number) {
+export async function moveSelfVisitToDraft(...args: Parameters<typeof _moveSelfVisitToDraft>): Promise<Awaited<ReturnType<typeof _moveSelfVisitToDraft>>> {
+  return guarded('moveSelfVisitToDraft', () => _moveSelfVisitToDraft(...args))
+}
+
+async function _moveSelfVisitToDraft(visitId: number) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const visit = await prisma.fieldVisit.findUnique({
     where: { id: visitId },
@@ -233,7 +243,11 @@ export async function moveSelfVisitToDraft(visitId: number) {
 
 // ─── MOVE LEAD TO DRAFT ─────────────────────────────
 
-export async function moveLeadToDraft(leadId: number) {
+export async function moveLeadToDraft(...args: Parameters<typeof _moveLeadToDraft>): Promise<Awaited<ReturnType<typeof _moveLeadToDraft>>> {
+  return guarded('moveLeadToDraft', () => _moveLeadToDraft(...args))
+}
+
+async function _moveLeadToDraft(leadId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const lead = await prisma.lead.findUnique({
     where: { id: leadId },
@@ -296,7 +310,11 @@ export async function moveLeadToDraft(leadId: number) {
 
 // ─── MOVE WALK-IN TO DRAFT ─────────────────────────
 
-export async function moveWalkinToDraft(walkinId: number) {
+export async function moveWalkinToDraft(...args: Parameters<typeof _moveWalkinToDraft>): Promise<Awaited<ReturnType<typeof _moveWalkinToDraft>>> {
+  return guarded('moveWalkinToDraft', () => _moveWalkinToDraft(...args))
+}
+
+async function _moveWalkinToDraft(walkinId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const walkin = await prisma.walkin.findUnique({
     where: { id: walkinId },
@@ -352,7 +370,11 @@ export async function moveWalkinToDraft(walkinId: number) {
 
 // ─── MOVE APPOINTMENT TO DRAFT ──────────────────────
 
-export async function moveAppointmentToDraft(appointmentId: number) {
+export async function moveAppointmentToDraft(...args: Parameters<typeof _moveAppointmentToDraft>): Promise<Awaited<ReturnType<typeof _moveAppointmentToDraft>>> {
+  return guarded('moveAppointmentToDraft', () => _moveAppointmentToDraft(...args))
+}
+
+async function _moveAppointmentToDraft(appointmentId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const appointment = await prisma.appointment.findUnique({
     where: { id: appointmentId },
@@ -398,7 +420,11 @@ export async function moveAppointmentToDraft(appointmentId: number) {
 
 // ─── MOVE ORDER TO DRAFT ────────────────────────────
 
-export async function moveOrderToDraft(orderId: number) {
+export async function moveOrderToDraft(...args: Parameters<typeof _moveOrderToDraft>): Promise<Awaited<ReturnType<typeof _moveOrderToDraft>>> {
+  return guarded('moveOrderToDraft', () => _moveOrderToDraft(...args))
+}
+
+async function _moveOrderToDraft(orderId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const order = await prisma.order.findUnique({
     where: { id: orderId },
@@ -496,7 +522,11 @@ export async function moveOrderToDraft(orderId: number) {
 
 // ─── MOVE QUOTATION TO DRAFT ────────────────────────
 
-export async function moveQuotationToDraft(quotationId: number) {
+export async function moveQuotationToDraft(...args: Parameters<typeof _moveQuotationToDraft>): Promise<Awaited<ReturnType<typeof _moveQuotationToDraft>>> {
+  return guarded('moveQuotationToDraft', () => _moveQuotationToDraft(...args))
+}
+
+async function _moveQuotationToDraft(quotationId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const quotation = await prisma.quotation.findUnique({
     where: { id: quotationId },
@@ -583,7 +613,11 @@ export async function moveQuotationToDraft(quotationId: number) {
 
 // ─── MOVE INVOICE TO DRAFT ──────────────────────────
 
-export async function moveInvoiceToDraft(invoiceId: number) {
+export async function moveInvoiceToDraft(...args: Parameters<typeof _moveInvoiceToDraft>): Promise<Awaited<ReturnType<typeof _moveInvoiceToDraft>>> {
+  return guarded('moveInvoiceToDraft', () => _moveInvoiceToDraft(...args))
+}
+
+async function _moveInvoiceToDraft(invoiceId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const invoice = await prisma.invoice.findUnique({
     where: { id: invoiceId },
@@ -720,7 +754,11 @@ export async function moveInvoiceToDraft(invoiceId: number) {
 
 // ─── MOVE PURCHASE ORDER TO DRAFT ───────────────────
 
-export async function movePurchaseOrderToDraft(poId: number) {
+export async function movePurchaseOrderToDraft(...args: Parameters<typeof _movePurchaseOrderToDraft>): Promise<Awaited<ReturnType<typeof _movePurchaseOrderToDraft>>> {
+  return guarded('movePurchaseOrderToDraft', () => _movePurchaseOrderToDraft(...args))
+}
+
+async function _movePurchaseOrderToDraft(poId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const po = await prisma.purchaseOrder.findUnique({
     where: { id: poId },
@@ -851,7 +889,11 @@ export async function movePurchaseOrderToDraft(poId: number) {
 
 // ─── MOVE EXPENSE TO DRAFT ──────────────────────────
 
-export async function moveExpenseToDraft(expenseId: number) {
+export async function moveExpenseToDraft(...args: Parameters<typeof _moveExpenseToDraft>): Promise<Awaited<ReturnType<typeof _moveExpenseToDraft>>> {
+  return guarded('moveExpenseToDraft', () => _moveExpenseToDraft(...args))
+}
+
+async function _moveExpenseToDraft(expenseId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const expense = await prisma.expense.findUnique({
     where: { id: expenseId },
@@ -915,7 +957,11 @@ export async function moveExpenseToDraft(expenseId: number) {
 
 // ─── MOVE PRODUCT TO DRAFT ──────────────────────────
 
-export async function moveProductToDraft(productId: number) {
+export async function moveProductToDraft(...args: Parameters<typeof _moveProductToDraft>): Promise<Awaited<ReturnType<typeof _moveProductToDraft>>> {
+  return guarded('moveProductToDraft', () => _moveProductToDraft(...args))
+}
+
+async function _moveProductToDraft(productId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   if (!Number.isSafeInteger(productId) || productId <= 0) return { success: false, error: 'Invalid product ID' }
   const product = await prisma.product.findUnique({
@@ -1000,7 +1046,11 @@ export async function moveProductToDraft(productId: number) {
 
 // ─── GET ALL DRAFTS ────────────────────────────────────
 
-export async function getDrafts() {
+export async function getDrafts(...args: Parameters<typeof _getDrafts>): Promise<Awaited<ReturnType<typeof _getDrafts>>> {
+  return guarded('getDrafts', () => _getDrafts(...args))
+}
+
+async function _getDrafts() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   // Auto-purge expired drafts first
   await prisma.draft.deleteMany({
@@ -1028,7 +1078,11 @@ export async function getDrafts() {
 
 // ─── RESTORE CUSTOM ORDER FROM DRAFT ───────────────────
 
-export async function restoreFromDraft(draftId: number) {
+export async function restoreFromDraft(...args: Parameters<typeof _restoreFromDraft>): Promise<Awaited<ReturnType<typeof _restoreFromDraft>>> {
+  return guarded('restoreFromDraft', () => _restoreFromDraft(...args))
+}
+
+async function _restoreFromDraft(draftId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const draft = await prisma.draft.findUnique({ where: { id: draftId } })
   if (!draft) return { success: false, error: 'Draft not found' }
@@ -1911,7 +1965,11 @@ export async function restoreFromDraft(draftId: number) {
 
 // ─── PERMANENTLY DELETE A DRAFT ────────────────────────
 
-export async function permanentlyDeleteDraft(draftId: number) {
+export async function permanentlyDeleteDraft(...args: Parameters<typeof _permanentlyDeleteDraft>): Promise<Awaited<ReturnType<typeof _permanentlyDeleteDraft>>> {
+  return guarded('permanentlyDeleteDraft', () => _permanentlyDeleteDraft(...args))
+}
+
+async function _permanentlyDeleteDraft(draftId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   await prisma.draft.delete({ where: { id: draftId } })
   revalidatePath('/drafts')

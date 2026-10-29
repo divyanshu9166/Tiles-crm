@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { createWalkinSchema } from '@/lib/validations/walkin'
@@ -16,7 +18,11 @@ const statusDisplay: Record<WalkinStatus, string> = {
   FOLLOW_UP: 'Follow-up', CONVERTED: 'Converted', LEFT: 'Left',
 }
 
-export async function getWalkins() {
+export async function getWalkins(...args: Parameters<typeof _getWalkins>): Promise<Awaited<ReturnType<typeof _getWalkins>>> {
+  return guarded('getWalkins', () => _getWalkins(...args))
+}
+
+async function _getWalkins() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const walkins = await prisma.walkin.findMany({
     include: { contact: true, assignedTo: true },
@@ -47,7 +53,11 @@ export async function getWalkins() {
   }
 }
 
-export async function createWalkin(data: unknown) {
+export async function createWalkin(...args: Parameters<typeof _createWalkin>): Promise<Awaited<ReturnType<typeof _createWalkin>>> {
+  return guarded('createWalkin', () => _createWalkin(...args))
+}
+
+async function _createWalkin(data: unknown) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = createWalkinSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -82,7 +92,11 @@ export async function createWalkin(data: unknown) {
   return { success: true, data: walkin }
 }
 
-export async function updateWalkinStatus(id: number, status: string) {
+export async function updateWalkinStatus(...args: Parameters<typeof _updateWalkinStatus>): Promise<Awaited<ReturnType<typeof _updateWalkinStatus>>> {
+  return guarded('updateWalkinStatus', () => _updateWalkinStatus(...args))
+}
+
+async function _updateWalkinStatus(id: number, status: string) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const dbStatus = statusMap[status]
   if (!dbStatus) return { success: false, error: 'Invalid status' }

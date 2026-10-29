@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { confirmDialog } from '@/components/AlertToastProvider';
 import {
   BookOpen, Plus, Trash2, RefreshCw, Loader2, Upload,
   CheckCircle2, Clock, XCircle, FileText, ChevronDown, ChevronRight,
@@ -39,7 +40,7 @@ function DocRow({
   const StatusIcon = sc.icon
 
   const handleDelete = async () => {
-    if (!confirm(`Delete "${doc.title}"? This cannot be undone.`)) return
+    if (!await confirmDialog(`Delete "${doc.title}"? This cannot be undone.`)) return
     setDeleting(true)
     onDelete(doc.id)
   }

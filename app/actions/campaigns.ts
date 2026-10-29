@@ -1,12 +1,18 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { createCampaignSchema } from '@/lib/validations/campaign'
 import type { CampaignStatus } from '@prisma/client'
 import { requireAuth, requireRole } from '@/lib/auth-helpers'
 
-export async function getCampaigns() {
+export async function getCampaigns(...args: Parameters<typeof _getCampaigns>): Promise<Awaited<ReturnType<typeof _getCampaigns>>> {
+  return guarded('getCampaigns', () => _getCampaigns(...args))
+}
+
+async function _getCampaigns() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const campaigns = await prisma.campaign.findMany({
     orderBy: { createdAt: 'desc' },
@@ -29,7 +35,11 @@ export async function getCampaigns() {
   }
 }
 
-export async function createCampaign(data: unknown) {
+export async function createCampaign(...args: Parameters<typeof _createCampaign>): Promise<Awaited<ReturnType<typeof _createCampaign>>> {
+  return guarded('createCampaign', () => _createCampaign(...args))
+}
+
+async function _createCampaign(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const parsed = createCampaignSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -48,7 +58,11 @@ export async function createCampaign(data: unknown) {
   return { success: true, data: campaign }
 }
 
-export async function updateCampaignStatus(id: number, status: string) {
+export async function updateCampaignStatus(...args: Parameters<typeof _updateCampaignStatus>): Promise<Awaited<ReturnType<typeof _updateCampaignStatus>>> {
+  return guarded('updateCampaignStatus', () => _updateCampaignStatus(...args))
+}
+
+async function _updateCampaignStatus(id: number, status: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const statusMap: Record<string, CampaignStatus> = {
     'Draft': 'DRAFT', 'Scheduled': 'SCHEDULED', 'Sent': 'SENT',

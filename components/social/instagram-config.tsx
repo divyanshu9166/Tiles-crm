@@ -11,6 +11,7 @@ import { useAuth } from '@/hooks/use-auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { confirmDialog } from '@/components/AlertToastProvider';
 
 const MASKED = '••••••••••••••••'
 
@@ -188,7 +189,7 @@ export function InstagramConfig() {
   }
 
   async function handleReset() {
-    if (!confirm('Delete Instagram configuration?')) return
+    if (!await confirmDialog('Delete Instagram configuration?')) return
     try {
       setResetting(true)
       await fetch('/api/social/config/instagram', { method: 'DELETE' })

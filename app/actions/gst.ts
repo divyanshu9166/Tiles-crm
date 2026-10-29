@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { creditNoteTax, invoiceCharges, taxableOf } from '@/lib/erp/gst-math'
 import { revalidatePath } from 'next/cache'
@@ -8,13 +10,21 @@ import { createHsnCodeSchema, createEWayBillSchema } from '@/lib/validations/gst
 
 // ─── HSN MASTER ──────────────────────────────────────
 
-export async function getHsnCodes() {
+export async function getHsnCodes(...args: Parameters<typeof _getHsnCodes>): Promise<Awaited<ReturnType<typeof _getHsnCodes>>> {
+  return guarded('getHsnCodes', () => _getHsnCodes(...args))
+}
+
+async function _getHsnCodes() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const codes = await prisma.hsnCode.findMany({ orderBy: { code: 'asc' } })
   return { success: true, data: codes }
 }
 
-export async function createHsnCode(data: unknown) {
+export async function createHsnCode(...args: Parameters<typeof _createHsnCode>): Promise<Awaited<ReturnType<typeof _createHsnCode>>> {
+  return guarded('createHsnCode', () => _createHsnCode(...args))
+}
+
+async function _createHsnCode(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createHsnCodeSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -23,7 +33,11 @@ export async function createHsnCode(data: unknown) {
   return { success: true, data: code }
 }
 
-export async function deleteHsnCode(id: number) {
+export async function deleteHsnCode(...args: Parameters<typeof _deleteHsnCode>): Promise<Awaited<ReturnType<typeof _deleteHsnCode>>> {
+  return guarded('deleteHsnCode', () => _deleteHsnCode(...args))
+}
+
+async function _deleteHsnCode(id: number) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   await prisma.hsnCode.delete({ where: { id } })
   revalidatePath('/gst')
@@ -54,7 +68,11 @@ function gstUqc(unitOfMeasure?: string) {
 
 // ─── GSTR-1 (Outward Supplies) ───────────────────────
 
-export async function generateGSTR1(period: string) {
+export async function generateGSTR1(...args: Parameters<typeof _generateGSTR1>): Promise<Awaited<ReturnType<typeof _generateGSTR1>>> {
+  return guarded('generateGSTR1', () => _generateGSTR1(...args))
+}
+
+async function _generateGSTR1(period: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
   const { from, to } = periodRange(period)
@@ -225,7 +243,11 @@ export async function generateGSTR1(period: string) {
 
 // ─── GSTR-2 (Inward Supplies / ITC) ─────────────────
 
-export async function generateGSTR2(period: string) {
+export async function generateGSTR2(...args: Parameters<typeof _generateGSTR2>): Promise<Awaited<ReturnType<typeof _generateGSTR2>>> {
+  return guarded('generateGSTR2', () => _generateGSTR2(...args))
+}
+
+async function _generateGSTR2(period: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
   const { from, to } = periodRange(period)
@@ -309,7 +331,11 @@ export async function generateGSTR2(period: string) {
 
 // ─── GSTR-3B (Summary Return — all tables) ──────────
 
-export async function generateGSTR3B(period: string) {
+export async function generateGSTR3B(...args: Parameters<typeof _generateGSTR3B>): Promise<Awaited<ReturnType<typeof _generateGSTR3B>>> {
+  return guarded('generateGSTR3B', () => _generateGSTR3B(...args))
+}
+
+async function _generateGSTR3B(period: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
   const [g1Existing, g2Existing] = await Promise.all([
@@ -402,7 +428,11 @@ export async function generateGSTR3B(period: string) {
 
 // ─── GSTR-9 (Annual Return) ──────────────────────────
 
-export async function generateGSTR9(year: number) {
+export async function generateGSTR9(...args: Parameters<typeof _generateGSTR9>): Promise<Awaited<ReturnType<typeof _generateGSTR9>>> {
+  return guarded('generateGSTR9', () => _generateGSTR9(...args))
+}
+
+async function _generateGSTR9(year: number) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
 
   // Aggregate all monthly GSTR-1 and GSTR-2 data for the financial year
@@ -476,20 +506,32 @@ export async function generateGSTR9(year: number) {
 
 // ─── RETURNS MANAGEMENT ──────────────────────────────
 
-export async function getGSTReturns() {
+export async function getGSTReturns(...args: Parameters<typeof _getGSTReturns>): Promise<Awaited<ReturnType<typeof _getGSTReturns>>> {
+  return guarded('getGSTReturns', () => _getGSTReturns(...args))
+}
+
+async function _getGSTReturns() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const returns = await prisma.gSTReturn.findMany({ orderBy: [{ period: 'desc' }, { returnType: 'asc' }] })
   return { success: true, data: returns }
 }
 
-export async function markReturnFiled(id: number) {
+export async function markReturnFiled(...args: Parameters<typeof _markReturnFiled>): Promise<Awaited<ReturnType<typeof _markReturnFiled>>> {
+  return guarded('markReturnFiled', () => _markReturnFiled(...args))
+}
+
+async function _markReturnFiled(id: number) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   await prisma.gSTReturn.update({ where: { id }, data: { status: 'FILED', filedAt: new Date() } })
   revalidatePath('/gst')
   return { success: true }
 }
 
-export async function getReturnByTypePeriod(returnType: string, period: string) {
+export async function getReturnByTypePeriod(...args: Parameters<typeof _getReturnByTypePeriod>): Promise<Awaited<ReturnType<typeof _getReturnByTypePeriod>>> {
+  return guarded('getReturnByTypePeriod', () => _getReturnByTypePeriod(...args))
+}
+
+async function _getReturnByTypePeriod(returnType: string, period: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const ret = await prisma.gSTReturn.findFirst({ where: { returnType, period } })
   return { success: true, data: ret }
@@ -497,7 +539,11 @@ export async function getReturnByTypePeriod(returnType: string, period: string) 
 
 // ─── E-WAY BILLS ─────────────────────────────────────
 
-export async function getEWayBills() {
+export async function getEWayBills(...args: Parameters<typeof _getEWayBills>): Promise<Awaited<ReturnType<typeof _getEWayBills>>> {
+  return guarded('getEWayBills', () => _getEWayBills(...args))
+}
+
+async function _getEWayBills() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const bills = await prisma.eWayBill.findMany({
     include: { invoice: { select: { displayId: true, total: true, date: true, contact: { select: { name: true } } } } },
@@ -506,7 +552,11 @@ export async function getEWayBills() {
   return { success: true, data: bills }
 }
 
-export async function createEWayBill(data: unknown) {
+export async function createEWayBill(...args: Parameters<typeof _createEWayBill>): Promise<Awaited<ReturnType<typeof _createEWayBill>>> {
+  return guarded('createEWayBill', () => _createEWayBill(...args))
+}
+
+async function _createEWayBill(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createEWayBillSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -523,7 +573,11 @@ export async function createEWayBill(data: unknown) {
   return { success: true, data: bill }
 }
 
-export async function cancelEWayBill(id: number) {
+export async function cancelEWayBill(...args: Parameters<typeof _cancelEWayBill>): Promise<Awaited<ReturnType<typeof _cancelEWayBill>>> {
+  return guarded('cancelEWayBill', () => _cancelEWayBill(...args))
+}
+
+async function _cancelEWayBill(id: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   await prisma.eWayBill.update({ where: { id }, data: { status: 'CANCELLED' } })
   revalidatePath('/gst')

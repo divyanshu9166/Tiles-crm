@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { Prisma } from '@prisma/client'
 import { revalidatePath } from 'next/cache'
@@ -95,13 +97,21 @@ async function readWhatsappNumberFromDb() {
 }
 
 // Public (no sign-in): only what the login screen shows.
-export async function getPublicBranding() {
+export async function getPublicBranding(...args: Parameters<typeof _getPublicBranding>): Promise<Awaited<ReturnType<typeof _getPublicBranding>>> {
+  return guarded('getPublicBranding', () => _getPublicBranding(...args))
+}
+
+async function _getPublicBranding() {
   const brand = getBrand()
   const settings = await prisma.storeSettings.findFirst({ where: { id: 1 }, select: { storeName: true, logo: true } })
   return { success: true as const, data: { storeName: settings?.storeName || brand.name, logo: settings?.logo || brand.logo } }
 }
 
-export async function getStoreSettings() {
+export async function getStoreSettings(...args: Parameters<typeof _getStoreSettings>): Promise<Awaited<ReturnType<typeof _getStoreSettings>>> {
+  return guarded('getStoreSettings', () => _getStoreSettings(...args))
+}
+
+async function _getStoreSettings() {
   try { await requireAuth() } catch { return { success: false as const, error: 'Please sign in again' } }
   // Resolve the Active_Vertical's brand so a first-time StoreSettings record
   // is seeded with the correct per-vertical identity (name, contacts, logo)
@@ -170,7 +180,11 @@ export async function getStoreSettings() {
   }
 }
 
-export async function updateStoreSettings(data: unknown) {
+export async function updateStoreSettings(...args: Parameters<typeof _updateStoreSettings>): Promise<Awaited<ReturnType<typeof _updateStoreSettings>>> {
+  return guarded('updateStoreSettings', () => _updateStoreSettings(...args))
+}
+
+async function _updateStoreSettings(data: unknown) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   const parsed = updateSettingsSchema.safeParse(data)
   if (!parsed.success) {
@@ -250,7 +264,11 @@ export async function updateStoreSettings(data: unknown) {
   return { success: true, data: { ...settings, paymentQr: resolvedPaymentQr, whatsappNumber: resolvedWhatsappNumber } }
 }
 
-export async function getMarketplaceChannels() {
+export async function getMarketplaceChannels(...args: Parameters<typeof _getMarketplaceChannels>): Promise<Awaited<ReturnType<typeof _getMarketplaceChannels>>> {
+  return guarded('getMarketplaceChannels', () => _getMarketplaceChannels(...args))
+}
+
+async function _getMarketplaceChannels() {
   try { await requireAuth() } catch { return { success: false as const, error: 'Please sign in again', data: [] } }
   const channels = await prisma.marketplaceChannel.findMany({
     orderBy: { name: 'asc' },
@@ -273,7 +291,11 @@ export async function getMarketplaceChannels() {
 
 const marketplaceChannelSchema = z.object({ connected: z.boolean().optional(), sellerId: z.string().trim().max(100).optional() }).strict()
 
-export async function updateMarketplaceChannel(id: number, data: { connected?: boolean; sellerId?: string }) {
+export async function updateMarketplaceChannel(...args: Parameters<typeof _updateMarketplaceChannel>): Promise<Awaited<ReturnType<typeof _updateMarketplaceChannel>>> {
+  return guarded('updateMarketplaceChannel', () => _updateMarketplaceChannel(...args))
+}
+
+async function _updateMarketplaceChannel(id: number, data: { connected?: boolean; sellerId?: string }) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   // Only these two fields may change (no mass assignment of other columns).
   const parsed = marketplaceChannelSchema.safeParse(data)
@@ -287,7 +309,11 @@ export async function updateMarketplaceChannel(id: number, data: { connected?: b
   return { success: true, data: channel }
 }
 
-export async function getStoreCampaigns() {
+export async function getStoreCampaigns(...args: Parameters<typeof _getStoreCampaigns>): Promise<Awaited<ReturnType<typeof _getStoreCampaigns>>> {
+  return guarded('getStoreCampaigns', () => _getStoreCampaigns(...args))
+}
+
+async function _getStoreCampaigns() {
   try { await requireAuth() } catch { return { success: false as const, error: 'Please sign in again', data: [] } }
   const campaigns = await prisma.storeCampaign.findMany({
     orderBy: { createdAt: 'desc' },

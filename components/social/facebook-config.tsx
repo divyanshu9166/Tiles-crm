@@ -12,6 +12,7 @@ import { useAuth } from '@/hooks/use-auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { confirmDialog } from '@/components/AlertToastProvider';
 
 const MASKED = '••••••••••••••••'
 const DRAFT_KEY = 'fb-config-draft'
@@ -193,7 +194,7 @@ export function FacebookConfig() {
   }
 
   async function handleReset() {
-    if (!confirm('Delete Facebook configuration? This cannot be undone.')) return
+    if (!await confirmDialog('Delete Facebook configuration? This cannot be undone.')) return
     try {
       setResetting(true)
       await fetch('/api/social/config/facebook', { method: 'DELETE' })

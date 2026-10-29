@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { requireRole, requireAuth } from '@/lib/auth-helpers';
@@ -178,7 +180,11 @@ export async function getIndiaMartConfig() {
   }
 }
 
-export async function saveIndiaMartConfig(input) {
+export async function saveIndiaMartConfig(...args) {
+  return guarded('saveIndiaMartConfig', () => _saveIndiaMartConfig(...args))
+}
+
+async function _saveIndiaMartConfig(input) {
   try {
     await requireRole('ADMIN')
   } catch {

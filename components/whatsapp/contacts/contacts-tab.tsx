@@ -44,6 +44,7 @@ import {
 import { ContactForm } from '@/components/whatsapp/contacts/contact-form';
 import { ContactDetailView } from '@/components/whatsapp/contacts/contact-detail-view';
 import { ImportModal } from '@/components/whatsapp/contacts/import-modal';
+import { confirmDialog } from '@/components/AlertToastProvider';
 
 const PAGE_SIZE = 25;
 
@@ -127,7 +128,7 @@ export function ContactsTab() {
   }
 
   async function handleRemoveSmokeContacts() {
-    if (!window.confirm('Remove all "WA Smoke Contact" test entries?')) return;
+    if (!await confirmDialog('Remove all "WA Smoke Contact" test entries?')) return;
     setCleaningSmoke(true);
     try {
       const res = await fetch('/api/whatsapp/contacts', { method: 'DELETE' });

@@ -15,6 +15,7 @@ import {
 } from '@/app/actions/payroll'
 import Modal from '@/components/Modal'
 import { getBrand } from '@/lib/brand'
+import { confirmDialog } from '@/components/AlertToastProvider';
 
 const brand = getBrand()
 
@@ -215,7 +216,7 @@ export default function PayrollPage() {
   }
 
   const handleCloseLoan = async (id) => {
-    if (!confirm('Close this loan? Remaining balance will be cleared.')) return
+    if (!await confirmDialog('Close this loan? Remaining balance will be cleared.')) return
     const res = await closeStaffLoan(id)
     if (res.success) loadAll()
     else alert(res.error)
@@ -229,7 +230,7 @@ export default function PayrollPage() {
     }
 
     const unconfigured = staffList.filter(s => !s.basicSalary)
-    if (unconfigured.length > 0 && !confirm(`${unconfigured.length} staff have ₹0 basic salary. Continue?`)) return
+    if (unconfigured.length > 0 && !await confirmDialog(`${unconfigured.length} staff have ₹0 basic salary. Continue?`)) return
 
     setGenerating(true)
     setGeneratedRun(null)
@@ -250,7 +251,7 @@ export default function PayrollPage() {
   }
 
   const handleMarkPaid = async (id) => {
-    if (!confirm('Mark entire payroll as PAID? This cannot be undone.')) return
+    if (!await confirmDialog('Mark entire payroll as PAID? This cannot be undone.')) return
     const res = await markPayrollPaid(id)
     if (res.success) loadAll()
     else alert(res.error)

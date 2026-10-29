@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { createProductSchema, updateProductSchema, updateStockSchema } from '@/lib/validations/product'
@@ -34,7 +36,11 @@ const toRequiredNumber = (value: unknown) => {
   return Number.isFinite(n) ? n : Number.NaN
 }
 
-export async function getProducts() {
+export async function getProducts(...args: Parameters<typeof _getProducts>): Promise<Awaited<ReturnType<typeof _getProducts>>> {
+  return guarded('getProducts', () => _getProducts(...args))
+}
+
+async function _getProducts() {
   await requireAuth()
   const products = await prisma.product.findMany({
     include: {
@@ -113,7 +119,11 @@ export async function getProducts() {
   }
 }
 
-export async function getProduct(id: number) {
+export async function getProduct(...args: Parameters<typeof _getProduct>): Promise<Awaited<ReturnType<typeof _getProduct>>> {
+  return guarded('getProduct', () => _getProduct(...args))
+}
+
+async function _getProduct(id: number) {
   await requireAuth()
   const product = await prisma.product.findUnique({
     where: { id },
@@ -146,7 +156,11 @@ export async function createProduct(data: unknown) {
   } catch (error) { return { success: false, error: inventoryError(error) } }
 }
 
-export async function bulkImportRawMaterials(rows: BulkRawMaterialRow[]) {
+export async function bulkImportRawMaterials(...args: Parameters<typeof _bulkImportRawMaterials>): Promise<Awaited<ReturnType<typeof _bulkImportRawMaterials>>> {
+  return guarded('bulkImportRawMaterials', () => _bulkImportRawMaterials(...args))
+}
+
+async function _bulkImportRawMaterials(rows: BulkRawMaterialRow[]) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   if (!rows || rows.length === 0) return { success: false, error: 'No raw materials to import' }
 
@@ -255,7 +269,11 @@ export interface BulkProductRow {
   godownId?: number
 }
 
-export async function bulkImportProducts(rows: BulkProductRow[]) {
+export async function bulkImportProducts(...args: Parameters<typeof _bulkImportProducts>): Promise<Awaited<ReturnType<typeof _bulkImportProducts>>> {
+  return guarded('bulkImportProducts', () => _bulkImportProducts(...args))
+}
+
+async function _bulkImportProducts(rows: BulkProductRow[]) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   if (!rows || rows.length === 0) return { success: false, error: 'No products to import' }
 
@@ -440,7 +458,11 @@ export async function deleteProduct(id: number) {
   return moveProductToDraft(id)
 }
 
-export async function deleteRawMaterial(id: number) {
+export async function deleteRawMaterial(...args: Parameters<typeof _deleteRawMaterial>): Promise<Awaited<ReturnType<typeof _deleteRawMaterial>>> {
+  return guarded('deleteRawMaterial', () => _deleteRawMaterial(...args))
+}
+
+async function _deleteRawMaterial(id: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const product = await prisma.product.findUnique({ where: { id }, include: { category: true } })
   if (!product || product.category.name !== 'Raw Material') return { success: false, error: 'Raw material not found' }

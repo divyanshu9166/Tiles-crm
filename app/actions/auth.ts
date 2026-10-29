@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import bcrypt from 'bcryptjs'
 import { z } from 'zod'
@@ -40,7 +42,11 @@ const updateAccountSchema = z.object({
   newPassword: z.string().optional(),
 })
 
-export async function createUser(data: unknown) {
+export async function createUser(...args: Parameters<typeof _createUser>): Promise<Awaited<ReturnType<typeof _createUser>>> {
+  return guarded('createUser', () => _createUser(...args))
+}
+
+async function _createUser(data: unknown) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   const parsed = createUserSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -66,7 +72,11 @@ export async function createUser(data: unknown) {
   }
 }
 
-export async function updatePassword(data: unknown) {
+export async function updatePassword(...args: Parameters<typeof _updatePassword>): Promise<Awaited<ReturnType<typeof _updatePassword>>> {
+  return guarded('updatePassword', () => _updatePassword(...args))
+}
+
+async function _updatePassword(data: unknown) {
   let session
   try { session = await requireAuth() } catch { return { success: false, error: 'Please sign in again' } }
   const parsed = updatePasswordSchema.safeParse(data)
@@ -97,7 +107,11 @@ export async function updatePassword(data: unknown) {
   return { success: true }
 }
 
-export async function listUsers() {
+export async function listUsers(...args: Parameters<typeof _listUsers>): Promise<Awaited<ReturnType<typeof _listUsers>>> {
+  return guarded('listUsers', () => _listUsers(...args))
+}
+
+async function _listUsers() {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required', data: [] } }
   const users = await prisma.user.findMany({
     select: {
@@ -115,7 +129,11 @@ export async function listUsers() {
   return { success: true, data: users }
 }
 
-export async function updateAccountCredentials(data: unknown) {
+export async function updateAccountCredentials(...args: Parameters<typeof _updateAccountCredentials>): Promise<Awaited<ReturnType<typeof _updateAccountCredentials>>> {
+  return guarded('updateAccountCredentials', () => _updateAccountCredentials(...args))
+}
+
+async function _updateAccountCredentials(data: unknown) {
   let session
   try { session = await requireAuth() } catch { return { success: false, error: 'Unauthorized' } }
 
@@ -184,7 +202,11 @@ export async function updateAccountCredentials(data: unknown) {
   return { success: true, data: { email: updated.email } }
 }
 
-export async function toggleUserActive(userId: number) {
+export async function toggleUserActive(...args: Parameters<typeof _toggleUserActive>): Promise<Awaited<ReturnType<typeof _toggleUserActive>>> {
+  return guarded('toggleUserActive', () => _toggleUserActive(...args))
+}
+
+async function _toggleUserActive(userId: number) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   const user = await prisma.user.findUnique({ where: { id: userId } })
   if (!user) return { success: false, error: 'User not found' }

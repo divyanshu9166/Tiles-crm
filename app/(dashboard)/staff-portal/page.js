@@ -21,6 +21,7 @@ import { getStaffVisits, updateFieldVisit, logSelfVisit, getSelfVisits, updateSe
 import { moveSelfVisitToDraft } from '@/app/actions/drafts';
 import { getProducts } from '@/app/actions/products';
 import { getStaffProductionOrders, staffUpdateProductionStep, staffUpdateProductionProgress, staffAddStepNote } from '@/app/actions/manufacturing';
+import { confirmDialog } from '@/components/AlertToastProvider';
 
 const activityIcons = {
   call: { icon: Phone, color: 'bg-blue-500/10 text-blue-700', label: 'Call' },
@@ -429,7 +430,7 @@ export default function StaffPortalPage() {
 
   // ========== MOVE SELF VISIT TO DRAFT ==========
   const handleMoveSelfVisitToDraft = async (visitId) => {
-    if (!confirm('Move this visit to drafts? It will be permanently deleted after 30 days.')) return;
+    if (!await confirmDialog('Move this visit to drafts? It will be permanently deleted after 30 days.')) return;
     setDeletingVisitId(visitId);
     const res = await moveSelfVisitToDraft(visitId);
     if (res.success) {

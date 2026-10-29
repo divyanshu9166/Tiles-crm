@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { requireRole, requireAuth } from '@/lib/auth-helpers'
@@ -19,7 +21,11 @@ const createBatchSchema = z.object({
   shadeCode: z.string().trim().optional(),
 }).refine(v => v.remainingQty <= v.quantity, { message: 'Remaining quantity cannot exceed received quantity' })
 
-export async function getBatches(productId?: number) {
+export async function getBatches(...args: Parameters<typeof _getBatches>): Promise<Awaited<ReturnType<typeof _getBatches>>> {
+  return guarded('getBatches', () => _getBatches(...args))
+}
+
+async function _getBatches(productId?: number) {
   await requireAuth()
   const batches = await prisma.productBatch.findMany({
     where: productId ? { productId } : undefined,
@@ -59,7 +65,11 @@ export async function createBatch(data: unknown) {
   } catch (error) { return { success: false, error: inventoryError(error) } }
 }
 
-export async function getAgingAnalysis() {
+export async function getAgingAnalysis(...args: Parameters<typeof _getAgingAnalysis>): Promise<Awaited<ReturnType<typeof _getAgingAnalysis>>> {
+  return guarded('getAgingAnalysis', () => _getAgingAnalysis(...args))
+}
+
+async function _getAgingAnalysis() {
   await requireAuth()
   const batches = await prisma.productBatch.findMany({
     where: { remainingQty: { gt: 0 } },

@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { customerSupplyType } from '@/lib/erp/supply-type'
 import { nextInvoiceNumber } from '@/lib/erp/sequence'
@@ -207,7 +209,11 @@ async function restoreInvoiceInventory(tx: any, invoice: any) {
 
 // ─── GET ALL INVOICES ──────────────────────────────────
 
-export async function getInvoices() {
+export async function getInvoices(...args: Parameters<typeof _getInvoices>): Promise<Awaited<ReturnType<typeof _getInvoices>>> {
+  return guarded('getInvoices', () => _getInvoices(...args))
+}
+
+async function _getInvoices() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const invoices = await prisma.invoice.findMany({
     include: {
@@ -300,7 +306,11 @@ export async function getInvoices() {
 
 // ─── GET SINGLE INVOICE ────────────────────────────────
 
-export async function getInvoice(id: number) {
+export async function getInvoice(...args: Parameters<typeof _getInvoice>): Promise<Awaited<ReturnType<typeof _getInvoice>>> {
+  return guarded('getInvoice', () => _getInvoice(...args))
+}
+
+async function _getInvoice(id: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const invoice = await prisma.invoice.findUnique({
     where: { id },
@@ -318,7 +328,11 @@ export async function getInvoice(id: number) {
 
 // ─── CREATE INVOICE ────────────────────────────────────
 
-export async function createInvoice(data: unknown) {
+export async function createInvoice(...args: Parameters<typeof _createInvoice>): Promise<Awaited<ReturnType<typeof _createInvoice>>> {
+  return guarded('createInvoice', () => _createInvoice(...args))
+}
+
+async function _createInvoice(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createInvoiceSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -617,7 +631,11 @@ export async function createInvoice(data: unknown) {
 
 // ─── UPDATE INVOICE (ADMIN ONLY) ──────────────────────
 
-export async function updateInvoice(invoiceId: number, data: unknown) {
+export async function updateInvoice(...args: Parameters<typeof _updateInvoice>): Promise<Awaited<ReturnType<typeof _updateInvoice>>> {
+  return guarded('updateInvoice', () => _updateInvoice(...args))
+}
+
+async function _updateInvoice(invoiceId: number, data: unknown) {
   try {
     await requireRole('ADMIN')
   } catch {
@@ -906,7 +924,11 @@ export async function recordPayment(data: unknown) {
 
 // ─── CANCEL INVOICE ────────────────────────────────────
 
-export async function cancelInvoice(invoiceId: number) {
+export async function cancelInvoice(...args: Parameters<typeof _cancelInvoice>): Promise<Awaited<ReturnType<typeof _cancelInvoice>>> {
+  return guarded('cancelInvoice', () => _cancelInvoice(...args))
+}
+
+async function _cancelInvoice(invoiceId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId }, include: { items: true } })
   if (!invoice) return { success: false, error: 'Invoice not found' }
@@ -1010,7 +1032,11 @@ export async function recordCustomerRefund(data: unknown) {
 
 // ─── FINALIZE HELD BILL ────────────────────────────────
 
-export async function finalizeHeldInvoice(invoiceId: number) {
+export async function finalizeHeldInvoice(...args: Parameters<typeof _finalizeHeldInvoice>): Promise<Awaited<ReturnType<typeof _finalizeHeldInvoice>>> {
+  return guarded('finalizeHeldInvoice', () => _finalizeHeldInvoice(...args))
+}
+
+async function _finalizeHeldInvoice(invoiceId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId }, include: { items: true } })
   if (!invoice) return { success: false, error: 'Invoice not found' }
@@ -1034,7 +1060,11 @@ export async function finalizeHeldInvoice(invoiceId: number) {
 
 // ─── SEARCH CONTACTS (for auto-complete) ───────────────
 
-export async function searchContacts(query: string) {
+export async function searchContacts(...args: Parameters<typeof _searchContacts>): Promise<Awaited<ReturnType<typeof _searchContacts>>> {
+  return guarded('searchContacts', () => _searchContacts(...args))
+}
+
+async function _searchContacts(query: string) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   if (!query || query.length < 2) return { success: true, data: [] }
 
@@ -1064,7 +1094,11 @@ export async function searchContacts(query: string) {
 
 // ─── GET CUSTOMER PROFILE (returning customer detection) ──
 
-export async function getCustomerProfile(phone: string, contactId?: number) {
+export async function getCustomerProfile(...args: Parameters<typeof _getCustomerProfile>): Promise<Awaited<ReturnType<typeof _getCustomerProfile>>> {
+  return guarded('getCustomerProfile', () => _getCustomerProfile(...args))
+}
+
+async function _getCustomerProfile(phone: string, contactId?: number) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const selectFields = {
     id: true,
@@ -1141,7 +1175,11 @@ export async function getCustomerProfile(phone: string, contactId?: number) {
 
 // ─── GET INVOICE STATS ─────────────────────────────────
 
-export async function getInvoiceStats() {
+export async function getInvoiceStats(...args: Parameters<typeof _getInvoiceStats>): Promise<Awaited<ReturnType<typeof _getInvoiceStats>>> {
+  return guarded('getInvoiceStats', () => _getInvoiceStats(...args))
+}
+
+async function _getInvoiceStats() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const now = new Date()
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())

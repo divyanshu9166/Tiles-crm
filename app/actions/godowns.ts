@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { requireRole, requireAuth } from '@/lib/auth-helpers'
@@ -39,7 +41,11 @@ export async function getOrCreateDefaultGodown() {
 
 // ─── STOCK LEDGER ────────────────────────────────────────
 
-export async function getStockLedger(filters?: { productId?: number; godownId?: number; limit?: number }) {
+export async function getStockLedger(...args: Parameters<typeof _getStockLedger>): Promise<Awaited<ReturnType<typeof _getStockLedger>>> {
+  return guarded('getStockLedger', () => _getStockLedger(...args))
+}
+
+async function _getStockLedger(filters?: { productId?: number; godownId?: number; limit?: number }) {
   await requireAuth()
   const entries = await prisma.stockLedger.findMany({
     where: {
@@ -58,7 +64,11 @@ export async function getStockLedger(filters?: { productId?: number; godownId?: 
 
 // ─── GODOWN STOCK SUMMARY ────────────────────────────────
 
-export async function getGodownStockSummary() {
+export async function getGodownStockSummary(...args: Parameters<typeof _getGodownStockSummary>): Promise<Awaited<ReturnType<typeof _getGodownStockSummary>>> {
+  return guarded('getGodownStockSummary', () => _getGodownStockSummary(...args))
+}
+
+async function _getGodownStockSummary() {
   await requireAuth()
   const godowns = await prisma.godown.findMany({
     include: {
@@ -94,7 +104,11 @@ export async function getGodownStockSummary() {
 
 // ─── BRANCHES ────────────────────────────────────────
 
-export async function getBranches() {
+export async function getBranches(...args: Parameters<typeof _getBranches>): Promise<Awaited<ReturnType<typeof _getBranches>>> {
+  return guarded('getBranches', () => _getBranches(...args))
+}
+
+async function _getBranches() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const branches = await prisma.branch.findMany({
     orderBy: { name: 'asc' },
@@ -106,7 +120,11 @@ export async function getBranches() {
   return { success: true, data: branches }
 }
 
-export async function createBranch(data: unknown) {
+export async function createBranch(...args: Parameters<typeof _createBranch>): Promise<Awaited<ReturnType<typeof _createBranch>>> {
+  return guarded('createBranch', () => _createBranch(...args))
+}
+
+async function _createBranch(data: unknown) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   const parsed = createBranchSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -116,7 +134,11 @@ export async function createBranch(data: unknown) {
   return { success: true, data: branch }
 }
 
-export async function updateBranch(id: number, data: unknown) {
+export async function updateBranch(...args: Parameters<typeof _updateBranch>): Promise<Awaited<ReturnType<typeof _updateBranch>>> {
+  return guarded('updateBranch', () => _updateBranch(...args))
+}
+
+async function _updateBranch(id: number, data: unknown) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   const parsed = createBranchSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -126,7 +148,11 @@ export async function updateBranch(id: number, data: unknown) {
   return { success: true, data: branch }
 }
 
-export async function deleteBranch(id: number) {
+export async function deleteBranch(...args: Parameters<typeof _deleteBranch>): Promise<Awaited<ReturnType<typeof _deleteBranch>>> {
+  return guarded('deleteBranch', () => _deleteBranch(...args))
+}
+
+async function _deleteBranch(id: number) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   const godownCount = await prisma.godown.count({ where: { branchId: id } })
   if (godownCount > 0) return { success: false, error: 'Cannot delete branch with godowns. Remove godowns first.' }
@@ -137,7 +163,11 @@ export async function deleteBranch(id: number) {
 
 // ─── GODOWNS ─────────────────────────────────────────
 
-export async function getGodowns() {
+export async function getGodowns(...args: Parameters<typeof _getGodowns>): Promise<Awaited<ReturnType<typeof _getGodowns>>> {
+  return guarded('getGodowns', () => _getGodowns(...args))
+}
+
+async function _getGodowns() {
   await requireAuth()
   const godowns = await prisma.godown.findMany({
     orderBy: { name: 'asc' },
@@ -149,7 +179,11 @@ export async function getGodowns() {
   return { success: true, data: godowns }
 }
 
-export async function createGodown(data: unknown) {
+export async function createGodown(...args: Parameters<typeof _createGodown>): Promise<Awaited<ReturnType<typeof _createGodown>>> {
+  return guarded('createGodown', () => _createGodown(...args))
+}
+
+async function _createGodown(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createGodownSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -169,7 +203,11 @@ export async function createGodown(data: unknown) {
   return { success: true, data: godown }
 }
 
-export async function updateGodown(id: number, data: unknown) {
+export async function updateGodown(...args: Parameters<typeof _updateGodown>): Promise<Awaited<ReturnType<typeof _updateGodown>>> {
+  return guarded('updateGodown', () => _updateGodown(...args))
+}
+
+async function _updateGodown(id: number, data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createGodownSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -183,7 +221,11 @@ export async function updateGodown(id: number, data: unknown) {
   return { success: true, data: godown }
 }
 
-export async function deleteGodown(id: number) {
+export async function deleteGodown(...args: Parameters<typeof _deleteGodown>): Promise<Awaited<ReturnType<typeof _deleteGodown>>> {
+  return guarded('deleteGodown', () => _deleteGodown(...args))
+}
+
+async function _deleteGodown(id: number) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   const stockCount = await prisma.godownStock.count({ where: { godownId: id } })
   if (await prisma.slab.count({ where: { godownId: id } }) > 0) return { success: false, error: 'This location contains physical slabs. Move those slabs first.' }
@@ -209,7 +251,11 @@ export async function setDefaultGodown(id: number) {
 
 // ─── GODOWN STOCK ─────────────────────────────────────
 
-export async function getGodownStock(godownId?: number) {
+export async function getGodownStock(...args: Parameters<typeof _getGodownStock>): Promise<Awaited<ReturnType<typeof _getGodownStock>>> {
+  return guarded('getGodownStock', () => _getGodownStock(...args))
+}
+
+async function _getGodownStock(godownId?: number) {
   await requireAuth()
   const stocks = await prisma.godownStock.findMany({
     where: godownId ? { godownId } : undefined,
@@ -242,7 +288,11 @@ export async function updateGodownStock(productId: number, godownId: number, qua
 
 // ─── INTER-GODOWN TRANSFERS ──────────────────────────
 
-export async function getTransfers() {
+export async function getTransfers(...args: Parameters<typeof _getTransfers>): Promise<Awaited<ReturnType<typeof _getTransfers>>> {
+  return guarded('getTransfers', () => _getTransfers(...args))
+}
+
+async function _getTransfers() {
   await requireAuth()
   const transfers = await prisma.godownTransfer.findMany({
     orderBy: { date: 'desc' },
@@ -255,7 +305,11 @@ export async function getTransfers() {
   return { success: true, data: transfers }
 }
 
-export async function createTransfer(data: unknown) {
+export async function createTransfer(...args: Parameters<typeof _createTransfer>): Promise<Awaited<ReturnType<typeof _createTransfer>>> {
+  return guarded('createTransfer', () => _createTransfer(...args))
+}
+
+async function _createTransfer(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createTransferSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -369,7 +423,11 @@ export async function completeTransfer(id: number, _approvedBy?: string) {
 }
 
 // A pending transfer moved no stock yet, so cancelling only closes it.
-export async function cancelTransfer(id: number) {
+export async function cancelTransfer(...args: Parameters<typeof _cancelTransfer>): Promise<Awaited<ReturnType<typeof _cancelTransfer>>> {
+  return guarded('cancelTransfer', () => _cancelTransfer(...args))
+}
+
+async function _cancelTransfer(id: number) {
   let actor: string
   try { actor = (await requireRole('ADMIN', 'MANAGER')).user.name || 'Manager' } catch { return { success: false, error: 'Access denied' } }
   const claimed = await prisma.godownTransfer.updateMany({ where: { id, status: 'Pending' }, data: { status: 'Cancelled', approvedBy: actor } })
@@ -384,7 +442,11 @@ export async function cancelTransfer(id: number) {
  * One-time migration: Creates GodownStock entries from existing Product.stock values.
  * Ensures all products have their stock allocated in the default godown.
  */
-export async function migrateExistingStockToGodowns() {
+export async function migrateExistingStockToGodowns(...args: Parameters<typeof _migrateExistingStockToGodowns>): Promise<Awaited<ReturnType<typeof _migrateExistingStockToGodowns>>> {
+  return guarded('migrateExistingStockToGodowns', () => _migrateExistingStockToGodowns(...args))
+}
+
+async function _migrateExistingStockToGodowns() {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
 
   const defaultGodown = await getOrCreateDefaultGodown()

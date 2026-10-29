@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import type { Prisma } from '@prisma/client'
 import { revalidatePath } from 'next/cache'
@@ -146,7 +148,11 @@ function calcAgingRisk(totalOutstanding: number, over90Amount: number, topItems:
   }
 }
 
-export async function seedChartOfAccounts() {
+export async function seedChartOfAccounts(...args: Parameters<typeof _seedChartOfAccounts>): Promise<Awaited<ReturnType<typeof _seedChartOfAccounts>>> {
+  return guarded('seedChartOfAccounts', () => _seedChartOfAccounts(...args))
+}
+
+async function _seedChartOfAccounts() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const existing = await prisma.ledgerAccount.count()
   if (existing > 0) return { success: true, message: 'Chart of accounts already exists' }
@@ -168,7 +174,11 @@ export async function seedChartOfAccounts() {
   return { success: true, message: 'Chart of accounts created' }
 }
 
-export async function getAccounts() {
+export async function getAccounts(...args: Parameters<typeof _getAccounts>): Promise<Awaited<ReturnType<typeof _getAccounts>>> {
+  return guarded('getAccounts', () => _getAccounts(...args))
+}
+
+async function _getAccounts() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const groups = await prisma.accountGroup.findMany({
     include: { accounts: { orderBy: { code: 'asc' } } },
@@ -177,7 +187,11 @@ export async function getAccounts() {
   return { success: true, data: groups }
 }
 
-export async function createAccount(data: unknown) {
+export async function createAccount(...args: Parameters<typeof _createAccount>): Promise<Awaited<ReturnType<typeof _createAccount>>> {
+  return guarded('createAccount', () => _createAccount(...args))
+}
+
+async function _createAccount(data: unknown) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   const parsed = createAccountSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -192,7 +206,11 @@ export async function createAccount(data: unknown) {
 
 // ─── PROFIT & LOSS (CORRECTED) ────────────────────────
 
-export async function getProfitAndLoss(fromDate: string, toDate: string, compareFrom?: string, compareTo?: string) {
+export async function getProfitAndLoss(...args: Parameters<typeof _getProfitAndLoss>): Promise<Awaited<ReturnType<typeof _getProfitAndLoss>>> {
+  return guarded('getProfitAndLoss', () => _getProfitAndLoss(...args))
+}
+
+async function _getProfitAndLoss(fromDate: string, toDate: string, compareFrom?: string, compareTo?: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
   if (!parseDateRange(fromDate, toDate)) {
@@ -309,7 +327,11 @@ export async function getProfitAndLoss(fromDate: string, toDate: string, compare
 
 // ─── BALANCE SHEET ────────────────────────────────────
 
-export async function getBalanceSheet(asOfDate: string) {
+export async function getBalanceSheet(...args: Parameters<typeof _getBalanceSheet>): Promise<Awaited<ReturnType<typeof _getBalanceSheet>>> {
+  return guarded('getBalanceSheet', () => _getBalanceSheet(...args))
+}
+
+async function _getBalanceSheet(asOfDate: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
   const asOf = parseAsOfDate(asOfDate)
@@ -406,7 +428,11 @@ export async function getBalanceSheet(asOfDate: string) {
 
 // ─── CASH FLOW ────────────────────────────────────────
 
-export async function getCashFlow(fromDate: string, toDate: string) {
+export async function getCashFlow(...args: Parameters<typeof _getCashFlow>): Promise<Awaited<ReturnType<typeof _getCashFlow>>> {
+  return guarded('getCashFlow', () => _getCashFlow(...args))
+}
+
+async function _getCashFlow(fromDate: string, toDate: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
   const range = parseDateRange(fromDate, toDate)
@@ -473,7 +499,11 @@ export async function getCashFlow(fromDate: string, toDate: string) {
   }
 }
 
-export async function getExecutiveSummary(fromDate: string, toDate: string) {
+export async function getExecutiveSummary(...args: Parameters<typeof _getExecutiveSummary>): Promise<Awaited<ReturnType<typeof _getExecutiveSummary>>> {
+  return guarded('getExecutiveSummary', () => _getExecutiveSummary(...args))
+}
+
+async function _getExecutiveSummary(fromDate: string, toDate: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
   const range = parseDateRange(fromDate, toDate)
@@ -574,7 +604,11 @@ export async function getExecutiveSummary(fromDate: string, toDate: string) {
 
 // ─── TRIAL BALANCE ────────────────────────────────────
 
-export async function getTrialBalance(asOfDate: string) {
+export async function getTrialBalance(...args: Parameters<typeof _getTrialBalance>): Promise<Awaited<ReturnType<typeof _getTrialBalance>>> {
+  return guarded('getTrialBalance', () => _getTrialBalance(...args))
+}
+
+async function _getTrialBalance(asOfDate: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
   const asOf = parseAsOfDate(asOfDate)
@@ -658,7 +692,11 @@ export async function getTrialBalance(asOfDate: string) {
 
 // ─── RECEIVABLES AGING ────────────────────────────────
 
-export async function getReceivablesAging() {
+export async function getReceivablesAging(...args: Parameters<typeof _getReceivablesAging>): Promise<Awaited<ReturnType<typeof _getReceivablesAging>>> {
+  return guarded('getReceivablesAging', () => _getReceivablesAging(...args))
+}
+
+async function _getReceivablesAging() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
   const today = new Date()
@@ -710,7 +748,11 @@ export async function getReceivablesAging() {
 
 // ─── PAYABLES AGING ──────────────────────────────────
 
-export async function getPayablesAging() {
+export async function getPayablesAging(...args: Parameters<typeof _getPayablesAging>): Promise<Awaited<ReturnType<typeof _getPayablesAging>>> {
+  return guarded('getPayablesAging', () => _getPayablesAging(...args))
+}
+
+async function _getPayablesAging() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
   const today = new Date()
@@ -770,7 +812,11 @@ export async function getPayablesAging() {
 
 // ─── JOURNAL ENTRIES ─────────────────────────────────
 
-export async function getJournalEntries(fromDate?: string, toDate?: string) {
+export async function getJournalEntries(...args: Parameters<typeof _getJournalEntries>): Promise<Awaited<ReturnType<typeof _getJournalEntries>>> {
+  return guarded('getJournalEntries', () => _getJournalEntries(...args))
+}
+
+async function _getJournalEntries(fromDate?: string, toDate?: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
 
   const where: Record<string, unknown> = {}
@@ -794,7 +840,11 @@ export async function getJournalEntries(fromDate?: string, toDate?: string) {
   return { success: true, data: entries }
 }
 
-export async function createManualJournal(data: unknown) {
+export async function createManualJournal(...args: Parameters<typeof _createManualJournal>): Promise<Awaited<ReturnType<typeof _createManualJournal>>> {
+  return guarded('createManualJournal', () => _createManualJournal(...args))
+}
+
+async function _createManualJournal(data: unknown) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   const parsed = createJournalSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -836,7 +886,11 @@ export async function createManualJournal(data: unknown) {
   return { success: true, data: entry }
 }
 
-export async function voidJournalEntry(id: number) {
+export async function voidJournalEntry(...args: Parameters<typeof _voidJournalEntry>): Promise<Awaited<ReturnType<typeof _voidJournalEntry>>> {
+  return guarded('voidJournalEntry', () => _voidJournalEntry(...args))
+}
+
+async function _voidJournalEntry(id: number) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   const entry = await prisma.journalEntry.findUnique({ where: { id }, select: { status: true, isAuto: true, referenceType: true } })
   if (!entry) return { success: false, error: 'Journal entry not found' }

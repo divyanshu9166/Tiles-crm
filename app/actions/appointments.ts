@@ -1,12 +1,18 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { createAppointmentSchema } from '@/lib/validations/appointment'
 import { requireAuth } from '@/lib/auth-helpers'
 import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
 
-export async function getAppointments() {
+export async function getAppointments(...args: Parameters<typeof _getAppointments>): Promise<Awaited<ReturnType<typeof _getAppointments>>> {
+  return guarded('getAppointments', () => _getAppointments(...args))
+}
+
+async function _getAppointments() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const appointments = await prisma.appointment.findMany({
     include: { contact: true },
@@ -28,7 +34,11 @@ export async function getAppointments() {
   }
 }
 
-export async function createAppointment(data: unknown) {
+export async function createAppointment(...args: Parameters<typeof _createAppointment>): Promise<Awaited<ReturnType<typeof _createAppointment>>> {
+  return guarded('createAppointment', () => _createAppointment(...args))
+}
+
+async function _createAppointment(data: unknown) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = createAppointmentSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -61,7 +71,11 @@ export async function createAppointment(data: unknown) {
   return { success: true, data: appointment }
 }
 
-export async function updateAppointmentStatus(id: number, status: string) {
+export async function updateAppointmentStatus(...args: Parameters<typeof _updateAppointmentStatus>): Promise<Awaited<ReturnType<typeof _updateAppointmentStatus>>> {
+  return guarded('updateAppointmentStatus', () => _updateAppointmentStatus(...args))
+}
+
+async function _updateAppointmentStatus(id: number, status: string) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const appointment = await prisma.appointment.update({
     where: { id },

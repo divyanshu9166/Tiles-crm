@@ -17,6 +17,7 @@ import {
 } from '@/app/actions/email-campaigns';
 import Link from 'next/link';
 import { getActiveVertical } from '@/lib/brand';
+import { confirmDialog } from '@/components/AlertToastProvider';
 
 // ─── Constants ──────────────────────────────────────
 
@@ -240,7 +241,7 @@ export default function EmailMarketingPage() {
   };
 
   const handleSendCampaign = async (id) => {
-    if (!confirm('This will send the campaign to all eligible recipients. Continue?')) return;
+    if (!await confirmDialog('This will send the campaign to all eligible recipients. Continue?')) return;
     setSubmitting(true);
     const res = await sendEmailCampaign(id);
     if (res.success) {
@@ -251,7 +252,7 @@ export default function EmailMarketingPage() {
   };
 
   const handleDeleteCampaign = async (id) => {
-    if (!confirm('Delete this campaign permanently?')) return;
+    if (!await confirmDialog('Delete this campaign permanently?')) return;
     await deleteEmailCampaign(id);
     setSelectedCampaign(null);
     await refresh();
@@ -263,7 +264,7 @@ export default function EmailMarketingPage() {
   };
 
   const handleDeleteTemplate = async (id) => {
-    if (!confirm('Delete this template?')) return;
+    if (!await confirmDialog('Delete this template?')) return;
     const res = await deleteEmailTemplate(id);
     if (!res.success) alert(res.error);
     await refresh();

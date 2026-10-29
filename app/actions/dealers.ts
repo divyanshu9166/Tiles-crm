@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { requireAuth } from '@/lib/auth-helpers'
 import { revalidatePath } from 'next/cache'
@@ -169,7 +171,11 @@ const dealerInclude = {
   _count: { select: { orders: true } },
 }
 
-export async function getDealerStaff() {
+export async function getDealerStaff(...args: Parameters<typeof _getDealerStaff>): Promise<Awaited<ReturnType<typeof _getDealerStaff>>> {
+  return guarded('getDealerStaff', () => _getDealerStaff(...args))
+}
+
+async function _getDealerStaff() {
   const session = await actor()
   if (!session) return { success: false, error: 'Unauthorized' }
   const staffWhere: any = { status: { not: 'Inactive' } }
@@ -178,7 +184,11 @@ export async function getDealerStaff() {
   return { success: true, data: staff }
 }
 
-export async function getDealers(filters?: { status?: string; search?: string; territory?: string }) {
+export async function getDealers(...args: Parameters<typeof _getDealers>): Promise<Awaited<ReturnType<typeof _getDealers>>> {
+  return guarded('getDealers', () => _getDealers(...args))
+}
+
+async function _getDealers(filters?: { status?: string; search?: string; territory?: string }) {
   const session = await actor()
   if (!session) return { success: false, error: 'Unauthorized' }
   const where: any = {}
@@ -210,7 +220,11 @@ export async function getDealers(filters?: { status?: string; search?: string; t
   return { success: true, data: dealers.map(mapDealer).sort((a, b) => (dealerStatusOrder[a.status] || 99) - (dealerStatusOrder[b.status] || 99) || String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''))) }
 }
 
-export async function getDealer(id: number) {
+export async function getDealer(...args: Parameters<typeof _getDealer>): Promise<Awaited<ReturnType<typeof _getDealer>>> {
+  return guarded('getDealer', () => _getDealer(...args))
+}
+
+async function _getDealer(id: number) {
   const session = await actor()
   if (!session || !(await canAccessDealer(id, session))) return { success: false, error: 'Dealer not found or access denied' }
   const dealer = await prisma.dealer.findUnique({ where: { id }, include: dealerInclude })
@@ -218,7 +232,11 @@ export async function getDealer(id: number) {
   return { success: true, data: { ...mapDealer(dealer), details: dealer, performance: dealerPerformance(dealer) } }
 }
 
-export async function getDealerDashboard() {
+export async function getDealerDashboard(...args: Parameters<typeof _getDealerDashboard>): Promise<Awaited<ReturnType<typeof _getDealerDashboard>>> {
+  return guarded('getDealerDashboard', () => _getDealerDashboard(...args))
+}
+
+async function _getDealerDashboard() {
   const session = await actor()
   if (!session) return { success: false, error: 'Unauthorized' }
   const dealerWhere: any = dealerScopeForSession(session)
@@ -256,7 +274,11 @@ export async function getDealerDashboard() {
   }
 }
 
-export async function createDealer(input: unknown) {
+export async function createDealer(...args: Parameters<typeof _createDealer>): Promise<Awaited<ReturnType<typeof _createDealer>>> {
+  return guarded('createDealer', () => _createDealer(...args))
+}
+
+async function _createDealer(input: unknown) {
   const session = await actor()
   if (!session || !(await canAccessDealer(0, session, true))) return { success: false, error: 'Manager access required' }
   const parsed = createDealerSchema.safeParse(input)
@@ -285,7 +307,11 @@ export async function createDealer(input: unknown) {
   return { success: true, data: dealer }
 }
 
-export async function updateDealer(input: unknown) {
+export async function updateDealer(...args: Parameters<typeof _updateDealer>): Promise<Awaited<ReturnType<typeof _updateDealer>>> {
+  return guarded('updateDealer', () => _updateDealer(...args))
+}
+
+async function _updateDealer(input: unknown) {
   const parsed = updateDealerSchema.safeParse(input)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
   const session = await actor()
@@ -312,7 +338,11 @@ export async function updateDealer(input: unknown) {
   return { success: true, data: dealer }
 }
 
-export async function updateDealerStatus(id: number, status: string, reason?: string) {
+export async function updateDealerStatus(...args: Parameters<typeof _updateDealerStatus>): Promise<Awaited<ReturnType<typeof _updateDealerStatus>>> {
+  return guarded('updateDealerStatus', () => _updateDealerStatus(...args))
+}
+
+async function _updateDealerStatus(id: number, status: string, reason?: string) {
   const session = await actor()
   if (!session || !(await canAccessDealer(id, session))) return { success: false, error: 'Access denied' }
   if (!dealerStatuses.includes(status as any)) return { success: false, error: 'Invalid dealer status' }
@@ -323,7 +353,11 @@ export async function updateDealerStatus(id: number, status: string, reason?: st
   return { success: true, data: dealer }
 }
 
-export async function assignDealer(id: number, staffId: number | null) {
+export async function assignDealer(...args: Parameters<typeof _assignDealer>): Promise<Awaited<ReturnType<typeof _assignDealer>>> {
+  return guarded('assignDealer', () => _assignDealer(...args))
+}
+
+async function _assignDealer(id: number, staffId: number | null) {
   const session = await actor()
   if (!session || !(await canAccessDealer(id, session, true))) return { success: false, error: 'Manager access required' }
   if (staffId) {
@@ -336,7 +370,11 @@ export async function assignDealer(id: number, staffId: number | null) {
   return { success: true, data: dealer }
 }
 
-export async function saveDealerTeam(input: unknown) {
+export async function saveDealerTeam(...args: Parameters<typeof _saveDealerTeam>): Promise<Awaited<ReturnType<typeof _saveDealerTeam>>> {
+  return guarded('saveDealerTeam', () => _saveDealerTeam(...args))
+}
+
+async function _saveDealerTeam(input: unknown) {
   const parsed = dealerTeamSchema.safeParse(input)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
   const session = await actor()
@@ -359,7 +397,11 @@ export async function saveDealerTeam(input: unknown) {
   return { success: true }
 }
 
-export async function createDealerTask(input: unknown) {
+export async function createDealerTask(...args: Parameters<typeof _createDealerTask>): Promise<Awaited<ReturnType<typeof _createDealerTask>>> {
+  return guarded('createDealerTask', () => _createDealerTask(...args))
+}
+
+async function _createDealerTask(input: unknown) {
   const parsed = dealerTaskSchema.safeParse(input)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
   const session = await actor()
@@ -384,7 +426,11 @@ export async function createDealerTask(input: unknown) {
   return { success: true, data: task }
 }
 
-export async function updateDealerTask(id: number, status: string, notes?: string) {
+export async function updateDealerTask(...args: Parameters<typeof _updateDealerTask>): Promise<Awaited<ReturnType<typeof _updateDealerTask>>> {
+  return guarded('updateDealerTask', () => _updateDealerTask(...args))
+}
+
+async function _updateDealerTask(id: number, status: string, notes?: string) {
   const session = await actor()
   const task = await prisma.dealerTask.findUnique({ where: { id }, select: { dealerId: true, assignedStaffId: true, title: true } })
   if (!task || !session || (session.user.role === 'STAFF' && task.assignedStaffId !== session.user.staffId)) return { success: false, error: 'Access denied' }
@@ -395,7 +441,11 @@ export async function updateDealerTask(id: number, status: string, notes?: strin
   return { success: true, data: updated }
 }
 
-export async function createDealerVisit(input: unknown) {
+export async function createDealerVisit(...args: Parameters<typeof _createDealerVisit>): Promise<Awaited<ReturnType<typeof _createDealerVisit>>> {
+  return guarded('createDealerVisit', () => _createDealerVisit(...args))
+}
+
+async function _createDealerVisit(input: unknown) {
   const parsed = dealerVisitSchema.safeParse(input)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
   const session = await actor()
@@ -441,7 +491,11 @@ async function nextDealerOrderDisplayId() {
   return `DO-${year}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
 }
 
-export async function createDealerOrder(input: unknown) {
+export async function createDealerOrder(...args: Parameters<typeof _createDealerOrder>): Promise<Awaited<ReturnType<typeof _createDealerOrder>>> {
+  return guarded('createDealerOrder', () => _createDealerOrder(...args))
+}
+
+async function _createDealerOrder(input: unknown) {
   const parsed = dealerOrderSchema.safeParse(input)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
   const session = await actor()
@@ -498,7 +552,11 @@ export async function createDealerOrder(input: unknown) {
   return { success: true, data: order, creditLimitExceeded }
 }
 
-export async function updateDealerOrderStatus(id: number, status: string, notes?: string) {
+export async function updateDealerOrderStatus(...args: Parameters<typeof _updateDealerOrderStatus>): Promise<Awaited<ReturnType<typeof _updateDealerOrderStatus>>> {
+  return guarded('updateDealerOrderStatus', () => _updateDealerOrderStatus(...args))
+}
+
+async function _updateDealerOrderStatus(id: number, status: string, notes?: string) {
   const session = await actor()
   const order = await prisma.dealerOrder.findUnique({ where: { id }, select: { dealerId: true, status: true, displayId: true, balanceDue: true, paymentDueDate: true, allocationNotes: true } })
   if (!order || !session || !(await canAccessDealer(order.dealerId, session))) return { success: false, error: 'Access denied' }
@@ -531,7 +589,11 @@ export async function updateDealerOrderStatus(id: number, status: string, notes?
   return { success: true, data: updated }
 }
 
-export async function recordDealerPayment(input: unknown) {
+export async function recordDealerPayment(...args: Parameters<typeof _recordDealerPayment>): Promise<Awaited<ReturnType<typeof _recordDealerPayment>>> {
+  return guarded('recordDealerPayment', () => _recordDealerPayment(...args))
+}
+
+async function _recordDealerPayment(input: unknown) {
   const parsed = dealerPaymentSchema.safeParse(input)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
   const session = await actor()
@@ -591,7 +653,11 @@ export async function recordDealerPayment(input: unknown) {
   return { success: true, data: result }
 }
 
-export async function createDealerClaim(input: unknown) {
+export async function createDealerClaim(...args: Parameters<typeof _createDealerClaim>): Promise<Awaited<ReturnType<typeof _createDealerClaim>>> {
+  return guarded('createDealerClaim', () => _createDealerClaim(...args))
+}
+
+async function _createDealerClaim(input: unknown) {
   const parsed = dealerClaimSchema.safeParse(input)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
   const session = await actor()
@@ -612,7 +678,11 @@ export async function createDealerClaim(input: unknown) {
   return { success: true, data: claim }
 }
 
-export async function updateDealerClaim(id: number, status: string, resolution?: string) {
+export async function updateDealerClaim(...args: Parameters<typeof _updateDealerClaim>): Promise<Awaited<ReturnType<typeof _updateDealerClaim>>> {
+  return guarded('updateDealerClaim', () => _updateDealerClaim(...args))
+}
+
+async function _updateDealerClaim(id: number, status: string, resolution?: string) {
   const session = await actor()
   const claim = await prisma.dealerClaim.findUnique({ where: { id }, select: { dealerId: true, type: true, status: true, replacementStatus: true } })
   if (!claim || !session || !(await canAccessDealer(claim.dealerId, session))) return { success: false, error: 'Access denied' }
@@ -627,7 +697,11 @@ export async function updateDealerClaim(id: number, status: string, resolution?:
   return { success: true, data: updated }
 }
 
-export async function updateDealerClaimReplacement(id: number, replacementStatus: string, replacementNotes?: string) {
+export async function updateDealerClaimReplacement(...args: Parameters<typeof _updateDealerClaimReplacement>): Promise<Awaited<ReturnType<typeof _updateDealerClaimReplacement>>> {
+  return guarded('updateDealerClaimReplacement', () => _updateDealerClaimReplacement(...args))
+}
+
+async function _updateDealerClaimReplacement(id: number, replacementStatus: string, replacementNotes?: string) {
   const session = await actor()
   const claim = await prisma.dealerClaim.findUnique({ where: { id }, select: { dealerId: true, status: true, type: true } })
   if (!claim || !session || !(await canAccessDealer(claim.dealerId, session, true))) return { success: false, error: 'Manager access required' }
@@ -639,7 +713,11 @@ export async function updateDealerClaimReplacement(id: number, replacementStatus
   return { success: true, data: updated }
 }
 
-export async function getDealerPriceLists() {
+export async function getDealerPriceLists(...args: Parameters<typeof _getDealerPriceLists>): Promise<Awaited<ReturnType<typeof _getDealerPriceLists>>> {
+  return guarded('getDealerPriceLists', () => _getDealerPriceLists(...args))
+}
+
+async function _getDealerPriceLists() {
   const session = await actor()
   if (!session) return { success: false, error: 'Unauthorized' }
   const where: any = session.user.role === 'STAFF'
@@ -649,7 +727,11 @@ export async function getDealerPriceLists() {
   return { success: true, data: lists.map(list => ({ ...list, validFrom: iso(list.validFrom), validUntil: iso(list.validUntil), createdAt: iso(list.createdAt), updatedAt: iso(list.updatedAt) })) }
 }
 
-export async function createDealerPriceList(input: unknown) {
+export async function createDealerPriceList(...args: Parameters<typeof _createDealerPriceList>): Promise<Awaited<ReturnType<typeof _createDealerPriceList>>> {
+  return guarded('createDealerPriceList', () => _createDealerPriceList(...args))
+}
+
+async function _createDealerPriceList(input: unknown) {
   const session = await actor()
   if (!session || !(await canAccessDealer(0, session, true))) return { success: false, error: 'Manager access required' }
   const parsed = dealerPriceListSchema.safeParse(input)
@@ -667,7 +749,11 @@ export async function createDealerPriceList(input: unknown) {
   return { success: true, data: list }
 }
 
-export async function toggleDealerPriceList(id: number, isActive: boolean) {
+export async function toggleDealerPriceList(...args: Parameters<typeof _toggleDealerPriceList>): Promise<Awaited<ReturnType<typeof _toggleDealerPriceList>>> {
+  return guarded('toggleDealerPriceList', () => _toggleDealerPriceList(...args))
+}
+
+async function _toggleDealerPriceList(id: number, isActive: boolean) {
   const session = await actor()
   if (!session || !(await canAccessDealer(0, session, true))) return { success: false, error: 'Manager access required' }
   const list = await prisma.dealerPriceList.update({ where: { id }, data: { isActive } })

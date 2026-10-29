@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { nextNumber } from '@/lib/erp/sequence'
 import { revalidatePath } from 'next/cache'
@@ -203,7 +205,11 @@ function formatQuotation(quotation: QuotationWithRelations) {
   }
 }
 
-export async function getQuotations() {
+export async function getQuotations(...args: Parameters<typeof _getQuotations>): Promise<Awaited<ReturnType<typeof _getQuotations>>> {
+  return guarded('getQuotations', () => _getQuotations(...args))
+}
+
+async function _getQuotations() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const quotations = await prisma.quotation.findMany({
     include: {
@@ -220,7 +226,11 @@ export async function getQuotations() {
   }
 }
 
-export async function getQuotation(id: number) {
+export async function getQuotation(...args: Parameters<typeof _getQuotation>): Promise<Awaited<ReturnType<typeof _getQuotation>>> {
+  return guarded('getQuotation', () => _getQuotation(...args))
+}
+
+async function _getQuotation(id: number) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const quotation = await prisma.quotation.findUnique({
     where: { id },
@@ -234,7 +244,11 @@ export async function getQuotation(id: number) {
   return { success: true, data: formatQuotation(quotation) }
 }
 
-export async function createQuotation(data: unknown) {
+export async function createQuotation(...args: Parameters<typeof _createQuotation>): Promise<Awaited<ReturnType<typeof _createQuotation>>> {
+  return guarded('createQuotation', () => _createQuotation(...args))
+}
+
+async function _createQuotation(data: unknown) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = createQuotationSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -400,7 +414,11 @@ export async function createQuotation(data: unknown) {
   return { success: true, data: formatQuotation(quotation) }
 }
 
-export async function updateQuotation(data: unknown) {
+export async function updateQuotation(...args: Parameters<typeof _updateQuotation>): Promise<Awaited<ReturnType<typeof _updateQuotation>>> {
+  return guarded('updateQuotation', () => _updateQuotation(...args))
+}
+
+async function _updateQuotation(data: unknown) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = updateQuotationSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -579,7 +597,11 @@ export async function updateQuotation(data: unknown) {
   return { success: true, data: formatQuotation(quotation) }
 }
 
-export async function updateQuotationStatus(data: unknown) {
+export async function updateQuotationStatus(...args: Parameters<typeof _updateQuotationStatus>): Promise<Awaited<ReturnType<typeof _updateQuotationStatus>>> {
+  return guarded('updateQuotationStatus', () => _updateQuotationStatus(...args))
+}
+
+async function _updateQuotationStatus(data: unknown) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const parsed = updateQuotationStatusSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -598,7 +620,11 @@ export async function updateQuotationStatus(data: unknown) {
  * so payment and, for slab-tracked products, physical slab allocation can be
  * completed at checkout without consuming inventory prematurely.
  */
-export async function convertQuotationToInvoice(quotationId: number) {
+export async function convertQuotationToInvoice(...args: Parameters<typeof _convertQuotationToInvoice>): Promise<Awaited<ReturnType<typeof _convertQuotationToInvoice>>> {
+  return guarded('convertQuotationToInvoice', () => _convertQuotationToInvoice(...args))
+}
+
+async function _convertQuotationToInvoice(quotationId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const quotation = await prisma.quotation.findUnique({
     where: { id: quotationId },
@@ -680,7 +706,11 @@ export async function convertQuotationToInvoice(quotationId: number) {
   return { success: true, data: invoiceResult.data }
 }
 
-export async function getQuotationStats() {
+export async function getQuotationStats(...args: Parameters<typeof _getQuotationStats>): Promise<Awaited<ReturnType<typeof _getQuotationStats>>> {
+  return guarded('getQuotationStats', () => _getQuotationStats(...args))
+}
+
+async function _getQuotationStats() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const [total, draft, sent, approved, rejected, totalValue] = await Promise.all([
     prisma.quotation.count(),

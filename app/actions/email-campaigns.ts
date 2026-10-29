@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { requireAuth, requireRole } from '@/lib/auth-helpers'
@@ -37,7 +39,11 @@ const campaignSchema = z.object({
 
 // ─── EMAIL TEMPLATES ────────────────────────────────
 
-export async function getEmailTemplates() {
+export async function getEmailTemplates(...args: Parameters<typeof _getEmailTemplates>): Promise<Awaited<ReturnType<typeof _getEmailTemplates>>> {
+  return guarded('getEmailTemplates', () => _getEmailTemplates(...args))
+}
+
+async function _getEmailTemplates() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const templates = await prisma.emailTemplate.findMany({
     orderBy: { updatedAt: 'desc' },
@@ -60,7 +66,11 @@ export async function getEmailTemplates() {
   }
 }
 
-export async function createEmailTemplate(data: unknown) {
+export async function createEmailTemplate(...args: Parameters<typeof _createEmailTemplate>): Promise<Awaited<ReturnType<typeof _createEmailTemplate>>> {
+  return guarded('createEmailTemplate', () => _createEmailTemplate(...args))
+}
+
+async function _createEmailTemplate(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const parsed = templateSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -70,7 +80,11 @@ export async function createEmailTemplate(data: unknown) {
   return { success: true, data: { id: template.id } }
 }
 
-export async function updateEmailTemplate(id: number, data: unknown) {
+export async function updateEmailTemplate(...args: Parameters<typeof _updateEmailTemplate>): Promise<Awaited<ReturnType<typeof _updateEmailTemplate>>> {
+  return guarded('updateEmailTemplate', () => _updateEmailTemplate(...args))
+}
+
+async function _updateEmailTemplate(id: number, data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const parsed = templateSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -80,7 +94,11 @@ export async function updateEmailTemplate(id: number, data: unknown) {
   return { success: true }
 }
 
-export async function deleteEmailTemplate(id: number) {
+export async function deleteEmailTemplate(...args: Parameters<typeof _deleteEmailTemplate>): Promise<Awaited<ReturnType<typeof _deleteEmailTemplate>>> {
+  return guarded('deleteEmailTemplate', () => _deleteEmailTemplate(...args))
+}
+
+async function _deleteEmailTemplate(id: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const usedCount = await prisma.emailCampaign.count({ where: { templateId: id } })
   if (usedCount > 0) return { success: false, error: `Template is used by ${usedCount} campaign(s). Remove them first.` }
@@ -92,7 +110,11 @@ export async function deleteEmailTemplate(id: number) {
 
 // ─── EMAIL CAMPAIGNS ────────────────────────────────
 
-export async function getEmailCampaigns() {
+export async function getEmailCampaigns(...args: Parameters<typeof _getEmailCampaigns>): Promise<Awaited<ReturnType<typeof _getEmailCampaigns>>> {
+  return guarded('getEmailCampaigns', () => _getEmailCampaigns(...args))
+}
+
+async function _getEmailCampaigns() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const campaigns = await prisma.emailCampaign.findMany({
     orderBy: { createdAt: 'desc' },
@@ -133,7 +155,11 @@ export async function getEmailCampaigns() {
   }
 }
 
-export async function createEmailCampaign(data: unknown) {
+export async function createEmailCampaign(...args: Parameters<typeof _createEmailCampaign>): Promise<Awaited<ReturnType<typeof _createEmailCampaign>>> {
+  return guarded('createEmailCampaign', () => _createEmailCampaign(...args))
+}
+
+async function _createEmailCampaign(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const parsed = campaignSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -161,7 +187,11 @@ export async function createEmailCampaign(data: unknown) {
   return { success: true, data: { id: campaign.id } }
 }
 
-export async function updateEmailCampaign(id: number, data: unknown) {
+export async function updateEmailCampaign(...args: Parameters<typeof _updateEmailCampaign>): Promise<Awaited<ReturnType<typeof _updateEmailCampaign>>> {
+  return guarded('updateEmailCampaign', () => _updateEmailCampaign(...args))
+}
+
+async function _updateEmailCampaign(id: number, data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   const parsed = campaignSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -189,7 +219,11 @@ export async function updateEmailCampaign(id: number, data: unknown) {
   return { success: true }
 }
 
-export async function deleteEmailCampaign(id: number) {
+export async function deleteEmailCampaign(...args: Parameters<typeof _deleteEmailCampaign>): Promise<Awaited<ReturnType<typeof _deleteEmailCampaign>>> {
+  return guarded('deleteEmailCampaign', () => _deleteEmailCampaign(...args))
+}
+
+async function _deleteEmailCampaign(id: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
   await prisma.emailCampaign.delete({ where: { id } })
   revalidatePath('/email-marketing')
@@ -198,7 +232,11 @@ export async function deleteEmailCampaign(id: number) {
 
 // ─── AUDIENCE / RECIPIENTS ──────────────────────────
 
-export async function getAudienceStats() {
+export async function getAudienceStats(...args: Parameters<typeof _getAudienceStats>): Promise<Awaited<ReturnType<typeof _getAudienceStats>>> {
+  return guarded('getAudienceStats', () => _getAudienceStats(...args))
+}
+
+async function _getAudienceStats() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const [total, withEmail, subscribed, leads, customers] = await Promise.all([
     prisma.contact.count(),
@@ -214,7 +252,11 @@ export async function getAudienceStats() {
   }
 }
 
-export async function getAudiencePreview(audience: string) {
+export async function getAudiencePreview(...args: Parameters<typeof _getAudiencePreview>): Promise<Awaited<ReturnType<typeof _getAudiencePreview>>> {
+  return guarded('getAudiencePreview', () => _getAudiencePreview(...args))
+}
+
+async function _getAudiencePreview(audience: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const where: Record<string, unknown> = { email: { not: null }, emailSubscribed: true }
 
@@ -244,7 +286,11 @@ export async function getAudiencePreview(audience: string) {
 
 // ─── SEND CAMPAIGN (populate recipients + send emails) ────────────
 
-export async function sendEmailCampaign(campaignId: number) {
+export async function sendEmailCampaign(...args: Parameters<typeof _sendEmailCampaign>): Promise<Awaited<ReturnType<typeof _sendEmailCampaign>>> {
+  return guarded('sendEmailCampaign', () => _sendEmailCampaign(...args))
+}
+
+async function _sendEmailCampaign(campaignId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
 
   // Check SMTP is configured first
@@ -376,7 +422,11 @@ async function withSavedSmtpPass<T extends { smtpPass: string }>(config: T): Pro
   return { ...config, smtpPass: saved?.smtpPass || '' }
 }
 
-export async function testSmtp(config: {
+export async function testSmtp(...args: Parameters<typeof _testSmtp>): Promise<Awaited<ReturnType<typeof _testSmtp>>> {
+  return guarded('testSmtp', () => _testSmtp(...args))
+}
+
+async function _testSmtp(config: {
   smtpHost: string; smtpPort: number; smtpUser: string; smtpPass: string; smtpFromName: string; smtpSecure: boolean
 }) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
@@ -384,7 +434,11 @@ export async function testSmtp(config: {
   return result
 }
 
-export async function sendSmtpTestEmail(config: {
+export async function sendSmtpTestEmail(...args: Parameters<typeof _sendSmtpTestEmail>): Promise<Awaited<ReturnType<typeof _sendSmtpTestEmail>>> {
+  return guarded('sendSmtpTestEmail', () => _sendSmtpTestEmail(...args))
+}
+
+async function _sendSmtpTestEmail(config: {
   smtpHost: string; smtpPort: number; smtpUser: string; smtpPass: string; smtpFromName: string; smtpSecure: boolean
 }, toEmail: string) {
   try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
@@ -392,7 +446,11 @@ export async function sendSmtpTestEmail(config: {
   return result
 }
 
-export async function getEmailConfigStatus() {
+export async function getEmailConfigStatus(...args: Parameters<typeof _getEmailConfigStatus>): Promise<Awaited<ReturnType<typeof _getEmailConfigStatus>>> {
+  return guarded('getEmailConfigStatus', () => _getEmailConfigStatus(...args))
+}
+
+async function _getEmailConfigStatus() {
   try { await requireAuth() } catch { return { success: false, configured: false, smtpHost: null, smtpUser: null, fromName: null } }
   const config = await getSmtpConfig()
   return {
@@ -406,7 +464,11 @@ export async function getEmailConfigStatus() {
 
 // ─── CAMPAIGN ANALYTICS ─────────────────────────────
 
-export async function getCampaignAnalytics(campaignId: number) {
+export async function getCampaignAnalytics(...args: Parameters<typeof _getCampaignAnalytics>): Promise<Awaited<ReturnType<typeof _getCampaignAnalytics>>> {
+  return guarded('getCampaignAnalytics', () => _getCampaignAnalytics(...args))
+}
+
+async function _getCampaignAnalytics(campaignId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const campaign = await prisma.emailCampaign.findUnique({
     where: { id: campaignId },
@@ -517,7 +579,11 @@ export async function getCampaignAnalytics(campaignId: number) {
 
 // ─── AUTOMATED CAMPAIGN HELPERS ─────────────────────
 
-export async function getAutomatedCampaigns() {
+export async function getAutomatedCampaigns(...args: Parameters<typeof _getAutomatedCampaigns>): Promise<Awaited<ReturnType<typeof _getAutomatedCampaigns>>> {
+  return guarded('getAutomatedCampaigns', () => _getAutomatedCampaigns(...args))
+}
+
+async function _getAutomatedCampaigns() {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
   const campaigns = await prisma.emailCampaign.findMany({
     where: { isAutomated: true },
@@ -540,7 +606,11 @@ export async function getAutomatedCampaigns() {
   }
 }
 
-export async function duplicateCampaign(campaignId: number) {
+export async function duplicateCampaign(...args: Parameters<typeof _duplicateCampaign>): Promise<Awaited<ReturnType<typeof _duplicateCampaign>>> {
+  return guarded('duplicateCampaign', () => _duplicateCampaign(...args))
+}
+
+async function _duplicateCampaign(campaignId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
 
   const original = await prisma.emailCampaign.findUnique({ where: { id: campaignId } })

@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { requireAuth, requireRole } from '@/lib/auth-helpers'
@@ -21,7 +23,11 @@ function maskConfig(config: Record<string, string>) {
   return Object.fromEntries(Object.entries(config || {}).map(([key, value]) => [key, isSecretKey(key) && value ? MASK : value]))
 }
 
-export async function getChannelConfigs() {
+export async function getChannelConfigs(...args: Parameters<typeof _getChannelConfigs>): Promise<Awaited<ReturnType<typeof _getChannelConfigs>>> {
+  return guarded('getChannelConfigs', () => _getChannelConfigs(...args))
+}
+
+async function _getChannelConfigs() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again', data: [] } }
   const configs = await prisma.channelConfig.findMany({
     orderBy: { channel: 'asc' },
@@ -40,7 +46,11 @@ export async function getChannelConfigs() {
 
 // ─── UPSERT CHANNEL CONFIG ─────────────────────────
 
-export async function upsertChannelConfig(data: {
+export async function upsertChannelConfig(...args: Parameters<typeof _upsertChannelConfig>): Promise<Awaited<ReturnType<typeof _upsertChannelConfig>>> {
+  return guarded('upsertChannelConfig', () => _upsertChannelConfig(...args))
+}
+
+async function _upsertChannelConfig(data: {
   channel: string
   enabled: boolean
   config: Record<string, string>

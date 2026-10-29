@@ -24,6 +24,7 @@ import {
   getReconciliationSummary
 } from '@/app/actions/payments';
 import { istDate, istMonthStart } from '@/lib/local-date';
+import { confirmDialog } from '@/components/AlertToastProvider';
 
 const PAYMENT_MODES = ['Cash', 'UPI', 'Card', 'Bank Transfer', 'Cheque'];
 const PAYMENT_STATUSES = ['Pending', 'Reconciled', 'Reversed', 'Bounced'];
@@ -174,7 +175,7 @@ export default function PaymentsPage() {
   };
 
   const handleDelete = async (id) => {
-    if (!confirm('Are you sure? This payment will be permanently deleted.')) return;
+    if (!await confirmDialog('Are you sure? This payment will be permanently deleted.')) return;
     setDeletingId(id);
     const res = await deleteDailyPayment(id);
     if (res.success) {

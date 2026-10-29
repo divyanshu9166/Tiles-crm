@@ -37,6 +37,7 @@ import { getStoreSettings, updateStoreSettings } from '@/app/actions/settings'
 import { getBillableArea } from '@/lib/units'
 import { getActiveVertical } from '@/lib/brand'
 import { istDate } from '@/lib/local-date'
+import { confirmDialog } from '@/components/AlertToastProvider';
 
 const DEFAULT_STORE_NAME = getActiveVertical() === 'tiles' ? 'Tiles, Granite & Marble Showroom' : 'Furniture Store'
 
@@ -1028,7 +1029,7 @@ export default function QuotationsPage() {
   }
 
   const handleDeletePaymentQr = async () => {
-    if (!confirm('Are you sure you want to remove the Payment QR code?')) return
+    if (!await confirmDialog('Are you sure you want to remove the Payment QR code?')) return
 
     setUploadingPaymentQr(true)
     try {
@@ -1186,7 +1187,7 @@ export default function QuotationsPage() {
       window.location.href = `/sales-orders/${quotation.salesOrder.id}`
       return
     }
-    const confirmed = window.confirm(`Confirm quotation ${quotation.id} as a sales order? A delivery order is planned from the default location.`)
+    const confirmed = await confirmDialog(`Confirm quotation ${quotation.id} as a sales order? A delivery order is planned from the default location.`)
     if (!confirmed) return
     const result = await createSalesOrderFromQuotation({ quotationId: quotation.dbId })
     if (!result.success) {
@@ -1200,7 +1201,7 @@ export default function QuotationsPage() {
 
   const handleConvertToInvoice = async (quotation) => {
     if (!quotation?.dbId) return
-    const confirmed = window.confirm(`Create a held invoice from quotation ${quotation.id}?`)
+    const confirmed = await confirmDialog(`Create a held invoice from quotation ${quotation.id}?`)
     if (!confirmed) return
     const result = await convertQuotationToInvoice(quotation.dbId)
     if (!result.success) {

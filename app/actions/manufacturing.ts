@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { nextNumber } from '@/lib/erp/sequence'
 import { ledgerUnitCost, lockInventoryProducts } from '@/lib/inventory-stock'
@@ -253,7 +255,11 @@ async function updateProductionTimeVarianceWithTx(tx: any, productionOrderId: nu
 
 // ─── WORK CENTERS ────────────────────────────────────
 
-export async function getWorkCenters() {
+export async function getWorkCenters(...args: Parameters<typeof _getWorkCenters>): Promise<Awaited<ReturnType<typeof _getWorkCenters>>> {
+  return guarded('getWorkCenters', () => _getWorkCenters(...args))
+}
+
+async function _getWorkCenters() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const centers = await prisma.workCenter.findMany({
     orderBy: { name: 'asc' },
@@ -264,7 +270,11 @@ export async function getWorkCenters() {
   return { success: true, data: centers }
 }
 
-export async function createWorkCenter(data: unknown) {
+export async function createWorkCenter(...args: Parameters<typeof _createWorkCenter>): Promise<Awaited<ReturnType<typeof _createWorkCenter>>> {
+  return guarded('createWorkCenter', () => _createWorkCenter(...args))
+}
+
+async function _createWorkCenter(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createWorkCenterSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -277,14 +287,22 @@ export async function createWorkCenter(data: unknown) {
   return { success: true, data: center }
 }
 
-export async function updateWorkCenterStatus(id: number, status: string) {
+export async function updateWorkCenterStatus(...args: Parameters<typeof _updateWorkCenterStatus>): Promise<Awaited<ReturnType<typeof _updateWorkCenterStatus>>> {
+  return guarded('updateWorkCenterStatus', () => _updateWorkCenterStatus(...args))
+}
+
+async function _updateWorkCenterStatus(id: number, status: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   await prisma.workCenter.update({ where: { id }, data: { status } })
   revalidatePath('/manufacturing')
   return { success: true }
 }
 
-export async function deleteWorkCenter(id: number) {
+export async function deleteWorkCenter(...args: Parameters<typeof _deleteWorkCenter>): Promise<Awaited<ReturnType<typeof _deleteWorkCenter>>> {
+  return guarded('deleteWorkCenter', () => _deleteWorkCenter(...args))
+}
+
+async function _deleteWorkCenter(id: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const center = await prisma.workCenter.findUnique({ where: { id }, include: { _count: { select: { productionOrders: true } } } })
   if (!center) return { success: false, error: 'Not found' }
@@ -296,7 +314,11 @@ export async function deleteWorkCenter(id: number) {
 
 // ─── BILL OF MATERIALS ───────────────────────────────
 
-export async function getBOMs() {
+export async function getBOMs(...args: Parameters<typeof _getBOMs>): Promise<Awaited<ReturnType<typeof _getBOMs>>> {
+  return guarded('getBOMs', () => _getBOMs(...args))
+}
+
+async function _getBOMs() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const boms = await prisma.billOfMaterials.findMany({
     orderBy: { name: 'asc' },
@@ -315,7 +337,11 @@ export async function getBOMs() {
   return { success: true, data: boms.map(decorateBOM) }
 }
 
-export async function createBOM(data: unknown) {
+export async function createBOM(...args: Parameters<typeof _createBOM>): Promise<Awaited<ReturnType<typeof _createBOM>>> {
+  return guarded('createBOM', () => _createBOM(...args))
+}
+
+async function _createBOM(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createBOMSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -357,7 +383,11 @@ export async function createBOM(data: unknown) {
   return { success: true, data: bom }
 }
 
-export async function toggleBOMStatus(id: number) {
+export async function toggleBOMStatus(...args: Parameters<typeof _toggleBOMStatus>): Promise<Awaited<ReturnType<typeof _toggleBOMStatus>>> {
+  return guarded('toggleBOMStatus', () => _toggleBOMStatus(...args))
+}
+
+async function _toggleBOMStatus(id: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const bom = await prisma.billOfMaterials.findUnique({ where: { id } })
   if (!bom) return { success: false, error: 'BOM not found' }
@@ -366,7 +396,11 @@ export async function toggleBOMStatus(id: number) {
   return { success: true }
 }
 
-export async function deleteBOM(id: number) {
+export async function deleteBOM(...args: Parameters<typeof _deleteBOM>): Promise<Awaited<ReturnType<typeof _deleteBOM>>> {
+  return guarded('deleteBOM', () => _deleteBOM(...args))
+}
+
+async function _deleteBOM(id: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const bom = await prisma.billOfMaterials.findUnique({ where: { id }, include: { _count: { select: { productionOrders: true } } } })
   if (!bom) return { success: false, error: 'Not found' }
@@ -378,7 +412,11 @@ export async function deleteBOM(id: number) {
 
 // ─── BOM ITEM MANAGEMENT ─────────────────────────────
 
-export async function addBOMItem(data: unknown) {
+export async function addBOMItem(...args: Parameters<typeof _addBOMItem>): Promise<Awaited<ReturnType<typeof _addBOMItem>>> {
+  return guarded('addBOMItem', () => _addBOMItem(...args))
+}
+
+async function _addBOMItem(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = addBOMItemSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -392,7 +430,11 @@ export async function addBOMItem(data: unknown) {
   return { success: true, data: item }
 }
 
-export async function updateBOMItem(data: unknown) {
+export async function updateBOMItem(...args: Parameters<typeof _updateBOMItem>): Promise<Awaited<ReturnType<typeof _updateBOMItem>>> {
+  return guarded('updateBOMItem', () => _updateBOMItem(...args))
+}
+
+async function _updateBOMItem(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = updateBOMItemSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -403,7 +445,11 @@ export async function updateBOMItem(data: unknown) {
   return { success: true, data: item }
 }
 
-export async function removeBOMItem(id: number) {
+export async function removeBOMItem(...args: Parameters<typeof _removeBOMItem>): Promise<Awaited<ReturnType<typeof _removeBOMItem>>> {
+  return guarded('removeBOMItem', () => _removeBOMItem(...args))
+}
+
+async function _removeBOMItem(id: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   await prisma.bomItem.delete({ where: { id } })
   revalidatePath('/manufacturing')
@@ -412,7 +458,11 @@ export async function removeBOMItem(id: number) {
 
 // ─── BOM STEP MANAGEMENT ─────────────────────────────
 
-export async function addBOMStep(data: unknown) {
+export async function addBOMStep(...args: Parameters<typeof _addBOMStep>): Promise<Awaited<ReturnType<typeof _addBOMStep>>> {
+  return guarded('addBOMStep', () => _addBOMStep(...args))
+}
+
+async function _addBOMStep(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = addBOMStepSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -433,7 +483,11 @@ export async function addBOMStep(data: unknown) {
   return { success: true, data: step }
 }
 
-export async function updateBOMStep(data: unknown) {
+export async function updateBOMStep(...args: Parameters<typeof _updateBOMStep>): Promise<Awaited<ReturnType<typeof _updateBOMStep>>> {
+  return guarded('updateBOMStep', () => _updateBOMStep(...args))
+}
+
+async function _updateBOMStep(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = updateBOMStepSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -448,7 +502,11 @@ export async function updateBOMStep(data: unknown) {
   return { success: true, data: step }
 }
 
-export async function removeBOMStep(id: number) {
+export async function removeBOMStep(...args: Parameters<typeof _removeBOMStep>): Promise<Awaited<ReturnType<typeof _removeBOMStep>>> {
+  return guarded('removeBOMStep', () => _removeBOMStep(...args))
+}
+
+async function _removeBOMStep(id: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const step = await prisma.bomStep.findUnique({ where: { id }, select: { bomId: true } })
   if (!step) return { success: false, error: 'Step not found' }
@@ -464,7 +522,11 @@ export async function removeBOMStep(id: number) {
 
 // ─── BOM EXPORT ──────────────────────────────────────
 
-export async function exportBOM(id: number) {
+export async function exportBOM(...args: Parameters<typeof _exportBOM>): Promise<Awaited<ReturnType<typeof _exportBOM>>> {
+  return guarded('exportBOM', () => _exportBOM(...args))
+}
+
+async function _exportBOM(id: number) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const bom = await prisma.billOfMaterials.findUnique({
     where: { id },
@@ -486,13 +548,21 @@ export async function exportBOM(id: number) {
 
 // ─── BOM TEMPLATES ───────────────────────────────────
 
-export async function getBomTemplates() {
+export async function getBomTemplates(...args: Parameters<typeof _getBomTemplates>): Promise<Awaited<ReturnType<typeof _getBomTemplates>>> {
+  return guarded('getBomTemplates', () => _getBomTemplates(...args))
+}
+
+async function _getBomTemplates() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const templates = await prisma.bomTemplate.findMany({ orderBy: { name: 'asc' } })
   return { success: true, data: templates }
 }
 
-export async function createBomTemplate(data: unknown) {
+export async function createBomTemplate(...args: Parameters<typeof _createBomTemplate>): Promise<Awaited<ReturnType<typeof _createBomTemplate>>> {
+  return guarded('createBomTemplate', () => _createBomTemplate(...args))
+}
+
+async function _createBomTemplate(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createBomTemplateSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -505,7 +575,11 @@ export async function createBomTemplate(data: unknown) {
   return { success: true, data: template }
 }
 
-export async function deleteBomTemplate(id: number) {
+export async function deleteBomTemplate(...args: Parameters<typeof _deleteBomTemplate>): Promise<Awaited<ReturnType<typeof _deleteBomTemplate>>> {
+  return guarded('deleteBomTemplate', () => _deleteBomTemplate(...args))
+}
+
+async function _deleteBomTemplate(id: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   await prisma.bomTemplate.delete({ where: { id } })
   revalidatePath('/manufacturing')
@@ -514,7 +588,11 @@ export async function deleteBomTemplate(id: number) {
 
 // ─── MRP ANALYSIS ────────────────────────────────────
 
-export async function getMRPAnalysis(bomId: number, qty: number) {
+export async function getMRPAnalysis(...args: Parameters<typeof _getMRPAnalysis>): Promise<Awaited<ReturnType<typeof _getMRPAnalysis>>> {
+  return guarded('getMRPAnalysis', () => _getMRPAnalysis(...args))
+}
+
+async function _getMRPAnalysis(bomId: number, qty: number) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const bom = await prisma.billOfMaterials.findUnique({
     where: { id: bomId },
@@ -615,7 +693,11 @@ export async function getMRPAnalysis(bomId: number, qty: number) {
 
 const PRIORITY_SORT: Record<string, number> = { URGENT: 1, HIGH: 2, MEDIUM: 3, LOW: 4 }
 
-export async function getProductionOrders() {
+export async function getProductionOrders(...args: Parameters<typeof _getProductionOrders>): Promise<Awaited<ReturnType<typeof _getProductionOrders>>> {
+  return guarded('getProductionOrders', () => _getProductionOrders(...args))
+}
+
+async function _getProductionOrders() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   unstable_noStore()
   const orders = await prisma.productionOrder.findMany({
@@ -683,7 +765,11 @@ export async function getProductionOrders() {
   }
 }
 
-export async function getAssignableStaff() {
+export async function getAssignableStaff(...args: Parameters<typeof _getAssignableStaff>): Promise<Awaited<ReturnType<typeof _getAssignableStaff>>> {
+  return guarded('getAssignableStaff', () => _getAssignableStaff(...args))
+}
+
+async function _getAssignableStaff() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const staff = await prisma.staff.findMany({
     where: { status: 'Active' },
@@ -693,7 +779,11 @@ export async function getAssignableStaff() {
   return { success: true, data: staff }
 }
 
-export async function getManufacturingCustomOrders() {
+export async function getManufacturingCustomOrders(...args: Parameters<typeof _getManufacturingCustomOrders>): Promise<Awaited<ReturnType<typeof _getManufacturingCustomOrders>>> {
+  return guarded('getManufacturingCustomOrders', () => _getManufacturingCustomOrders(...args))
+}
+
+async function _getManufacturingCustomOrders() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const orders = await prisma.customOrder.findMany({
     where: { status: { not: 'DELIVERED' } },
@@ -720,7 +810,11 @@ export async function getManufacturingCustomOrders() {
   }
 }
 
-export async function getScrapInventory() {
+export async function getScrapInventory(...args: Parameters<typeof _getScrapInventory>): Promise<Awaited<ReturnType<typeof _getScrapInventory>>> {
+  return guarded('getScrapInventory', () => _getScrapInventory(...args))
+}
+
+async function _getScrapInventory() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const entries = await prisma.scrapInventory.findMany({
     orderBy: { createdAt: 'desc' },
@@ -740,7 +834,11 @@ const scrapStatusSchema = z.object({
   notes: z.string().trim().optional(),
 })
 
-export async function updateScrapInventoryStatus(data: unknown) {
+export async function updateScrapInventoryStatus(...args: Parameters<typeof _updateScrapInventoryStatus>): Promise<Awaited<ReturnType<typeof _updateScrapInventoryStatus>>> {
+  return guarded('updateScrapInventoryStatus', () => _updateScrapInventoryStatus(...args))
+}
+
+async function _updateScrapInventoryStatus(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = scrapStatusSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -758,7 +856,11 @@ export async function updateScrapInventoryStatus(data: unknown) {
   return { success: true, data: updated }
 }
 
-export async function getCustomOrderInventory() {
+export async function getCustomOrderInventory(...args: Parameters<typeof _getCustomOrderInventory>): Promise<Awaited<ReturnType<typeof _getCustomOrderInventory>>> {
+  return guarded('getCustomOrderInventory', () => _getCustomOrderInventory(...args))
+}
+
+async function _getCustomOrderInventory() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const entries = await prisma.customOrderInventory.findMany({
     orderBy: { createdAt: 'desc' },
@@ -771,7 +873,11 @@ export async function getCustomOrderInventory() {
   return { success: true, data: entries }
 }
 
-export async function createProductionOrder(data: unknown) {
+export async function createProductionOrder(...args: Parameters<typeof _createProductionOrder>): Promise<Awaited<ReturnType<typeof _createProductionOrder>>> {
+  return guarded('createProductionOrder', () => _createProductionOrder(...args))
+}
+
+async function _createProductionOrder(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = createProductionOrderSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -883,7 +989,11 @@ export async function createProductionOrder(data: unknown) {
   return { success: true, data: order }
 }
 
-export async function startProduction(id: number) {
+export async function startProduction(...args: Parameters<typeof _startProduction>): Promise<Awaited<ReturnType<typeof _startProduction>>> {
+  return guarded('startProduction', () => _startProduction(...args))
+}
+
+async function _startProduction(id: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const order = await prisma.productionOrder.findUnique({ where: { id }, select: { status: true, customOrderId: true } })
   if (!order) return { success: false, error: 'Production order not found' }
@@ -913,7 +1023,11 @@ export async function startProduction(id: number) {
   return { success: true }
 }
 
-export async function holdProduction(id: number) {
+export async function holdProduction(...args: Parameters<typeof _holdProduction>): Promise<Awaited<ReturnType<typeof _holdProduction>>> {
+  return guarded('holdProduction', () => _holdProduction(...args))
+}
+
+async function _holdProduction(id: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const order = await prisma.productionOrder.findUnique({ where: { id }, select: { status: true } })
   if (!order) return { success: false, error: 'Production order not found' }
@@ -923,7 +1037,11 @@ export async function holdProduction(id: number) {
   return { success: true }
 }
 
-export async function cancelProductionOrder(id: number, reason: string) {
+export async function cancelProductionOrder(...args: Parameters<typeof _cancelProductionOrder>): Promise<Awaited<ReturnType<typeof _cancelProductionOrder>>> {
+  return guarded('cancelProductionOrder', () => _cancelProductionOrder(...args))
+}
+
+async function _cancelProductionOrder(id: number, reason: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const order = await prisma.productionOrder.findUnique({
     where: { id },
@@ -965,7 +1083,11 @@ export async function cancelProductionOrder(id: number, reason: string) {
   return { success: true }
 }
 
-export async function deleteProductionOrder(id: number) {
+export async function deleteProductionOrder(...args: Parameters<typeof _deleteProductionOrder>): Promise<Awaited<ReturnType<typeof _deleteProductionOrder>>> {
+  return guarded('deleteProductionOrder', () => _deleteProductionOrder(...args))
+}
+
+async function _deleteProductionOrder(id: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const order = await prisma.productionOrder.findUnique({ where: { id } })
   if (!order) return { success: false, error: 'Order not found' }
@@ -985,7 +1107,11 @@ export async function deleteProductionOrder(id: number) {
   return { success: true }
 }
 
-export async function updateProductionStep(stepId: number, status: string, actualMins?: number, assignedWorker?: string) {
+export async function updateProductionStep(...args: Parameters<typeof _updateProductionStep>): Promise<Awaited<ReturnType<typeof _updateProductionStep>>> {
+  return guarded('updateProductionStep', () => _updateProductionStep(...args))
+}
+
+async function _updateProductionStep(stepId: number, status: string, actualMins?: number, assignedWorker?: string) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   if (!['PENDING', 'IN_PROGRESS', 'DONE', 'SKIPPED'].includes(status)) return { success: false, error: 'Invalid production step status' }
   if (actualMins !== undefined && (!Number.isFinite(actualMins) || actualMins < 0)) return { success: false, error: 'Actual minutes cannot be negative' }
@@ -1016,7 +1142,11 @@ export async function updateProductionStep(stepId: number, status: string, actua
   return { success: true }
 }
 
-export async function completeProduction(data: unknown) {
+export async function completeProduction(...args: Parameters<typeof _completeProduction>): Promise<Awaited<ReturnType<typeof _completeProduction>>> {
+  return guarded('completeProduction', () => _completeProduction(...args))
+}
+
+async function _completeProduction(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = completeProductionSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -1300,7 +1430,11 @@ export async function completeProduction(data: unknown) {
   return { success: true }
 }
 
-export async function recordQualityCheck(data: unknown) {
+export async function recordQualityCheck(...args: Parameters<typeof _recordQualityCheck>): Promise<Awaited<ReturnType<typeof _recordQualityCheck>>> {
+  return guarded('recordQualityCheck', () => _recordQualityCheck(...args))
+}
+
+async function _recordQualityCheck(data: unknown) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const parsed = qualityCheckSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
@@ -1326,7 +1460,11 @@ export async function recordQualityCheck(data: unknown) {
 
 // ─── ANALYTICS ───────────────────────────────────────
 
-export async function getManufacturingStats() {
+export async function getManufacturingStats(...args: Parameters<typeof _getManufacturingStats>): Promise<Awaited<ReturnType<typeof _getManufacturingStats>>> {
+  return guarded('getManufacturingStats', () => _getManufacturingStats(...args))
+}
+
+async function _getManufacturingStats() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const [allOrders, workCenters, scrapEntries, customInventory] = await Promise.all([
     prisma.productionOrder.findMany({
@@ -1443,7 +1581,11 @@ export async function getManufacturingStats() {
 
 // ─── Staff Portal: Production Orders ────────────────────
 
-export async function getStaffProductionOrders(staffId: number) {
+export async function getStaffProductionOrders(...args: Parameters<typeof _getStaffProductionOrders>): Promise<Awaited<ReturnType<typeof _getStaffProductionOrders>>> {
+  return guarded('getStaffProductionOrders', () => _getStaffProductionOrders(...args))
+}
+
+async function _getStaffProductionOrders(staffId: number) {
   {
     let scope
     try { scope = await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
@@ -1493,7 +1635,11 @@ export async function getStaffProductionOrders(staffId: number) {
   }
 }
 
-export async function staffUpdateProductionStep(staffId: number, stepId: number, status: string, notes?: string) {
+export async function staffUpdateProductionStep(...args: Parameters<typeof _staffUpdateProductionStep>): Promise<Awaited<ReturnType<typeof _staffUpdateProductionStep>>> {
+  return guarded('staffUpdateProductionStep', () => _staffUpdateProductionStep(...args))
+}
+
+async function _staffUpdateProductionStep(staffId: number, stepId: number, status: string, notes?: string) {
   {
     let scope
     try { scope = await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
@@ -1535,7 +1681,11 @@ export async function staffUpdateProductionStep(staffId: number, stepId: number,
   return { success: true }
 }
 
-export async function staffAddStepNote(staffId: number, stepId: number, notes: string) {
+export async function staffAddStepNote(...args: Parameters<typeof _staffAddStepNote>): Promise<Awaited<ReturnType<typeof _staffAddStepNote>>> {
+  return guarded('staffAddStepNote', () => _staffAddStepNote(...args))
+}
+
+async function _staffAddStepNote(staffId: number, stepId: number, notes: string) {
   {
     let scope
     try { scope = await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
@@ -1557,7 +1707,11 @@ export async function staffAddStepNote(staffId: number, stepId: number, notes: s
 }
 
 
-export async function staffUpdateProductionProgress(staffId: number, orderId: number, actualQty: number, notes?: string) {
+export async function staffUpdateProductionProgress(...args: Parameters<typeof _staffUpdateProductionProgress>): Promise<Awaited<ReturnType<typeof _staffUpdateProductionProgress>>> {
+  return guarded('staffUpdateProductionProgress', () => _staffUpdateProductionProgress(...args))
+}
+
+async function _staffUpdateProductionProgress(staffId: number, orderId: number, actualQty: number, notes?: string) {
   {
     let scope
     try { scope = await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
@@ -1585,7 +1739,11 @@ export async function staffUpdateProductionProgress(staffId: number, orderId: nu
 
 // MRP "Order": draft POs for every component still short after incoming
 // supply, from each material's preferred (or cheapest) vendor.
-export async function orderMrpShortages(bomId: number, qty: number) {
+export async function orderMrpShortages(...args: Parameters<typeof _orderMrpShortages>): Promise<Awaited<ReturnType<typeof _orderMrpShortages>>> {
+  return guarded('orderMrpShortages', () => _orderMrpShortages(...args))
+}
+
+async function _orderMrpShortages(bomId: number, qty: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const analysis = await getMRPAnalysis(bomId, qty)
   if (!analysis.success || !analysis.data) return { success: false, error: analysis.error || 'MRP analysis failed' }

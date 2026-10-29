@@ -1,5 +1,7 @@
 'use server'
 
+import { guarded } from '@/lib/action-guard'
+
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
 import { requireRole, requireAuth } from '@/lib/auth-helpers'
@@ -15,7 +17,11 @@ type NotificationItem = {
   unread?: number
 }
 
-export async function getTopNotifications() {
+export async function getTopNotifications(...args: Parameters<typeof _getTopNotifications>): Promise<Awaited<ReturnType<typeof _getTopNotifications>>> {
+  return guarded('getTopNotifications', () => _getTopNotifications(...args))
+}
+
+async function _getTopNotifications() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const now = new Date()
   const followUpWhere = {
@@ -141,7 +147,11 @@ export async function getTopNotifications() {
   }
 }
 
-export async function markConversationNotificationRead(conversationId: number) {
+export async function markConversationNotificationRead(...args: Parameters<typeof _markConversationNotificationRead>): Promise<Awaited<ReturnType<typeof _markConversationNotificationRead>>> {
+  return guarded('markConversationNotificationRead', () => _markConversationNotificationRead(...args))
+}
+
+async function _markConversationNotificationRead(conversationId: number) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   await prisma.conversation.update({
     where: { id: conversationId },
@@ -152,7 +162,11 @@ export async function markConversationNotificationRead(conversationId: number) {
   return { success: true }
 }
 
-export async function markAllConversationNotificationsRead() {
+export async function markAllConversationNotificationsRead(...args: Parameters<typeof _markAllConversationNotificationsRead>): Promise<Awaited<ReturnType<typeof _markAllConversationNotificationsRead>>> {
+  return guarded('markAllConversationNotificationsRead', () => _markAllConversationNotificationsRead(...args))
+}
+
+async function _markAllConversationNotificationsRead() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   await prisma.conversation.updateMany({
     where: { unread: { gt: 0 } },
@@ -163,7 +177,11 @@ export async function markAllConversationNotificationsRead() {
   return { success: true }
 }
 
-export async function markNotificationRead(notificationId: number) {
+export async function markNotificationRead(...args: Parameters<typeof _markNotificationRead>): Promise<Awaited<ReturnType<typeof _markNotificationRead>>> {
+  return guarded('markNotificationRead', () => _markNotificationRead(...args))
+}
+
+async function _markNotificationRead(notificationId: number) {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   await prisma.notification.update({
     where: { id: notificationId },
@@ -173,7 +191,11 @@ export async function markNotificationRead(notificationId: number) {
   return { success: true }
 }
 
-export async function markAllAlertNotificationsRead() {
+export async function markAllAlertNotificationsRead(...args: Parameters<typeof _markAllAlertNotificationsRead>): Promise<Awaited<ReturnType<typeof _markAllAlertNotificationsRead>>> {
+  return guarded('markAllAlertNotificationsRead', () => _markAllAlertNotificationsRead(...args))
+}
+
+async function _markAllAlertNotificationsRead() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   await prisma.notification.updateMany({
     where: { read: false },

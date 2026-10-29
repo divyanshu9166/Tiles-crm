@@ -14,6 +14,7 @@ import {
 } from '@/app/actions/gst'
 import Modal from '@/components/Modal'
 import { getActiveVertical } from '@/lib/brand'
+import { confirmDialog } from '@/components/AlertToastProvider';
 
 const IS_TGM = getActiveVertical() === 'tiles'
 
@@ -85,14 +86,14 @@ export default function GSTPage() {
   }
 
   const handleMarkFiled = async (id) => {
-    if (!confirm('Mark this return as FILED? This action confirms portal submission.')) return
+    if (!await confirmDialog('Mark this return as FILED? This action confirms portal submission.')) return
     const res = await markReturnFiled(id)
     if (res.success) loadData()
     else alert(res.error)
   }
 
   const handleDeleteHsn = async (id) => {
-    if (!confirm('Delete this HSN code?')) return
+    if (!await confirmDialog('Delete this HSN code?')) return
     const res = await deleteHsnCode(id)
     if (res.success) loadData()
     else alert(res.error)
@@ -120,7 +121,7 @@ export default function GSTPage() {
   }
 
   const handleCancelEwb = async (id) => {
-    if (!confirm('Cancel this e-Way Bill?')) return
+    if (!await confirmDialog('Cancel this e-Way Bill?')) return
     const res = await cancelEWayBill(id)
     if (res.success) loadData()
     else alert(res.error)

@@ -2,6 +2,7 @@
 
 import { prisma } from '@/lib/db'
 import { customerSupplyType } from '@/lib/erp/supply-type'
+import { nextInvoiceNumber } from '@/lib/erp/sequence'
 import { ledgerUnitCost, lockInventoryProducts } from '@/lib/inventory-stock'
 import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { revalidatePath } from 'next/cache'
@@ -13,7 +14,6 @@ import type { PaymentStatus, InvoiceStatus } from '@prisma/client'
 import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
 import { stripBankDetails } from '@/lib/quotation-notes'
 
-const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 type InvoiceLineInput = {
   quantity: number
@@ -377,11 +377,9 @@ export async function createInvoice(data: unknown) {
     }
   }
 
-  // Get GST rate and invoice prefix from store settings (not hardcoded)
+  // Get GST rate from store settings (not hardcoded)
   const settings = await prisma.storeSettings.findFirst({ where: { id: 1 } })
   const gstRate = settings?.gstRate ?? 18
-  const invoicePrefix = (settings?.invoicePrefix || 'INV-').trim() || 'INV-'
-  const invoicePadding = settings?.invoicePadding ?? 4
 
   const slabIds = items.flatMap(item => item.slabId ? [item.slabId] : [])
   const invoiceGodownId = await resolveInvoiceGodownId(godownId)
@@ -508,19 +506,6 @@ export async function createInvoice(data: unknown) {
   if (amountPaid >= total) paymentStatus = 'PAID'
   else if (amountPaid > 0) paymentStatus = 'PARTIAL'
 
-  // Generate display ID using MAX + 1 (avoids race condition with count())
-  const lastInvoice = await prisma.invoice.findFirst({
-    where: { displayId: { startsWith: invoicePrefix } },
-    orderBy: { id: 'desc' },
-    select: { displayId: true },
-  })
-  let nextNum = 1
-  if (lastInvoice?.displayId) {
-    const match = lastInvoice.displayId.match(new RegExp(`^${escapeRegExp(invoicePrefix)}(\\d+)$`))
-    if (match) nextNum = parseInt(match[1]) + 1
-  }
-  const displayId = `${invoicePrefix}${String(nextNum).padStart(invoicePadding, '0')}`
-
   const now = new Date()
 
   let invoice
@@ -528,7 +513,7 @@ export async function createInvoice(data: unknown) {
     invoice = await prisma.$transaction(async tx => {
       const createdInvoice = await tx.invoice.create({
         data: {
-      displayId,
+      displayId: await nextInvoiceNumber(tx),
       contactId: contact.id,
       pricelistId: pricelistId ?? contact.pricelistId ?? null,
       subtotal,

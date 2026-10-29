@@ -1117,4 +1117,28 @@ describe.skipIf(!url)('ERP document flows (Odoo parity)', () => {
     expect(after.cogs.total - before.cogs.total).toBe(600)
   })
 
+
+  it('R4: bills created at the same moment from the POS and from sales orders all get distinct numbers', async () => {
+    const product = await newProduct(40)
+    const order = await createSalesOrder({ customer: 'Numbering', phone: contactPhone(), godownId, invoicePolicy: 'ORDERED', lines: [{ productId: product.id, quantity: 4, price: 100, gstRate: 18 }] })
+    if (!order.success) throw new Error(order.error)
+    const results = await Promise.all([
+      posInvoice(product, { quantity: 1 }), posInvoice(product, { quantity: 1 }), posInvoice(product, { quantity: 1 }),
+      createInvoiceFromSalesOrder({ orderId: order.data.id }),
+    ])
+    expect(results.every(result => result.success), JSON.stringify(results.map(result => result.success ? '' : result.error))).toBe(true)
+    const ids = await db.invoice.findMany({ where: { id: { in: results.map(result => (result as { data: { id: number } }).data.id) } }, select: { displayId: true } })
+    expect(new Set(ids.map(row => row.displayId)).size).toBe(4)
+  })
+
+  it('R4: a deleted bill number is never reused by the next bill', async () => {
+    const product = await newProduct(10)
+    const a = await posInvoice(product, { quantity: 1 }, { isHeld: true, payments: [{ amount: 0, method: 'Cash' }] })
+    const b = await posInvoice(product, { quantity: 1 })
+    if (!a.success || !a.data || !b.success || !b.data) throw new Error('POS bill failed')
+    const [first, second] = await Promise.all([a.data.id, b.data.id].map(id => db.invoice.findUniqueOrThrow({ where: { id } })))
+    const num = (displayId: string) => Number(displayId.replace(/\D/g, ''))
+    expect(num(second.displayId)).toBeGreaterThan(num(first.displayId))
+  })
+
 })

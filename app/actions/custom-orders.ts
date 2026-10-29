@@ -1,6 +1,7 @@
 'use server'
 
 import { prisma } from '@/lib/db'
+import { nextNumber } from '@/lib/erp/sequence'
 import { revalidatePath } from 'next/cache'
 import { notifyManagers } from '@/lib/notify'
 import {
@@ -219,18 +220,8 @@ export async function createCustomOrder(data: unknown) {
     contact = await prisma.contact.create({ data: { name: customer, phone: normalizePhone(phone), address } })
   }
 
-  // Generate display ID using MAX + 1
-  const lastOrder = await prisma.customOrder.findFirst({
-    where: { displayId: { startsWith: 'CUS-' } },
-    orderBy: { id: 'desc' },
-    select: { displayId: true },
-  })
-  let nextNum = 1
-  if (lastOrder?.displayId) {
-    const match = lastOrder.displayId.match(/CUS-(\d+)/)
-    if (match) nextNum = parseInt(match[1]) + 1
-  }
-  const displayId = `CUS-${String(nextNum).padStart(4, '0')}`
+  // The number is taken inside the transaction, under a lock shared with draft restores.
+  let displayId = ''
 
   const now = new Date()
 
@@ -258,7 +249,7 @@ export async function createCustomOrder(data: unknown) {
 
       const createdOrder = await tx.customOrder.create({
         data: {
-      displayId,
+      displayId: (displayId = await nextNumber(tx, { table: 'CustomOrder', prefix: 'CUS-', lock: 82463218 })),
       contactId: contact.id,
       phone,
       address,

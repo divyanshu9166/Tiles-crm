@@ -1,6 +1,8 @@
 'use server'
 
 import { prisma } from '@/lib/db'
+import { nextInvoiceNumber, nextNumber, nextSequence } from '@/lib/erp/sequence'
+import { nextCreditNoteNumber } from '@/lib/erp/credit-notes'
 import { ledgerUnitCost, lockInventoryProducts } from '@/lib/inventory-stock'
 import { revalidatePath } from 'next/cache'
 import { requireRole, requireAuth } from '@/lib/auth-helpers'
@@ -1049,15 +1051,12 @@ export async function restoreFromDraft(draftId: number) {
       })
     }
 
-    // Generate new displayId
-    const lastOrder = await prisma.customOrder.findFirst({ orderBy: { id: 'desc' } })
-    const nextNum = lastOrder ? lastOrder.id + 1 : 1
-    const displayId = `CUS-${String(nextNum).padStart(3, '0')}`
+    let displayId = ''
 
-    await prisma.$transaction([
-      prisma.customOrder.create({
+    await prisma.$transaction(async tx => {
+      await tx.customOrder.create({
         data: {
-          displayId,
+          displayId: (displayId = await nextNumber(tx, { table: 'CustomOrder', prefix: 'CUS-', lock: 82463218 })),
           contactId: contact.id,
           phone: data.phone as string,
           address: data.address as string,
@@ -1078,9 +1077,9 @@ export async function restoreFromDraft(draftId: number) {
           areaSqft: typeof data.areaSqft === 'number' ? data.areaSqft : undefined,
           wastagePercent: typeof data.wastagePercent === 'number' ? data.wastagePercent : undefined,
         },
-      }),
-      prisma.draft.delete({ where: { id: draftId } }),
-    ])
+      })
+      await tx.draft.delete({ where: { id: draftId } })
+    })
 
     revalidatePath('/custom-orders')
     revalidatePath('/drafts')
@@ -1343,22 +1342,12 @@ export async function restoreFromDraft(draftId: number) {
     }
 
     const prefix = orderSource === 'STORE' ? 'ORD' : orderSource === 'AMAZON' ? 'AMZ' : orderSource === 'FLIPKART' ? 'FK' : 'SHP'
-    const lastOrder = await prisma.order.findFirst({
-      where: { displayId: { startsWith: prefix } },
-      orderBy: { id: 'desc' },
-      select: { displayId: true },
-    })
-    let nextNum = 1
-    if (lastOrder?.displayId) {
-      const match = lastOrder.displayId.match(/(\d+)$/)
-      if (match) nextNum = parseInt(match[1]) + 1
-    }
-    const displayId = `${prefix}-${String(nextNum).padStart(4, '0')}`
+    let displayId = ''
 
     await prisma.$transaction(async (tx) => {
       const created = await tx.order.create({
         data: {
-          displayId,
+          displayId: (displayId = await nextNumber(tx, { table: 'Order', prefix: `${prefix}-`, lock: 82463102 })),
           contactId: contact.id,
           productId,
           quantity,
@@ -1436,17 +1425,12 @@ export async function restoreFromDraft(draftId: number) {
       }
     }
 
-    const lastQuotation = await prisma.quotation.findFirst({ orderBy: { id: 'desc' }, select: { displayId: true } })
-    let nextNum = 1000
-    if (lastQuotation?.displayId) {
-      const match = lastQuotation.displayId.match(/(\d+)$/)
-      if (match) nextNum = parseInt(match[1]) + 1
-    }
     const originalId = typeof data.displayId === 'string' ? data.displayId : null
     const originalTaken = originalId ? await prisma.quotation.findUnique({ where: { displayId: originalId }, select: { id: true } }) : null
-    const displayId = originalId && !originalTaken ? originalId : `Q.${nextNum}`
+    let displayId = originalId && !originalTaken ? originalId : ''
 
     await prisma.$transaction(async (tx) => {
+      if (!displayId) displayId = await nextNumber(tx, { table: 'Quotation', prefix: 'Q.', lock: 82463215, padding: 0, start: 1000 })
       await tx.quotation.create({
         data: {
           displayId,
@@ -1536,18 +1520,12 @@ export async function restoreFromDraft(draftId: number) {
     const missing = productIds.filter(id => !existingIds.has(id))
     if (missing.length > 0) return { success: false, error: 'One or more products for this invoice no longer exist' }
 
-    const lastInvoice = await prisma.invoice.findFirst({ orderBy: { id: 'desc' }, select: { displayId: true } })
-    let nextNum = 1
-    if (lastInvoice?.displayId) {
-      const match = lastInvoice.displayId.match(/INV-(\d+)/)
-      if (match) nextNum = parseInt(match[1]) + 1
-    }
-    const displayId = `INV-${String(nextNum).padStart(4, '0')}`
+    let displayId = ''
 
     await prisma.$transaction(async (tx) => {
       const invoice = await tx.invoice.create({
         data: {
-          displayId,
+          displayId: (displayId = await nextInvoiceNumber(tx)),
           contactId: contact.id,
           subtotal: data.subtotal as number,
           discount: data.discount as number,
@@ -1614,22 +1592,17 @@ export async function restoreFromDraft(draftId: number) {
       })
 
       if (Array.isArray(data.creditNotes) && data.creditNotes.length > 0) {
-        const lastCN = await tx.creditNote.findFirst({ orderBy: { id: 'desc' }, select: { displayId: true } })
-        let nextCN = 1
-        if (lastCN?.displayId) {
-          const match = lastCN.displayId.match(/CN-(\d+)/)
-          if (match) nextCN = parseInt(match[1]) + 1
+        for (const cn of data.creditNotes as { amount: number; reason: string; date?: string }[]) {
+          await tx.creditNote.create({
+            data: {
+              displayId: await nextCreditNoteNumber(tx),
+              invoiceId: invoice.id,
+              amount: cn.amount,
+              reason: cn.reason,
+              date: cn.date ? new Date(cn.date) : new Date(),
+            },
+          })
         }
-
-        await tx.creditNote.createMany({
-          data: data.creditNotes.map((cn: any, idx: number) => ({
-            displayId: `CN-${String(nextCN + idx).padStart(4, '0')}`,
-            invoiceId: invoice.id,
-            amount: cn.amount,
-            reason: cn.reason,
-            date: cn.date ? new Date(cn.date) : new Date(),
-          })),
-        })
       }
 
       if (Array.isArray(data.eWayBills) && data.eWayBills.length > 0) {
@@ -1701,13 +1674,12 @@ export async function restoreFromDraft(draftId: number) {
     const missing = productIds.filter(id => !existingIds.has(id))
     if (missing.length > 0) return { success: false, error: 'One or more products for this PO no longer exist' }
 
-    const count = await prisma.purchaseOrder.count()
-    const displayId = `PO-${String(count + 1).padStart(4, '0')}`
+    let displayId = ''
 
     await prisma.$transaction(async (tx) => {
       const created = await tx.purchaseOrder.create({
         data: {
-          displayId,
+          displayId: (displayId = await nextSequence(tx, 'PurchaseOrder')),
           supplierId: supplierId as number,
           status: coerceEnum(data.status, poStatusValues, POStatus.DRAFT),
           subtotal: data.subtotal as number,

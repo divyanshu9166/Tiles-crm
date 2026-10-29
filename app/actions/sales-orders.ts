@@ -7,7 +7,7 @@ import { prisma } from '@/lib/db'
 import { customerSupplyType } from '@/lib/erp/supply-type'
 import { resolveStockGodown } from '@/lib/inventory-stock'
 import { requireActor, actionError, type Actor } from '@/lib/erp/actor'
-import { nextSequence } from '@/lib/erp/sequence'
+import { nextSequence, nextInvoiceNumber } from '@/lib/erp/sequence'
 import { logMessage, logTracking, startOfToday } from '@/lib/erp/chatter'
 import { createDeliveryForOrder, cancelPickingTx, releaseOrderSlabs } from '@/lib/erp/stock-ops'
 import { computeForecast } from '@/lib/erp/forecast'
@@ -415,13 +415,7 @@ export async function createInvoiceFromSalesOrder(data: unknown) {
       const chargeTax = chargesTaxFor(taxes.lines, chargeTotal, order.supplyType)
       const total = taxes.taxable + taxes.gst + chargeTotal + chargeTax.gst
 
-      const settings = await tx.storeSettings.findFirst({ where: { id: 1 }, select: { invoicePrefix: true, invoicePadding: true } })
-      const prefix = (settings?.invoicePrefix || 'INV-').trim() || 'INV-'
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(82463205)::text`
-      const last = await tx.invoice.findFirst({ where: { displayId: { startsWith: prefix } }, orderBy: { id: 'desc' }, select: { displayId: true } })
-      const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      const lastNumber = last?.displayId.match(new RegExp(`^${escaped}(\\d+)$`))?.[1]
-      const displayId = `${prefix}${String(lastNumber ? Number(lastNumber) + 1 : 1).padStart(settings?.invoicePadding ?? 4, '0')}`
+      const displayId = await nextInvoiceNumber(tx)
       const now = new Date()
       const created = await tx.invoice.create({
         data: {

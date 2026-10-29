@@ -25,7 +25,7 @@ export function refundDue(total: number, paid: number, credited: number, refunde
 }
 
 export async function nextRefundNumber(tx: Tx) {
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(82463212)::text`
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(82463214)::text`
   const rows = await tx.$queryRaw<{ max: number | null }[]>`SELECT MAX(CAST(substring("displayId" from '^RF-([0-9]+)$') AS INTEGER)) AS max FROM "CustomerRefund" WHERE "displayId" ~ '^RF-[0-9]+$'`
   return `RF-${String((Number(rows[0]?.max) || 0) + 1).padStart(4, '0')}`
 }

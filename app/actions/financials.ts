@@ -6,6 +6,7 @@ import { revalidatePath } from 'next/cache'
 import { requireRole } from '@/lib/auth-helpers'
 import { createJournalSchema, createAccountSchema } from '@/lib/validations/financials'
 import { creditNoteSplit } from '@/lib/erp/gst-math'
+import { nextNumber } from '@/lib/erp/sequence'
 import { refundDue } from '@/lib/erp/credit-notes'
 
 const prismaDynamic = prisma as unknown as {
@@ -819,12 +820,9 @@ export async function createManualJournal(data: unknown) {
     return { success: false, error: `Debit (${totalDebit}) ≠ Credit (${totalCredit}). Journal must balance.` }
   }
 
-  const count = await prisma.journalEntry.count()
-  const displayId = `JV-${String(count + 1).padStart(4, '0')}`
-
-  const entry = await prisma.journalEntry.create({
+  const entry = await prisma.$transaction(async tx => tx.journalEntry.create({
     data: {
-      displayId, date: journalDate, narration,
+      displayId: await nextNumber(tx, { table: 'JournalEntry', prefix: 'JV-', lock: 82463217 }), date: journalDate, narration,
       referenceType: 'MANUAL', totalDebit, totalCredit,
       lines: {
         create: lines.map(l => ({
@@ -832,7 +830,7 @@ export async function createManualJournal(data: unknown) {
         })),
       },
     },
-  })
+  }))
 
   revalidatePath('/financials')
   return { success: true, data: entry }

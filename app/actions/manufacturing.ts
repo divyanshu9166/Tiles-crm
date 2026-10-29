@@ -1,6 +1,7 @@
 'use server'
 
 import { prisma } from '@/lib/db'
+import { nextNumber } from '@/lib/erp/sequence'
 import { ledgerUnitCost, lockInventoryProducts } from '@/lib/inventory-stock'
 import { revalidatePath } from 'next/cache'
 import { unstable_noStore } from 'next/cache'
@@ -818,21 +819,9 @@ export async function createProductionOrder(data: unknown) {
     assigneeName = staff.name
   }
 
-  const lastOrder = await prisma.productionOrder.findFirst({
-    where: { displayId: { startsWith: 'PRD-' } },
-    orderBy: { id: 'desc' },
-    select: { displayId: true },
-  })
-  let nextNum = 1
-  if (lastOrder?.displayId) {
-    const m = lastOrder.displayId.match(/PRD-(\d+)/)
-    if (m) nextNum = parseInt(m[1]) + 1
-  }
-  const displayId = `PRD-${String(nextNum).padStart(4, '0')}`
   const standardMins = bom.steps.reduce((sum, step) => sum + step.durationMins * plannedQty, 0)
 
   const baseCreateData = {
-    displayId,
     bomId,
     finishedProductId: bom.finishedProductId,
     customOrderId: customOrderId || null,
@@ -868,39 +857,13 @@ export async function createProductionOrder(data: unknown) {
     } : undefined,
   }
 
-  let order
-  let createdWithoutAssignedStaffField = false
-  try {
-    order = await prisma.productionOrder.create({
-      data: {
-        ...baseCreateData,
-        assignedStaffId: assignedStaffId || null,
-      },
-    })
-  } catch (error) {
-    const staleClientMissingField =
-      assignedStaffId &&
-      error instanceof Error &&
-      error.message.includes('Unknown argument `assignedStaffId`')
-
-    if (!staleClientMissingField) throw error
-
-    // Fallback for stale Prisma client cache: create without relation field, then update via SQL.
-    order = await prisma.productionOrder.create({ data: baseCreateData })
-    createdWithoutAssignedStaffField = true
-  }
-
-  if (assignedStaffId && createdWithoutAssignedStaffField) {
-    try {
-      await prisma.$executeRaw`
-        UPDATE "ProductionOrder"
-        SET "assignedStaffId" = ${assignedStaffId}
-        WHERE "id" = ${order.id}
-      `
-    } catch {
-      // Keep order creation successful even if relation update fails in stale environments.
-    }
-  }
+  const order = await prisma.$transaction(async tx => tx.productionOrder.create({
+    data: {
+      ...baseCreateData,
+      displayId: await nextNumber(tx, { table: 'ProductionOrder', prefix: 'PRD-', lock: 82463216 }),
+      assignedStaffId: assignedStaffId || null,
+    },
+  }))
   if (customOrderId) {
     await prisma.$transaction([
       prisma.customOrder.update({ where: { id: customOrderId }, data: { status: 'IN_PRODUCTION' } }),
@@ -908,7 +871,7 @@ export async function createProductionOrder(data: unknown) {
         data: {
           customOrderId,
           date: new Date(),
-          event: `Production order ${displayId} created`,
+          event: `Production order ${order.displayId} created`,
           status: 'done',
           updatedBy: 'Manager',
         },

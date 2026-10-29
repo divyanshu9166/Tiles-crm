@@ -1,6 +1,7 @@
 'use server'
 
 import { prisma } from '@/lib/db'
+import { nextNumber } from '@/lib/erp/sequence'
 import { revalidatePath } from 'next/cache'
 import { createQuotationSchema, updateQuotationSchema, updateQuotationStatusSchema } from '@/lib/validations/quotation'
 import { linePrice } from '@/lib/line-math'
@@ -358,21 +359,9 @@ export async function createQuotation(data: unknown) {
   const grandTotal = totalBeforeTax + gstAmount
   const notesWithMetadata = buildNotesWithMetadata(notes, bankDetails)
 
-  const lastQuotation = await prisma.quotation.findFirst({
-    orderBy: { id: 'desc' },
-    select: { displayId: true },
-  })
-
-  let nextNum = 1000
-  if (lastQuotation?.displayId) {
-    const match = lastQuotation.displayId.match(/(\d+)$/)
-    if (match) nextNum = parseInt(match[1]) + 1
-  }
-  const displayId = `Q.${nextNum}`
-
-  const quotation = await prisma.quotation.create({
+  const quotation = await prisma.$transaction(async tx => tx.quotation.create({
     data: {
-      displayId,
+      displayId: await nextNumber(tx, { table: 'Quotation', prefix: 'Q.', lock: 82463215, padding: 0, start: 1000 }),
       contactId: contact.id,
       pricelistId: pricelistId ?? contact.pricelistId ?? null,
       date: date ? new Date(date) : new Date(),
@@ -405,7 +394,7 @@ export async function createQuotation(data: unknown) {
       contact: true,
       items: { include: { product: true } },
     },
-  })
+  }))
 
   revalidatePath('/quotations')
   return { success: true, data: formatQuotation(quotation) }

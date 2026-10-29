@@ -1,6 +1,7 @@
 'use server'
 
 import { guarded } from '@/lib/action-guard'
+import { secretMatches } from '@/lib/secret-compare';
 
 import { prisma } from '@/lib/db'
 import { revalidatePath } from 'next/cache'
@@ -292,7 +293,7 @@ export async function syncIndiaMartPullLeadsCron(secret) {
   if (!process.env.CRM_API_SECRET) {
     return { success: false, error: 'CRM_API_SECRET is not configured on server' }
   }
-  if (secret !== process.env.CRM_API_SECRET) {
+  if (!secretMatches(secret, process.env.CRM_API_SECRET)) {
     return { success: false, error: 'Unauthorized' }
   }
 

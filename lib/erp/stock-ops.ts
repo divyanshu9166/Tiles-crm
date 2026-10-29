@@ -91,6 +91,8 @@ export async function ensureReceiptForPurchaseOrder(tx: Tx, poId: number, author
     return qty > 0 ? [{ item, qty }] : []
   })
   if (pending.length === 0) return null
+  // Stock is valued net of the PO discount, the same amount the supplier bill carries.
+  const discountFactor = po.subtotal > 0 ? Math.max(0, po.subtotal - po.discount) / po.subtotal : 1
   const godown = await resolveStockGodown(tx)
   const displayId = await nextSequence(tx, 'Receipt')
   const picking = await tx.stockPicking.create({
@@ -103,7 +105,7 @@ export async function ensureReceiptForPurchaseOrder(tx: Tx, poId: number, author
       scheduledDate: po.expectedDate || new Date(),
       lines: {
         create: pending.map(({ item, qty }) => ({
-          productId: item.productId, purchaseOrderItemId: item.id, name: item.name, sku: item.sku, demandQty: qty, unitCost: item.unitCost,
+          productId: item.productId, purchaseOrderItemId: item.id, name: item.name, sku: item.sku, demandQty: qty, unitCost: Math.round(item.unitCost * discountFactor),
         })),
       },
     },

@@ -4,7 +4,7 @@ import { guarded } from '@/lib/action-guard'
 
 import { prisma } from '@/lib/db'
 import { nextNumber } from '@/lib/erp/sequence'
-import { ledgerUnitCost, lockInventoryProducts } from '@/lib/inventory-stock'
+import { adjustStock, resolveStockGodown, stockBalance } from '@/lib/inventory-stock'
 import { revalidatePath } from 'next/cache'
 import { unstable_noStore } from 'next/cache'
 import { requireRole, requireAuth } from '@/lib/auth-helpers'
@@ -34,13 +34,6 @@ type ProductionStepTiming = {
   startedAt?: Date | null
   completedAt?: Date | null
 }
-type GodownStockRow = {
-  id: number
-  godownId: number
-  quantity: number
-  godown: { id: number; name: string; isDefault: boolean }
-}
-
 function getActualStepMins(step: ProductionStepTiming) {
   if ((step.actualMins || 0) > 0) return step.actualMins || 0
   if (step.startedAt && step.completedAt) {
@@ -82,111 +75,35 @@ function decorateBOM<T extends {
   return { ...bom, ...calculateBomMetrics(bom, 1) }
 }
 
-async function getDefaultGodownWithTx(tx: any) {
-  let godown = await tx.godown.findFirst({ where: { isDefault: true } })
-  if (!godown) {
-    godown = await tx.godown.findFirst({ orderBy: { id: 'asc' } })
-    if (godown) {
-      godown = await tx.godown.update({ where: { id: godown.id }, data: { isDefault: true } })
-    } else {
-      godown = await tx.godown.create({ data: { name: 'Main Showroom', type: 'Showroom', isDefault: true } })
-    }
-  }
-  return godown
-}
-
+// Production moves stock through the same ledgered path as every other module:
+// legacy stock is preserved, every move leaves a ledger row, and the location is
+// the default one (receipts) or the default one first (issues).
 async function adjustManufacturingStockWithTx(tx: any, productId: number, quantity: number, entryType: string, options?: {
   referenceType?: string
   referenceId?: number
   notes?: string
   createdBy?: string
 }) {
-  await lockInventoryProducts(tx, [productId])
   const qty = roundQty(quantity)
   if (qty === 0) return
-
-  const godownCount = await tx.godown.count()
-  if (godownCount > 0) {
-    const defaultGodown = await getDefaultGodownWithTx(tx)
-
-    if (qty > 0) {
-      const existing = await tx.godownStock.findUnique({
-        where: { productId_godownId: { productId, godownId: defaultGodown.id } },
-      })
-      const currentQty = existing?.quantity || 0
-      const newQty = roundQty(currentQty + qty)
-
-      await tx.godownStock.upsert({
-        where: { productId_godownId: { productId, godownId: defaultGodown.id } },
-        create: { productId, godownId: defaultGodown.id, quantity: newQty },
-        update: { quantity: newQty },
-      })
-      await tx.stockLedger.create({
-        data: {
-          productId,
-          godownId: defaultGodown.id,
-          entryType,
-          quantity: qty,
-          balanceAfter: newQty,
-          unitCost: await ledgerUnitCost(tx, productId),
-          referenceType: options?.referenceType,
-          referenceId: options?.referenceId,
-          notes: options?.notes,
-          createdBy: options?.createdBy,
-        },
-      })
-      const total = await tx.godownStock.aggregate({ where: { productId }, _sum: { quantity: true } })
-      await tx.product.update({ where: { id: productId }, data: { stock: total._sum.quantity || 0 } })
-      return
-    }
-
-    let remainingToIssue = Math.abs(qty)
-    const stockRows = await tx.godownStock.findMany({
-      where: { productId, quantity: { gt: 0 } },
-      include: { godown: { select: { id: true, name: true, isDefault: true } } },
-      orderBy: { quantity: 'desc' },
-    }) as GodownStockRow[]
-    stockRows.sort((a, b) => Number(b.godown.isDefault) - Number(a.godown.isDefault))
-
-    const totalAvailable = stockRows.reduce((sum, row) => sum + row.quantity, 0)
-    if (totalAvailable + 0.0001 < remainingToIssue) throw new Error('Insufficient raw material stock')
-
-    for (const row of stockRows) {
-      if (remainingToIssue <= 0) break
-      const issuedQty = roundQty(Math.min(row.quantity, remainingToIssue))
-      const newQty = roundQty(row.quantity - issuedQty)
-      await tx.godownStock.update({ where: { id: row.id }, data: { quantity: newQty } })
-      await tx.stockLedger.create({
-        data: {
-          productId,
-          godownId: row.godownId,
-          entryType,
-          quantity: -issuedQty,
-          balanceAfter: newQty,
-          unitCost: await ledgerUnitCost(tx, productId),
-          referenceType: options?.referenceType,
-          referenceId: options?.referenceId,
-          notes: options?.notes,
-          createdBy: options?.createdBy,
-        },
-      })
-      remainingToIssue = roundQty(remainingToIssue - issuedQty)
-    }
-
-    const total = await tx.godownStock.aggregate({ where: { productId }, _sum: { quantity: true } })
-    await tx.product.update({ where: { id: productId }, data: { stock: total._sum.quantity || 0 } })
+  const defaultGodown = await resolveStockGodown(tx)
+  if (qty > 0) {
+    await adjustStock(tx, productId, defaultGodown.id, qty, entryType, options)
     return
   }
 
-  if (qty < 0) {
-    const product = await tx.product.findUnique({ where: { id: productId }, select: { stock: true, name: true } })
-    if (!product) throw new Error('Product not found')
-    if ((product.stock || 0) + qty < 0) throw new Error(`Insufficient stock for ${product.name}`)
+  // Allocates any legacy (unlocated) stock to the default location first.
+  await stockBalance(tx, productId, defaultGodown.id)
+  const stockRows = await tx.godownStock.findMany({ where: { productId, quantity: { gt: 0 } } }) as { godownId: number; quantity: number }[]
+  stockRows.sort((x, y) => Number(y.godownId === defaultGodown.id) - Number(x.godownId === defaultGodown.id) || y.quantity - x.quantity)
+  let remaining = Math.abs(qty)
+  if (stockRows.reduce((sum, row) => sum + row.quantity, 0) + 0.0001 < remaining) throw new Error('Insufficient raw material stock')
+  for (const row of stockRows) {
+    if (remaining <= 0) break
+    const issued = roundQty(Math.min(row.quantity, remaining))
+    await adjustStock(tx, productId, row.godownId, -issued, entryType, options)
+    remaining = roundQty(remaining - issued)
   }
-  await tx.product.update({
-    where: { id: productId },
-    data: { stock: { increment: qty } },
-  })
 }
 
 async function releaseCustomOrderSlabsWithTx(tx: any, customOrderId: number) {

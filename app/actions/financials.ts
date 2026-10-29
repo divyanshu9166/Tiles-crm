@@ -153,7 +153,7 @@ export async function seedChartOfAccounts(...args: Parameters<typeof _seedChartO
 }
 
 async function _seedChartOfAccounts() {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } }
   const existing = await prisma.ledgerAccount.count()
   if (existing > 0) return { success: true, message: 'Chart of accounts already exists' }
 
@@ -179,7 +179,7 @@ export async function getAccounts(...args: Parameters<typeof _getAccounts>): Pro
 }
 
 async function _getAccounts() {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Admin access required' } as never }
   const groups = await prisma.accountGroup.findMany({
     include: { accounts: { orderBy: { code: 'asc' } } },
     orderBy: { name: 'asc' },
@@ -211,7 +211,7 @@ export async function getProfitAndLoss(...args: Parameters<typeof _getProfitAndL
 }
 
 async function _getProfitAndLoss(fromDate: string, toDate: string, compareFrom?: string, compareTo?: string) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Access denied' } }
 
   if (!parseDateRange(fromDate, toDate)) {
     return { success: false, error: 'Invalid date range' }
@@ -332,7 +332,7 @@ export async function getBalanceSheet(...args: Parameters<typeof _getBalanceShee
 }
 
 async function _getBalanceSheet(asOfDate: string) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Access denied' } }
 
   const asOf = parseAsOfDate(asOfDate)
   if (!asOf) return { success: false, error: 'Invalid as-of date' }
@@ -433,7 +433,7 @@ export async function getCashFlow(...args: Parameters<typeof _getCashFlow>): Pro
 }
 
 async function _getCashFlow(fromDate: string, toDate: string) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Access denied' } }
 
   const range = parseDateRange(fromDate, toDate)
   if (!range) return { success: false, error: 'Invalid date range' }
@@ -504,7 +504,7 @@ export async function getExecutiveSummary(...args: Parameters<typeof _getExecuti
 }
 
 async function _getExecutiveSummary(fromDate: string, toDate: string) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Access denied' } }
 
   const range = parseDateRange(fromDate, toDate)
   if (!range) return { success: false, error: 'Invalid date range' }
@@ -609,7 +609,7 @@ export async function getTrialBalance(...args: Parameters<typeof _getTrialBalanc
 }
 
 async function _getTrialBalance(asOfDate: string) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Access denied' } }
 
   const asOf = parseAsOfDate(asOfDate)
   if (!asOf) return { success: false, error: 'Invalid as-of date' }
@@ -697,7 +697,7 @@ export async function getReceivablesAging(...args: Parameters<typeof _getReceiva
 }
 
 async function _getReceivablesAging() {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Access denied' } }
 
   const today = new Date()
   today.setHours(0, 0, 0, 0)
@@ -753,7 +753,7 @@ export async function getPayablesAging(...args: Parameters<typeof _getPayablesAg
 }
 
 async function _getPayablesAging() {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Access denied' } }
 
   const today = new Date()
   today.setHours(0, 0, 0, 0)
@@ -817,7 +817,7 @@ export async function getJournalEntries(...args: Parameters<typeof _getJournalEn
 }
 
 async function _getJournalEntries(fromDate?: string, toDate?: string) {
-  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  try { await requireRole('ADMIN') } catch { return { success: false, error: 'Access denied' } }
 
   const where: Record<string, unknown> = {}
   if (fromDate && toDate) {

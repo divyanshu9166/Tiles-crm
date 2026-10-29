@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { secretMatches } from '@/lib/secret-compare'
 import { prisma } from '@/lib/db'
 import type { CallDirection, CallStatus } from '@prisma/client'
 
@@ -10,7 +11,7 @@ import type { CallDirection, CallStatus } from '@prisma/client'
 export async function POST(req: NextRequest) {
   // Verify API secret
   const apiSecret = req.headers.get('x-api-secret')
-  if (apiSecret !== process.env.CRM_API_SECRET) {
+  if (!secretMatches(apiSecret, process.env.CRM_API_SECRET)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 

@@ -209,6 +209,32 @@ export async function getQuotations(...args: Parameters<typeof _getQuotations>):
   return guarded('getQuotations', () => _getQuotations(...args))
 }
 
+// Once a quotation is confirmed as a sales order or has an active invoice, the
+// customer has committed to those terms: editing it would drift from the order.
+async function quotationLockReason(quotationId: number, displayId: string) {
+  const order = await prisma.salesOrder.findUnique({ where: { quotationId }, select: { displayId: true, status: true } })
+  if (order && order.status !== 'CANCELLED') return `It is confirmed as sales order ${order.displayId}. Change the order instead.`
+  const marker = `Converted from quotation ${displayId}`
+  const exact = new RegExp(`${marker.replace(/[.*+?^${}()|[\]\\]/g, '\\async function _getQuotations() {')}(?!\\d)`)
+  const invoices = await prisma.invoice.findMany({ where: { notes: { contains: marker }, invoiceStatus: 'ACTIVE' }, select: { displayId: true, notes: true } })
+  const invoice = invoices.find(row => exact.test(row.notes || ''))
+  if (invoice) return `It is already invoiced as ${invoice.displayId}.`
+  return null
+}
+
+// Requests for the same quotation run one after another within this server process.
+const conversionQueue = new Map<number, Promise<unknown>>()
+async function serialized<T>(quotationId: number, run: () => Promise<T>): Promise<T> {
+  const previous = conversionQueue.get(quotationId) ?? Promise.resolve()
+  const current = previous.catch(() => undefined).then(run)
+  conversionQueue.set(quotationId, current)
+  try {
+    return await current
+  } finally {
+    if (conversionQueue.get(quotationId) === current) conversionQueue.delete(quotationId)
+  }
+}
+
 async function _getQuotations() {
   try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
   const quotations = await prisma.quotation.findMany({
@@ -453,6 +479,8 @@ async function _updateQuotation(data: unknown) {
     include: { contact: true },
   })
   if (!existing) return { success: false, error: 'Quotation not found' }
+  const locked = await quotationLockReason(existing.id, existing.displayId)
+  if (locked) return { success: false, error: `This quotation can no longer be edited. ${locked}` }
 
   const emailValue = email || undefined
   const addressValue = dispatchAddress || undefined
@@ -606,6 +634,13 @@ async function _updateQuotationStatus(data: unknown) {
   const parsed = updateQuotationStatusSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
+  const current = await prisma.quotation.findUnique({ where: { id: parsed.data.id }, select: { id: true, displayId: true, status: true } })
+  if (!current) return { success: false, error: 'Quotation not found' }
+  if (current.status !== parsed.data.status) {
+    const locked = await quotationLockReason(current.id, current.displayId)
+    if (locked) return { success: false, error: `The status can no longer be changed. ${locked}` }
+  }
+
   await prisma.quotation.update({
     where: { id: parsed.data.id },
     data: { status: parsed.data.status },
@@ -626,6 +661,10 @@ export async function convertQuotationToInvoice(...args: Parameters<typeof _conv
 
 async function _convertQuotationToInvoice(quotationId: number) {
   try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Manager access required' } as never }
+  return serialized(quotationId, () => convertQuotationNow(quotationId))
+}
+
+async function convertQuotationNow(quotationId: number) {
   const quotation = await prisma.quotation.findUnique({
     where: { id: quotationId },
     include: {

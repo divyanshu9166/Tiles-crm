@@ -19,11 +19,11 @@ vi.mock('@/lib/email', () => ({ sendEmail: vi.fn(async () => ({ success: false, 
 import { getSalesOrders, createSalesOrder, createSalesOrderFromQuotation, createInvoiceFromSalesOrder, cancelSalesOrder, getSalesOrder, lockSalesOrder, createRefundFromSalesOrder } from '@/app/actions/sales-orders'
 import { validatePicking, getPickings, cancelPicking, reserveDeliverySlabs, getPicking, returnDelivery } from '@/app/actions/operations'
 import { createStoneLot } from '@/app/actions/stone-inventory'
-import { approvePurchaseOrder, receivePurchaseOrder, cancelPurchaseOrder, createPurchaseOrder, recordPurchaseOrderPayment } from '@/app/actions/purchases'
+import { approvePurchaseOrder, receivePurchaseOrder, cancelPurchaseOrder, createPurchaseOrder, updatePurchaseOrder, recordPurchaseOrderPayment } from '@/app/actions/purchases'
 import { cancelInvoice, createInvoice, updateInvoice, finalizeHeldInvoice, createCreditNote, recordPayment, recordCustomerRefund } from '@/app/actions/invoices'
 import { createOrder, updateOrderStatus } from '@/app/actions/orders'
 import { moveOrderToDraft, moveQuotationToDraft, movePurchaseOrderToDraft } from '@/app/actions/drafts'
-import { createQuotation } from '@/app/actions/quotations'
+import { createQuotation, updateQuotationStatus, convertQuotationToInvoice } from '@/app/actions/quotations'
 import { getReplenishment, orderReplenishment, saveReorderRule, saveVendorPrice } from '@/app/actions/replenishment'
 import { createInventoryCount, setCountedQty, applyInventoryCount, getInventoryCount } from '@/app/actions/inventory-counts'
 import { getChatter, postNote, scheduleActivity, markActivityDone, getMyActivities } from '@/app/actions/chatter'
@@ -1139,6 +1139,87 @@ describe.skipIf(!url)('ERP document flows (Odoo parity)', () => {
     const [first, second] = await Promise.all([a.data.id, b.data.id].map(id => db.invoice.findUniqueOrThrow({ where: { id } })))
     const num = (displayId: string) => Number(displayId.replace(/\D/g, ''))
     expect(num(second.displayId)).toBeGreaterThan(num(first.displayId))
+  })
+
+
+  it('M19/M20: a draft PO takes no payments; a PO with money paid cannot be cancelled; a stale edit is refused', async () => {
+    const product = await newProduct()
+    const created = await createPurchaseOrder({ supplierId, items: [{ productId: product.id, name: product.name, sku: product.sku, quantity: 10, unitCost: 100, gstRate: 18 }] })
+    if (!created.success || !created.data) throw new Error(created.error)
+    const poId = created.data.id
+    const draftPayment = await recordPurchaseOrderPayment(poId, 100)
+    expect(draftPayment.success).toBe(false)
+    expect(draftPayment.error).toMatch(/Approve/)
+
+    expect((await approvePurchaseOrder(poId)).success).toBe(true)
+    // An edit that arrives after approval is refused, not applied on top of the receipt.
+    const edit = await updatePurchaseOrder(poId, { supplierId, items: [{ productId: product.id, name: product.name, sku: product.sku, quantity: 99, unitCost: 100, gstRate: 18 }] })
+    expect(edit.success).toBe(false)
+    expect((await db.purchaseOrderItem.findFirstOrThrow({ where: { poId } })).quantity).toBe(10)
+
+    expect((await recordPurchaseOrderPayment(poId, 500)).success).toBe(true)
+    const cancel = await cancelPurchaseOrder(poId)
+    expect(cancel.success).toBe(false)
+    expect(cancel.error).toMatch(/already paid/)
+    // Two payments that together exceed the balance: only what fits is accepted.
+    const results = await Promise.all([1, 2].map(() => recordPurchaseOrderPayment(poId, 400)))
+    expect(results.filter(result => result.success)).toHaveLength(1)
+    expect((await db.purchaseOrder.findUniqueOrThrow({ where: { id: poId } })).amountPaid).toBe(900)
+  })
+
+  it('M23: a confirmed quotation can no longer be edited or re-statused, and a double click invoices it once', async () => {
+    const product = await newProduct(10)
+    const contact = await db.contact.create({ data: { name: 'Locked Co', phone: contactPhone() } })
+    const make = () => db.quotation.create({ data: { displayId: `QT-${crypto.randomUUID()}`, contactId: contact.id, status: 'SENT', gstPercent: 18, items: { create: [{ productId: product.id, name: product.name, quantity: 2, rate: 500, amount: 1000 }] } } })
+
+    const confirmed = await make()
+    expect((await createSalesOrderFromQuotation({ quotationId: confirmed.id, godownId })).success).toBe(true)
+    const status = await updateQuotationStatus({ id: confirmed.id, status: 'REJECTED' })
+    expect(status.success).toBe(false)
+    expect(status.error).toMatch(/sales order/)
+
+    const double = await make()
+    const results = await Promise.all([1, 2].map(() => convertQuotationToInvoice(double.id)))
+    expect(results.filter(result => result.success)).toHaveLength(1)
+    expect(await db.invoice.count({ where: { notes: { contains: `Converted from quotation ${double.displayId}` } } })).toBe(1)
+  })
+
+  it('M25: cancelling a parked bill that was finalized a moment earlier still puts the stock back', async () => {
+    const product = await newProduct(10)
+    const parked = await posInvoice(product, { quantity: 3 }, { isHeld: true, payments: [{ amount: 0, method: 'Cash' }] })
+    if (!parked.success || !parked.data) throw new Error(parked.error)
+    const id = parked.data.id
+    const results = await Promise.all([finalizeHeldInvoice(id), cancelInvoice(id)])
+    const finalStatus = (await db.invoice.findUniqueOrThrow({ where: { id } })).invoiceStatus
+    // Whatever order they ran in, stock is consistent with the final state.
+    expect(await stockOf(product.id)).toBe(finalStatus === 'CANCELLED' ? 10 : 7)
+    expect(results.some(result => result.success)).toBe(true)
+  })
+
+
+  it('M14: received stock is valued net of the PO discount, so the supplier bill clears GRNI', async () => {
+    expect((await seedChartOfAccounts()).success).toBe(true)
+    const product = await newProduct(0, { costPrice: 0 })
+    const created = await createPurchaseOrder({ supplierId, discount: 100, items: [{ productId: product.id, name: product.name, sku: product.sku, quantity: 10, unitCost: 100, gstRate: 18 }] })
+    if (!created.success || !created.data) throw new Error(created.error)
+    const poId = created.data.id
+    await approvePurchaseOrder(poId)
+    const receipt = await db.stockPicking.findFirstOrThrow({ where: { purchaseOrderId: poId, status: 'READY' }, include: { lines: true } })
+    expect(receipt.lines[0].unitCost).toBe(90)
+    expect((await validatePicking({ id: receipt.id, createBackorder: false, lines: [{ lineId: receipt.lines[0].id, doneQty: 10 }] })).success).toBe(true)
+    expect((await db.product.findUniqueOrThrow({ where: { id: product.id } })).costPrice).toBe(90)
+
+    const bill = await createBillFromPurchaseOrder(poId)
+    if (!bill.success) throw new Error(bill.error)
+    await updateVendorBill({ id: bill.data.id, vendorRef: `SUP-${crypto.randomUUID().slice(0, 6)}` })
+    expect((await postVendorBill(bill.data.id)).success).toBe(true)
+    await postAutoJournals(db as never)
+    // Stock IN (Cr GRNI 900) and the bill (Dr GRNI 900) cancel out for this PO.
+    const stockIn = await db.stockLedger.findFirstOrThrow({ where: { productId: product.id, quantity: { gt: 0 } } })
+    const stockEntry = await db.journalEntry.findUniqueOrThrow({ where: { sourceKey: `SLG:${stockIn.id}` } })
+    const billEntry = await db.journalEntry.findUniqueOrThrow({ where: { sourceKey: `BILL:${bill.data.id}` }, include: { lines: true } })
+    expect(stockEntry.totalDebit).toBe(900)
+    expect(billEntry.lines.some(line => line.debit === 900)).toBe(true)
   })
 
 })

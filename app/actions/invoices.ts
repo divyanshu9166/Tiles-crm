@@ -946,7 +946,10 @@ async function _cancelInvoice(invoiceId: number) {
       // Claim the cancellation first so concurrent requests restore stock once.
       const claimed = await tx.invoice.updateMany({ where: { id: invoiceId, invoiceStatus: 'ACTIVE' }, data: { invoiceStatus: 'CANCELLED' } })
       if (claimed.count !== 1) throw new Error('Invoice is already cancelled or refunded')
-      await restoreInvoiceInventory(tx, invoice)
+      // Re-read after the claim: a parked bill finalized a moment ago has taken stock, and
+      // judging by the earlier read would skip putting it back.
+      const fresh = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId }, include: { items: true } })
+      await restoreInvoiceInventory(tx, fresh)
     })
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : 'Could not cancel invoice' }

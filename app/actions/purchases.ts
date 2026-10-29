@@ -424,6 +424,10 @@ async function _updatePurchaseOrder(id: number, data: unknown) {
   }
 
   const po = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "PurchaseOrder" WHERE id = ${id} FOR UPDATE`
+    const current = await tx.purchaseOrder.findUnique({ where: { id }, select: { status: true, amountPaid: true } })
+    if (!current || current.status !== 'DRAFT') throw new Error('This purchase order was approved or changed meanwhile. Refresh to see its current state.')
+    if (total < current.amountPaid) throw new Error('Updated total cannot be less than amount already paid')
     await tx.purchaseOrderItem.deleteMany({ where: { poId: id } })
 
     return tx.purchaseOrder.update({
@@ -438,7 +442,7 @@ async function _updatePurchaseOrder(id: number, data: unknown) {
         sgst,
         igst,
         total,
-        balanceDue: Math.max(0, total - existing.amountPaid),
+        balanceDue: Math.max(0, total - current.amountPaid),
         isRCM,
         itcEligible,
         itcCategory,
@@ -478,15 +482,15 @@ async function _approvePurchaseOrder(id: number) {
   // Odoo "Order approval" (double validation): large POs need an administrator.
   const settings = await prisma.storeSettings.findFirst({ where: { id: 1 }, select: { poApprovalLimit: true } })
   const limit = settings?.poApprovalLimit || 0
-  if (limit > 0 && po.total > limit && session.user.role !== 'ADMIN') {
-    return { success: false, error: `POs above ₹${limit.toLocaleString('en-IN')} need administrator approval` }
-  }
   const author = { id: Number(session.user.id) || null, name: session.user.name }
 
   try {
     await prisma.$transaction(async tx => {
       const approved = await tx.purchaseOrder.updateMany({ where: { id, status: 'DRAFT' }, data: { status: 'APPROVED' } })
       if (approved.count !== 1) throw new Error('Only DRAFT orders can be approved')
+      // The total is read after the claim, so an edit that landed first is what gets checked.
+      const fresh = await tx.purchaseOrder.findUniqueOrThrow({ where: { id }, select: { total: true } })
+      if (limit > 0 && fresh.total > limit && session.user.role !== 'ADMIN') throw new Error(`POs above ₹${limit.toLocaleString('en-IN')} need administrator approval`)
       await logTracking(tx, 'PurchaseOrder', id, 'Purchase order approved', [{ field: 'Status', from: 'DRAFT', to: 'APPROVED' }], author)
       await ensureReceiptForPurchaseOrder(tx, id, author)
     })
@@ -697,12 +701,16 @@ async function _recordPurchaseOrderPayment(
   const po = await prisma.purchaseOrder.findUnique({ where: { id } })
   if (!po) return { success: false, error: 'Purchase order not found' }
   if (po.status === 'CANCELLED') return { success: false, error: 'Cannot record payment for a cancelled PO' }
-  if (po.balanceDue <= 0) return { success: false, error: 'This PO is already fully paid' }
-  if (amount > po.balanceDue) return { success: false, error: 'Payment cannot exceed pending balance' }
+  if (po.status === 'DRAFT') return { success: false, error: 'Approve the purchase order before paying the supplier' }
 
   const paymentLine = `[PAYMENT ${paymentDate.toISOString().slice(0, 10)}] Rs. ${amount.toLocaleString('en-IN')} via ${method}${reference?.trim() ? ` (${reference.trim()})` : ''}${note?.trim() ? ` - ${note.trim()}` : ''}`
 
   const updated = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "PurchaseOrder" WHERE id = ${id} FOR UPDATE`
+    const current = await tx.purchaseOrder.findUniqueOrThrow({ where: { id }, select: { status: true, balanceDue: true } })
+    if (current.status === 'CANCELLED' || current.status === 'DRAFT') throw new Error('This purchase order can no longer take payments')
+    if (current.balanceDue <= 0) throw new Error('This PO is already fully paid')
+    if (amount > current.balanceDue) throw new Error('Payment cannot exceed pending balance')
     await tx.purchasePayment.create({
       data: {
         poId: id,
@@ -737,6 +745,7 @@ async function _cancelPurchaseOrder(id: number) {
   try { session = await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
   const po = await prisma.purchaseOrder.findUnique({ where: { id }, include: { items: { select: { receivedQty: true } } } })
   if (!po) return { success: false, error: 'Not found' }
+  if (po.amountPaid > 0) return { success: false, error: `₹${po.amountPaid.toLocaleString('en-IN')} was already paid to the supplier on this PO. Cancelling would lose track of that advance, so get it refunded or keep the PO open and use the advance against a bill.` }
   if (po.status === 'RECEIVED') return { success: false, error: 'Cannot cancel a received order' }
   if (po.status === 'CANCELLED') return { success: false, error: 'This order is already cancelled' }
   if (po.items.some(item => item.receivedQty > 0)) {
@@ -749,6 +758,8 @@ async function _cancelPurchaseOrder(id: number) {
       await tx.$queryRaw`SELECT id FROM "PurchaseOrder" WHERE id = ${id} FOR UPDATE`
       const received = await tx.purchaseOrderItem.count({ where: { poId: id, receivedQty: { gt: 0 } } })
       if (received > 0) throw new Error('Goods were received on this PO meanwhile. Refresh and try again.')
+      const paid = await tx.purchasePayment.count({ where: { poId: id } })
+      if (paid > 0) throw new Error('A payment was recorded on this PO meanwhile. Refresh and try again.')
       const receipts = await tx.stockPicking.findMany({ where: { purchaseOrderId: id, status: 'READY' }, select: { id: true } })
       for (const receipt of receipts) await cancelPickingTx(tx, receipt.id, author)
       await tx.purchaseOrder.update({ where: { id }, data: { status: 'CANCELLED' } })

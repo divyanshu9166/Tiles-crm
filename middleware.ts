@@ -18,6 +18,9 @@ const publicPaths = [
   // Secret-checked (x-api-secret = CRM_API_SECRET) inside the route
   '/api/cron/accounting',
   '/api/cron/stock-alerts',
+  '/api/cron/financial-alerts',
+  '/api/cron/indiamart-sync',
+  '/api/cron/cleanup', // CRON_SECRET bearer, checked in the route
   // Uploaded files are fetched by WhatsApp/Meta to send media by link; names
   // are random UUIDs and the route serves them with nosniff + sandbox headers.
   '/api/uploads/',

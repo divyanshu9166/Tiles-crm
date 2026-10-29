@@ -357,7 +357,7 @@ export async function getRecurringExpenses(...args: Parameters<typeof _getRecurr
 }
 
 async function _getRecurringExpenses() {
-  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again', data: [] } }
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Recurring expenses are for managers', data: [] } }
   const recurring = await prisma.recurringExpense.findMany({
     include: { category: true },
     orderBy: { createdAt: 'desc' },
@@ -500,14 +500,17 @@ export async function getExpenseSummary(...args: Parameters<typeof _getExpenseSu
 }
 
 async function _getExpenseSummary(fromDate: string, toDate: string) {
-  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } }
+  let session
+  try { session = await requireAuth() } catch { return { success: false, error: 'Please sign in again' } }
+  // Staff totals cover what they submitted themselves, like their expense list.
+  const own = session.user.role === 'STAFF' ? { staffId: session.user.staffId ? Number(session.user.staffId) : -1 } : {}
   const from = new Date(fromDate + 'T00:00:00')
   const to = new Date(toDate + 'T23:59:59')
 
   // Category-wise breakdown
   const byCategory = await prisma.expense.groupBy({
     by: ['categoryId'],
-    where: { date: { gte: from, lte: to }, status: 'Approved' },
+    where: { date: { gte: from, lte: to }, status: 'Approved', ...own },
     _sum: { amount: true },
     _count: true,
   })
@@ -532,14 +535,14 @@ async function _getExpenseSummary(fromDate: string, toDate: string) {
   // Payment mode breakdown
   const byPaymentMode = await prisma.expense.groupBy({
     by: ['paymentMode'],
-    where: { date: { gte: from, lte: to }, status: 'Approved' },
+    where: { date: { gte: from, lte: to }, status: 'Approved', ...own },
     _sum: { amount: true },
     _count: true,
   })
 
   // Daily totals
   const allExpenses = await prisma.expense.findMany({
-    where: { date: { gte: from, lte: to }, status: 'Approved' },
+    where: { date: { gte: from, lte: to }, status: 'Approved', ...own },
     select: { date: true, amount: true },
     orderBy: { date: 'asc' },
   })
@@ -563,7 +566,7 @@ async function _getExpenseSummary(fromDate: string, toDate: string) {
   // Top vendor
   const byVendor = await prisma.expense.groupBy({
     by: ['vendor'],
-    where: { date: { gte: from, lte: to }, status: 'Approved', vendor: { not: null } },
+    where: { date: { gte: from, lte: to }, status: 'Approved', vendor: { not: null }, ...own },
     _sum: { amount: true },
     _count: true,
     orderBy: { _sum: { amount: 'desc' } },
@@ -600,7 +603,7 @@ export async function getBudgetVsActual(...args: Parameters<typeof _getBudgetVsA
 }
 
 async function _getBudgetVsActual(month: string) {
-  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } }
+  try { await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Budgets are for managers' } }
   // month = "YYYY-MM"
   const from = new Date(month + '-01T00:00:00')
   const to = new Date(from)

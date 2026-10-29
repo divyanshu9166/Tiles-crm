@@ -25,7 +25,10 @@ export async function getDashboardStats(...args: Parameters<typeof _getDashboard
 }
 
 async function _getDashboardStats() {
-  try { await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
+  let session
+  try { session = await requireAuth() } catch { return { success: false, error: 'Please sign in again' } as never }
+  // Company revenue, collections and who owes what are for managers; staff see their pipeline and stock.
+  const restricted = session.user.role === 'STAFF'
   const today = new Date()
   today.setHours(0, 0, 0, 0)
   const todayEnd = new Date()
@@ -242,7 +245,8 @@ async function _getDashboardStats() {
       leadsToday,
       appointmentsToday,
       activeOrders,
-      totalRevenue: totalRevenue._sum.amount || 0,
+      restricted,
+      totalRevenue: restricted ? 0 : totalRevenue._sum.amount || 0,
       recentLeads: recentLeads.map(l => ({
         id: l.id,
         name: l.contact.name,
@@ -285,17 +289,17 @@ async function _getDashboardStats() {
         hasNotes: !!v.staffNotes,
       })),
       kpis: {
-        revenueMtd: revenueMtdValue,
-        revenueChangePct: getPercentChange(revenueMtdValue, revenuePrevMtdValue),
+        revenueMtd: restricted ? 0 : revenueMtdValue,
+        revenueChangePct: restricted ? 0 : getPercentChange(revenueMtdValue, revenuePrevMtdValue),
         leadsMtd,
         leadsChangePct: getPercentChange(leadsMtd, leadsPrevMtd),
         conversionRate: conversionMtd,
         conversionChangePct: Math.round((conversionMtd - conversionPrevMtd) * 10) / 10,
-        avgOrderValue: avgOrderValueMtd,
-        avgOrderValueChangePct: getPercentChange(avgOrderValueMtd, avgOrderValuePrevMtd),
-        pendingCollections: pendingCollections._sum.balanceDue || 0,
-        pendingInvoices: pendingCollections._count.id || 0,
-        overdueInvoices: overdueInvoices.length,
+        avgOrderValue: restricted ? 0 : avgOrderValueMtd,
+        avgOrderValueChangePct: restricted ? 0 : getPercentChange(avgOrderValueMtd, avgOrderValuePrevMtd),
+        pendingCollections: restricted ? 0 : pendingCollections._sum.balanceDue || 0,
+        pendingInvoices: restricted ? 0 : pendingCollections._count.id || 0,
+        overdueInvoices: restricted ? 0 : overdueInvoices.length,
       },
       pipeline: leadStatusOrder.map(status => ({
         key: status,
@@ -305,7 +309,7 @@ async function _getDashboardStats() {
       channelPerformance,
       actionCenter: {
         pendingFollowUps: dueFollowUps.length,
-        overdueInvoices: overdueInvoices.length,
+        overdueInvoices: restricted ? 0 : overdueInvoices.length,
         dueAppointmentsToday: appointmentsToday,
         lowStockCritical,
         followUpItems: dueFollowUps.map(f => ({
@@ -316,7 +320,7 @@ async function _getDashboardStats() {
           dueDate: f.date.toISOString().split('T')[0],
           assignedTo: f.lead.assignedTo?.name || null,
         })),
-        overdueInvoicesList: overdueInvoices.map(inv => ({
+        overdueInvoicesList: (restricted ? [] : overdueInvoices).map(inv => ({
           id: inv.id,
           displayId: inv.displayId,
           customer: inv.contact.name,

@@ -147,14 +147,14 @@ export default function Dashboard() {
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-3 md:gap-5">
-        <StatCard
+        {!stats.restricted && <StatCard
           title="Revenue (MTD)"
           value={formatCompactINR(stats.kpis?.revenueMtd || 0)}
           change={formatPctChange(stats.kpis?.revenueChangePct || 0)}
           changeType={(stats.kpis?.revenueChangePct || 0) >= 0 ? 'up' : 'down'}
           icon={DollarSign}
           color="success"
-        />
+        />}
         <StatCard
           title="Lead Conversion"
           value={`${stats.kpis?.conversionRate || 0}%`}
@@ -163,22 +163,22 @@ export default function Dashboard() {
           icon={TrendingUp}
           color="accent"
         />
-        <StatCard
+        {!stats.restricted && <StatCard
           title="Avg Order Value"
           value={formatCompactINR(stats.kpis?.avgOrderValue || 0)}
           change={formatPctChange(stats.kpis?.avgOrderValueChangePct || 0)}
           changeType={(stats.kpis?.avgOrderValueChangePct || 0) >= 0 ? 'up' : 'down'}
           icon={ShoppingCart}
           color="purple"
-        />
-        <StatCard
+        />}
+        {!stats.restricted && <StatCard
           title="Pending Collections"
           value={formatCompactINR(stats.kpis?.pendingCollections || 0)}
           change={`${stats.kpis?.overdueInvoices || 0} overdue`}
           changeType={(stats.kpis?.overdueInvoices || 0) === 0 ? 'up' : 'down'}
           icon={AlertTriangle}
           color="teal"
-        />
+        />}
       </div>
 
       {IS_TGM && (
@@ -469,10 +469,10 @@ export default function Dashboard() {
               <p className="text-[10px] text-muted">Follow-ups</p>
               <p className="text-sm font-bold text-foreground">{stats.actionCenter?.pendingFollowUps || 0}</p>
             </div>
-            <div className="p-2 rounded-lg bg-surface text-center">
+            {!stats.restricted && <div className="p-2 rounded-lg bg-surface text-center">
               <p className="text-[10px] text-muted">Overdue Invoices</p>
               <p className="text-sm font-bold text-red-600">{stats.actionCenter?.overdueInvoices || 0}</p>
-            </div>
+            </div>}
           </div>
 
           <div className="space-y-2 max-h-64 overflow-y-auto pr-1">

@@ -267,7 +267,7 @@ export default function BillingPage() {
   const [showRefundModal, setShowRefundModal] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const { session } = useSession();
+  const { data: session } = useSession();
   const { notify } = useAlertToast();
   const [invoiceToDraft, setInvoiceToDraft] = useState(null);
   const [movingInvoiceToDraft, setMovingInvoiceToDraft] = useState(false);

@@ -44,7 +44,7 @@ const monthStr = () => new Date().toISOString().slice(0, 7); // YYYY-MM
 const startOfMonth = () => monthStr() + '-01';
 
 export default function ExpensesPage() {
-  const { session } = useSession();
+  const { data: session } = useSession();
   const alertToast = useAlertToast?.() || { notify: (m) => alert(m) };
   // ─── TAB & CORE STATE ──────────────────────────
   const [tab, setTab] = useState('today');
@@ -389,6 +389,8 @@ export default function ExpensesPage() {
     return <Icon className={className} />;
   };
 
+  const isStaff = session?.user?.role === 'STAFF';
+  // Budgets, recurring costs and categories are for managers; staff log and see their own expenses.
   const tabs = [
     { key: 'today', label: "Today's Expenses", icon: Calendar },
     { key: 'all', label: 'All Expenses', icon: Receipt },
@@ -396,7 +398,7 @@ export default function ExpensesPage() {
     { key: 'budget', label: 'Budget vs Actual', icon: BarChart3 },
     { key: 'recurring', label: 'Recurring', icon: Repeat },
     { key: 'categories', label: 'Categories', icon: Settings2 },
-  ];
+  ].filter(item => !isStaff || ['today', 'all', 'analytics'].includes(item.key));
 
   return (
     <div className="space-y-6 animate-[fade-in_0.5s_ease-out]">

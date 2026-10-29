@@ -20,7 +20,7 @@ import { getSalesOrders, createSalesOrder, createSalesOrderFromQuotation, create
 import { validatePicking, getPickings, cancelPicking, reserveDeliverySlabs, getPicking, returnDelivery } from '@/app/actions/operations'
 import { createStoneLot } from '@/app/actions/stone-inventory'
 import { approvePurchaseOrder, receivePurchaseOrder, cancelPurchaseOrder, createPurchaseOrder, recordPurchaseOrderPayment } from '@/app/actions/purchases'
-import { cancelInvoice, createInvoice, updateInvoice, finalizeHeldInvoice, createCreditNote, recordPayment } from '@/app/actions/invoices'
+import { cancelInvoice, createInvoice, updateInvoice, finalizeHeldInvoice, createCreditNote, recordPayment, recordCustomerRefund } from '@/app/actions/invoices'
 import { createOrder, updateOrderStatus } from '@/app/actions/orders'
 import { moveOrderToDraft, moveQuotationToDraft, movePurchaseOrderToDraft } from '@/app/actions/drafts'
 import { createQuotation } from '@/app/actions/quotations'
@@ -1075,6 +1075,46 @@ describe.skipIf(!url)('ERP document flows (Odoo parity)', () => {
     expect(share.charges).toBeGreaterThan(0)
     expect(entry.lines.find(line => line.account.code === '4100')?.debit).toBe(share.charges)
     expect(entry.lines.find(line => line.account.code === '4001')?.debit).toBe(share.goods)
+  })
+
+
+  it('refunds: money handed back is recorded once, booked in the journal and leaves cash', async () => {
+    expect((await seedChartOfAccounts()).success).toBe(true)
+    const product = await newProduct(10)
+    const before = await bs()
+    const sale = await posInvoice(product, { quantity: 1 }, { payments: [{ amount: 1180, method: 'Cash' }] })
+    if (!sale.success || !sale.data) throw new Error(sale.error)
+    const id = sale.data.id
+    expect((await recordCustomerRefund({ invoiceId: id, amount: 100 })).success).toBe(false) // nothing owed back yet
+    expect((await createCreditNote({ invoiceId: id, amount: 1180, reason: 'Returned' })).success).toBe(true)
+    expect((await recordCustomerRefund({ invoiceId: id, amount: 2000 })).success).toBe(false) // more than owed
+
+    // Two clicks at once: only one refund of the full amount goes through.
+    const results = await Promise.all([1, 2].map(() => recordCustomerRefund({ invoiceId: id, amount: 1180, method: 'Cash' })))
+    expect(results.filter(result => result.success)).toHaveLength(1)
+
+    const after = await bs()
+    expect(after.currentLiabilities.refundsOwed).toBe(before.currentLiabilities.refundsOwed)
+    expect(after.currentAssets.cashAndBank).toBe(before.currentAssets.cashAndBank) // collected 1180, handed back 1180
+    const flow = await getCashFlow(...WIDE)
+    if (!flow.success || !flow.data) throw new Error('Cash flow failed')
+    expect(flow.data.operating.outflow.creditRefunds).toBeGreaterThanOrEqual(1180)
+
+    expect((await postAutoJournals(db as never)).skipped).toEqual([])
+    const refund = await db.customerRefund.findFirstOrThrow({ where: { invoiceId: id } })
+    const entry = await db.journalEntry.findUniqueOrThrow({ where: { sourceKey: `RF:${refund.id}` }, include: { lines: { include: { account: true } } } })
+    expect(entry.lines.find(line => line.account.code === '1100')?.debit).toBe(1180)
+    expect(entry.lines.find(line => line.account.code === '1001')?.credit).toBe(1180)
+  })
+
+  it('P&L cost of goods uses the cost when the goods moved, not today\'s cost', async () => {
+    const product = await newProduct(10)
+    const before = await pl()
+    const sale = await posInvoice(product, { quantity: 2 })
+    if (!sale.success) throw new Error(sale.error)
+    await db.product.update({ where: { id: product.id }, data: { costPrice: 900 } })
+    const after = await pl()
+    expect(after.cogs.total - before.cogs.total).toBe(600)
   })
 
 })

@@ -5,9 +5,9 @@ import { customerSupplyType } from '@/lib/erp/supply-type'
 import { ledgerUnitCost, lockInventoryProducts } from '@/lib/inventory-stock'
 import { requireRole, requireAuth } from '@/lib/auth-helpers'
 import { revalidatePath } from 'next/cache'
-import { createInvoiceSchema, updateInvoiceSchema, recordPaymentSchema, createCreditNoteSchema } from '@/lib/validations/invoice'
+import { createInvoiceSchema, updateInvoiceSchema, recordPaymentSchema, createCreditNoteSchema, recordRefundSchema } from '@/lib/validations/invoice'
 import { chargesTax, linePrice, principalGstRate, stockQuantity } from '@/lib/line-math'
-import { nextCreditNoteNumber, refreshInvoiceBalance } from '@/lib/erp/credit-notes'
+import { nextCreditNoteNumber, nextRefundNumber, refreshInvoiceBalance, refundDue } from '@/lib/erp/credit-notes'
 import { syncStoneLotTotals } from '@/lib/stone-inventory'
 import type { PaymentStatus, InvoiceStatus } from '@prisma/client'
 import { contactPhoneWhere, normalizePhone } from '@/lib/phone'
@@ -216,6 +216,7 @@ export async function getInvoices() {
       salesperson: true,
       payments: { orderBy: { date: 'desc' } },
       creditNotes: { orderBy: { date: 'desc' } },
+      refunds: { orderBy: { refundedAt: 'desc' } },
     },
     orderBy: { date: 'desc' },
   })
@@ -285,6 +286,14 @@ export async function getInvoices() {
         reason: cn.reason,
         date: cn.date.toISOString().split('T')[0],
       })),
+      refunds: inv.refunds.map(r => ({
+        id: r.id,
+        displayId: r.displayId,
+        amount: r.amount,
+        method: r.method,
+        date: r.refundedAt.toISOString().split('T')[0],
+      })),
+      refundDue: inv.heldAt || inv.invoiceStatus === 'CANCELLED' ? 0 : refundDue(inv.total, inv.payments.reduce((s, p) => s + p.amount, 0), inv.creditNotes.reduce((s, c) => s + c.amount, 0), inv.refunds.reduce((s, r) => s + r.amount, 0)),
     })),
   }
 }
@@ -977,6 +986,41 @@ export async function createCreditNote(data: unknown) {
 
   revalidatePath('/billing')
   return { success: true }
+}
+
+// ─── REFUND MONEY TO A CUSTOMER ────────────────────────
+// A credit note on a bill that was already paid leaves the customer in credit.
+// This records the cash or bank payment that hands it back.
+
+export async function recordCustomerRefund(data: unknown) {
+  let session
+  try { session = await requireRole('ADMIN', 'MANAGER') } catch { return { success: false, error: 'Access denied' } }
+  const parsed = recordRefundSchema.safeParse(data)
+  if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
+  const { invoiceId, amount, method, reference, notes } = parsed.data
+
+  try {
+    const refund = await prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM "Invoice" WHERE id = ${invoiceId} FOR UPDATE`
+      const invoice = await tx.invoice.findUnique({ where: { id: invoiceId }, select: { total: true, invoiceStatus: true, heldAt: true } })
+      if (!invoice) throw new Error('Invoice not found')
+      if (invoice.invoiceStatus === 'CANCELLED' || invoice.heldAt) throw new Error('No refund can be paid on a cancelled or parked bill')
+      const [paid, credited, refunded] = await Promise.all([
+        tx.payment.aggregate({ where: { invoiceId }, _sum: { amount: true } }),
+        tx.creditNote.aggregate({ where: { invoiceId }, _sum: { amount: true } }),
+        tx.customerRefund.aggregate({ where: { invoiceId }, _sum: { amount: true } }),
+      ])
+      const due = refundDue(invoice.total, paid._sum.amount || 0, credited._sum.amount || 0, refunded._sum.amount || 0)
+      if (due <= 0) throw new Error('Nothing is owed back to this customer on this bill')
+      if (amount > due) throw new Error(`Only ₹${due.toLocaleString('en-IN')} is owed back on this bill`)
+      return tx.customerRefund.create({ data: { displayId: await nextRefundNumber(tx), invoiceId, amount, method, reference, notes, createdBy: session.user.name } })
+    })
+    revalidatePath('/billing')
+    revalidatePath('/financials')
+    return { success: true, data: refund }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Could not record the refund' }
+  }
 }
 
 // ─── FINALIZE HELD BILL ────────────────────────────────

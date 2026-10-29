@@ -539,6 +539,7 @@ model Invoice {
   items         InvoiceItem[]
   payments      Payment[]
   creditNotes   CreditNote[]
+  refunds       CustomerRefund[]
   eWayBills     EWayBill[]
   dailyPayments DailyPayment[]
 
@@ -592,6 +593,25 @@ model Payment {
 
   @@index([invoiceId])
   @@index([date])
+}
+
+// Money handed back to a customer who paid more than they ended up owing
+// (credit notes on paid bills). Booked as Dr Receivable / Cr Cash or Bank.
+model CustomerRefund {
+  id         Int      @id @default(autoincrement())
+  displayId  String   @unique
+  invoiceId  Int
+  invoice    Invoice  @relation(fields: [invoiceId], references: [id])
+  amount     Int
+  method     String   @default("Cash")
+  reference  String?
+  notes      String?
+  refundedAt DateTime @default(now())
+  createdBy  String?
+  createdAt  DateTime @default(now())
+
+  @@index([invoiceId])
+  @@index([refundedAt])
 }
 
 model CreditNote {

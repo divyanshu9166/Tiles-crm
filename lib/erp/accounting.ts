@@ -102,7 +102,7 @@ export function creditNoteEntry(note: { id: number; displayId: string; amount: n
 // posting, the live entry is reversed (REV:<key>) and the new state posted as
 // PREFIX:id~2, ~3 … Cancelled, rejected or deleted documents are reversed.
 // Older reversal keys (INVREV:, BILLREV:, EXPREV:) are still recognised.
-export const FOLLOWED_PREFIXES = ['INV', 'PAY', 'CN', 'BILL', 'PPAY', 'EXP', 'LC'] as const
+export const FOLLOWED_PREFIXES = ['INV', 'PAY', 'CN', 'RF', 'BILL', 'PPAY', 'EXP', 'LC'] as const
 const LEGACY_REVERSAL: Record<string, string> = { INV: 'INVREV', BILL: 'BILLREV', EXP: 'EXPREV' }
 
 export type DocState = { prefix: string; id: number; entry: DraftEntry | null; endedAt?: Date }
@@ -205,6 +205,10 @@ async function collectEntries(db: Db, posted: Set<string>, status: Map<string, s
       lines: [{ code: cashAccount(payment.method), debit: payment.amount }, { code: ACC.receivable, credit: payment.amount }] } })
   }
   for (const note of creditNotes) docs.push({ prefix: 'CN', id: note.id, entry: creditNoteEntry(note) })
+  for (const refund of await db.customerRefund.findMany({ select: { id: true, displayId: true, amount: true, method: true, refundedAt: true, invoice: { select: { displayId: true } } } })) {
+    docs.push({ prefix: 'RF', id: refund.id, entry: { sourceKey: `RF:${refund.id}`, date: refund.refundedAt, narration: `Refund ${refund.displayId} to customer on ${refund.invoice.displayId} (${refund.method})`, referenceType: 'CustomerRefund', referenceId: refund.id,
+      lines: [{ code: ACC.receivable, debit: refund.amount }, { code: cashAccount(refund.method), credit: refund.amount }] } })
+  }
 
   // Each move is valued at the cost stamped when it happened. Rows from before
   // that stamp existed: receipts at their PO price, others at the current cost.

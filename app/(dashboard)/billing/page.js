@@ -20,7 +20,7 @@ import { useSession } from '@/components/AuthProvider';
 import ReturningCustomerCard from '@/components/ReturningCustomerCard';
 import {
   getInvoices, getInvoice, createInvoice, updateInvoice, recordPayment,
-  cancelInvoice, createCreditNote, finalizeHeldInvoice,
+  cancelInvoice, createCreditNote, finalizeHeldInvoice, recordCustomerRefund,
   searchContacts, getInvoiceStats, getCustomerProfile,
 } from '@/app/actions/invoices';
 import { getHsnCodes } from '@/app/actions/gst';
@@ -264,6 +264,7 @@ export default function BillingPage() {
   const [selectedInvoice, setSelectedInvoice] = useState(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showCreditNoteModal, setShowCreditNoteModal] = useState(false);
+  const [showRefundModal, setShowRefundModal] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const { session } = useSession();
@@ -308,6 +309,7 @@ export default function BillingPage() {
   // Payment modal state
   const [paymentModalData, setPaymentModalData] = useState({ amount: '', method: 'Cash', reference: '', notes: '' });
   const [creditNoteData, setCreditNoteData] = useState({ amount: '', reason: '' });
+  const [refundData, setRefundData] = useState({ amount: '', method: 'Cash', reference: '' });
 
   // ─── DATA LOADING ──────────────────────────────────────
 
@@ -906,6 +908,34 @@ export default function BillingPage() {
         if (updated) setSelectedInvoice(updated);
       } else {
         notify(res.error || 'Failed to create credit note', { variant: 'danger' });
+      }
+    } catch {
+      notify('Something went wrong', { variant: 'danger' });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // ─── PAY A REFUND TO THE CUSTOMER ──────────────────────
+
+  const handleRecordRefund = async () => {
+    if (!selectedInvoice || !refundData.amount) return;
+    setSubmitting(true);
+    try {
+      const res = await recordCustomerRefund({
+        invoiceId: selectedInvoice.dbId,
+        amount: Number(refundData.amount),
+        method: refundData.method,
+        reference: refundData.reference || undefined,
+      });
+      if (res.success) {
+        setShowRefundModal(false);
+        await loadData();
+        const updated = (await getInvoices()).data?.find(i => i.dbId === selectedInvoice.dbId);
+        if (updated) setSelectedInvoice(updated);
+        notify('Refund recorded', { variant: 'success' });
+      } else {
+        notify(res.error || 'Failed to record refund', { variant: 'danger' });
       }
     } catch {
       notify('Something went wrong', { variant: 'danger' });
@@ -2663,6 +2693,25 @@ export default function BillingPage() {
                 </div>
               )}
 
+              {/* Refunds paid to the customer */}
+              {selectedInvoice.refunds && selectedInvoice.refunds.length > 0 && (
+                <div className="mt-4 pt-3 border-t border-border">
+                  <p className="text-[10px] uppercase tracking-wider text-muted font-semibold mb-2">Refunds Paid</p>
+                  <div className="space-y-1.5">
+                    {selectedInvoice.refunds.map(r => (
+                      <div key={r.id} className="flex items-center justify-between text-xs bg-amber-500/5 rounded-lg px-3 py-2">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono font-medium text-amber-700">{r.displayId}</span>
+                          <span className="text-muted">{r.method}</span>
+                          <span className="text-muted">{r.date}</span>
+                        </div>
+                        <span className="font-semibold text-amber-700">{formatFullCurrency(r.amount)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Notes */}
               {selectedInvoice.notes && (
                 <div className="mt-3 pt-3 border-t border-border">
@@ -2693,6 +2742,12 @@ export default function BillingPage() {
                 <button onClick={() => { setPaymentModalData({ amount: selectedInvoice.balanceDue, method: 'Cash', reference: '', notes: '' }); setShowPaymentModal(true); }}
                   className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-success text-white rounded-xl text-sm font-medium hover:bg-success/90 transition-colors">
                   <BadgeIndianRupee className="w-4 h-4" /> Record Payment
+                </button>
+              )}
+              {selectedInvoice.refundDue > 0 && (
+                <button onClick={() => { setRefundData({ amount: String(selectedInvoice.refundDue), method: 'Cash', reference: '' }); setShowRefundModal(true); }}
+                  className="flex items-center justify-center gap-2 px-4 py-2.5 bg-amber-500/10 border border-amber-500/30 text-amber-700 rounded-xl text-sm font-medium hover:bg-amber-500/20 transition-colors">
+                  <Banknote className="w-4 h-4" /> Refund {formatFullCurrency(selectedInvoice.refundDue)}
                 </button>
               )}
               {selectedInvoice.invoiceStatus === 'ACTIVE' && (
@@ -2801,6 +2856,40 @@ export default function BillingPage() {
             <button onClick={handleCreateCreditNote} disabled={!creditNoteData.amount || !creditNoteData.reason || submitting}
               className="w-full py-3 bg-purple-600 text-white rounded-xl text-sm font-semibold hover:bg-purple-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
               {submitting ? 'Processing...' : <><RotateCcw className="w-4 h-4" /> Create Credit Note</>}
+            </button>
+          </div>
+        )}
+      </Modal>
+
+      {/* ─── REFUND MODAL ─── */}
+      <Modal isOpen={showRefundModal} onClose={() => setShowRefundModal(false)} title="Refund to Customer" size="sm">
+        {selectedInvoice && (
+          <div className="space-y-4">
+            <div className="p-3 bg-surface rounded-xl text-sm">
+              <div className="flex justify-between"><span className="text-muted">Invoice</span><span className="font-mono font-medium text-accent">{selectedInvoice.id}</span></div>
+              <div className="flex justify-between mt-1"><span className="text-muted">Owed back to customer</span><span className="font-semibold">{formatFullCurrency(selectedInvoice.refundDue)}</span></div>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted mb-1.5 block">Amount *</label>
+              <input type="number" min="1" max={selectedInvoice.refundDue} value={refundData.amount}
+                onChange={e => setRefundData({ ...refundData, amount: e.target.value })}
+                className="w-full px-4 py-2.5 bg-surface border border-border rounded-xl text-sm focus:outline-none focus:border-accent/50" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted mb-1.5 block">Paid by</label>
+              <select value={refundData.method} onChange={e => setRefundData({ ...refundData, method: e.target.value })}
+                className="w-full px-4 py-2.5 bg-surface border border-border rounded-xl text-sm focus:outline-none focus:border-accent/50">
+                {['Cash', 'UPI', 'Card', 'Bank Transfer', 'Cheque'].map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted mb-1.5 block">Reference</label>
+              <input value={refundData.reference} onChange={e => setRefundData({ ...refundData, reference: e.target.value })}
+                className="w-full px-4 py-2.5 bg-surface border border-border rounded-xl text-sm focus:outline-none focus:border-accent/50" />
+            </div>
+            <button onClick={handleRecordRefund} disabled={!refundData.amount || submitting}
+              className="w-full py-3 bg-amber-600 text-white rounded-xl text-sm font-semibold hover:bg-amber-700 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+              {submitting ? 'Processing...' : <><Banknote className="w-4 h-4" /> Record Refund</>}
             </button>
           </div>
         )}

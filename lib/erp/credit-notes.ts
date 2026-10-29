@@ -18,6 +18,18 @@ export function invoiceBalance(total: number, amountPaid: number, credited: numb
   return { balanceDue, paymentStatus }
 }
 
+// Money the customer paid beyond what they now owe (after credit notes) and
+// that has not been handed back yet.
+export function refundDue(total: number, paid: number, credited: number, refunded: number) {
+  return Math.max(0, paid + credited - total - refunded)
+}
+
+export async function nextRefundNumber(tx: Tx) {
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(82463212)::text`
+  const rows = await tx.$queryRaw<{ max: number | null }[]>`SELECT MAX(CAST(substring("displayId" from '^RF-([0-9]+)$') AS INTEGER)) AS max FROM "CustomerRefund" WHERE "displayId" ~ '^RF-[0-9]+$'`
+  return `RF-${String((Number(rows[0]?.max) || 0) + 1).padStart(4, '0')}`
+}
+
 // Re-derive balanceDue/paymentStatus after a payment or credit note, so aging,
 // follow-ups and statements stop asking for money already credited.
 export async function refreshInvoiceBalance(tx: Tx, invoiceId: number) {

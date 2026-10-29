@@ -6,6 +6,7 @@ import { revalidatePath } from 'next/cache'
 import { requireRole } from '@/lib/auth-helpers'
 import { createJournalSchema, createAccountSchema } from '@/lib/validations/financials'
 import { creditNoteSplit } from '@/lib/erp/gst-math'
+import { refundDue } from '@/lib/erp/credit-notes'
 
 const prismaDynamic = prisma as unknown as {
   purchasePayment?: {
@@ -40,13 +41,24 @@ async function creditNoteShares(date: { gte?: Date; lte: Date }) {
 async function refundsOwedToCustomers(asOf: Date) {
   const invoices = await prisma.invoice.findMany({
     where: { date: { lte: asOf }, heldAt: null, invoiceStatus: { not: 'CANCELLED' }, creditNotes: { some: { date: { lte: asOf } } } },
-    select: { total: true, payments: { where: { date: { lte: asOf } }, select: { amount: true } }, creditNotes: { where: { date: { lte: asOf } }, select: { amount: true } } },
+    select: {
+      total: true,
+      payments: { where: { date: { lte: asOf } }, select: { amount: true } },
+      creditNotes: { where: { date: { lte: asOf } }, select: { amount: true } },
+      refunds: { where: { refundedAt: { lte: asOf } }, select: { amount: true } },
+    },
   })
-  return invoices.reduce((sum, inv) => {
-    const paid = inv.payments.reduce((s, p) => s + p.amount, 0)
-    const credited = inv.creditNotes.reduce((s, c) => s + c.amount, 0)
-    return sum + Math.max(0, paid + credited - inv.total)
-  }, 0)
+  return invoices.reduce((sum, inv) => sum + refundDue(
+    inv.total,
+    inv.payments.reduce((s, p) => s + p.amount, 0),
+    inv.creditNotes.reduce((s, c) => s + c.amount, 0),
+    inv.refunds.reduce((s, r) => s + r.amount, 0),
+  ), 0)
+}
+
+// Cash and bank money handed back to customers up to a date.
+async function refundsPaidOut(range: { gte?: Date; lte: Date }) {
+  return (await prisma.customerRefund.aggregate({ where: { refundedAt: range }, _sum: { amount: true } }))._sum.amount || 0
 }
 
 // Bills that count as sales: issued and not cancelled. Fully refunded bills stay
@@ -191,7 +203,7 @@ export async function getProfitAndLoss(fromDate: string, toDate: string, compare
     if (!range) return null
     const { from, to } = range
 
-    const [invoiceAgg, notes, invoiceItems, purchaseAgg, payrollAgg, employerPayroll, expenseRows] = await Promise.all([
+    const [invoiceAgg, notes, stockMoves, purchaseAgg, payrollAgg, employerPayroll, expenseRows] = await Promise.all([
       // Gross sales from invoices (refunded ones too; their credit notes come off below)
       prisma.invoice.aggregate({
         where: { date: { gte: from, lte: to }, ...SOLD },
@@ -200,10 +212,10 @@ export async function getProfitAndLoss(fromDate: string, toDate: string, compare
       }),
       // Returns, split into goods / charges / GST like their invoices
       creditNoteShares({ gte: from, lte: to }),
-      // CORRECT COGS: cost of items actually sold (fully refunded bills put the goods back)
-      prisma.invoiceItem.findMany({
-        where: { invoice: { date: { gte: from, lte: to }, invoiceStatus: 'ACTIVE', heldAt: null } },
-        include: { product: { select: { costPrice: true } } },
+      // COGS: goods delivered or sold minus goods returned, each at the cost it had when it moved
+      prisma.stockLedger.findMany({
+        where: { entryType: { in: ['SALE', 'RETURN'] }, createdAt: { gte: from, lte: to } },
+        select: { quantity: true, unitCost: true, product: { select: { costPrice: true } } },
       }),
       // Purchases in period (for reference, not used for COGS)
       prisma.purchaseOrder.aggregate({
@@ -245,8 +257,8 @@ export async function getProfitAndLoss(fromDate: string, toDate: string, compare
     const returns = notes.goods
     const netRevenue = salesExGST - returns
 
-    // COGS — actual cost of items sold (correct method)
-    const cogs = invoiceItems.reduce((sum, item) => sum + item.quantity * (item.product.costPrice || 0), 0)
+    // Same valuation as the COGS journal: stamped cost, current cost only for rows from before the stamp.
+    const cogs = Math.round(stockMoves.reduce((sum, move) => sum - move.quantity * (move.unitCost ?? move.product.costPrice ?? 0), 0))
     const grossProfit = netRevenue - cogs
     const grossMarginPct = netRevenue > 0 ? (grossProfit / netRevenue) * 100 : 0
 
@@ -268,7 +280,7 @@ export async function getProfitAndLoss(fromDate: string, toDate: string, compare
       invoiceCount: invoiceAgg._count.id,
       returnCount: notes.count,
       revenue: { grossSales, salesExGST, salesGST, returns, netRevenue },
-      cogs: { total: cogs, note: 'Based on cost price of items sold' },
+      cogs: { total: cogs, note: 'Goods sold minus goods returned, at the cost when they moved' },
       grossProfit, grossMarginPct,
       purchases: { total: purchasesExGST, gst: purchaseAgg._sum.gst || 0 },
       operatingExpenses: {
@@ -306,7 +318,7 @@ export async function getBalanceSheet(asOfDate: string) {
     payments, supplierPaid, receivables, poPayables,
     products, gstOutputInvoices, gstInputPOs,
     payrollPayable, staffLoans, salaryPaid,
-    loanRecoveries, notes, refundsOwed,
+    loanRecoveries, notes, refundsOwed, refundsPaid,
   ] = await Promise.all([
     // Cash collected from customers (payments on refunded bills were still received)
     prisma.payment.aggregate({ where: { date: { lte: asOf }, invoice: { invoiceStatus: { not: 'CANCELLED' } } }, _sum: { amount: true } }),
@@ -330,13 +342,14 @@ export async function getBalanceSheet(asOfDate: string) {
     prisma.payslip.aggregate({ where: { payrollRun: { status: 'PAID', paidAt: { lte: asOf } } }, _sum: { loanDeduction: true } }),
     creditNoteShares({ lte: asOf }),
     refundsOwedToCustomers(asOf),
+    refundsPaidOut({ lte: asOf }),
   ])
 
   const cashCollected = payments._sum.amount || 0
   const cashPaidToSuppliers = supplierPaid._sum.amount || 0
   const salaryPaidOut = salaryPaid._sum.totalNet || 0
   const loanInflow = loanRecoveries._sum.loanDeduction || 0
-  const cashAndBank = cashCollected + loanInflow - cashPaidToSuppliers - salaryPaidOut
+  const cashAndBank = cashCollected + loanInflow - cashPaidToSuppliers - salaryPaidOut - refundsPaid
 
   const accountsReceivable = receivables._sum.balanceDue || 0
   const inventoryValue = products.reduce((sum: number, p: { stock: number, costPrice: number | null }) => sum + p.stock * (p.costPrice || 0), 0)
@@ -384,7 +397,7 @@ export async function getBalanceSheet(asOfDate: string) {
         note: 'Equity = Total Assets − Total Liabilities',
       },
       quality: {
-        cashModel: 'Cash = customer collections + payroll loan recoveries - supplier payouts - salary payouts. Credit notes reduce receivables; credit beyond what was owed is shown as refunds owed to customers.',
+        cashModel: 'Cash = customer collections + payroll loan recoveries - supplier payouts - salary payouts - refunds paid to customers. Credit notes reduce receivables; credit beyond what was owed and not yet paid back is shown as refunds owed to customers.',
       },
     },
   }
@@ -399,8 +412,8 @@ export async function getCashFlow(fromDate: string, toDate: string) {
   if (!range) return { success: false, error: 'Invalid date range' }
   const { from, to } = range
 
-  // Credit notes are not an outflow: they cancel receivables, and no cash refund is recorded.
-  const [salesCollections, supplierPayments, salaryPayments, loanCollections] = await Promise.all([
+  // Credit notes are not an outflow by themselves; only refunds actually paid out are.
+  const [salesCollections, supplierPayments, salaryPayments, loanCollections, refundOutflow] = await Promise.all([
     // Inflow: cash collected from customers (payments on refunded bills were still received)
     prisma.payment.aggregate({ where: { date: { gte: from, lte: to }, invoice: { invoiceStatus: { not: 'CANCELLED' } } }, _sum: { amount: true } }),
     // Outflow: actual supplier payments (event-based)
@@ -415,6 +428,7 @@ export async function getCashFlow(fromDate: string, toDate: string) {
       where: { payrollRun: { status: 'PAID', paidAt: { gte: from, lte: to } } },
       _sum: { loanDeduction: true },
     }),
+    refundsPaidOut({ gte: from, lte: to }),
   ])
 
   const salesInflow = salesCollections._sum.amount || 0
@@ -423,7 +437,7 @@ export async function getCashFlow(fromDate: string, toDate: string) {
   const loanInflow = loanCollections._sum.loanDeduction || 0
 
   const totalInflow = salesInflow + loanInflow
-  const totalOutflow = purchaseOutflow + salaryOutflow
+  const totalOutflow = purchaseOutflow + salaryOutflow + refundOutflow
   const netOperating = totalInflow - totalOutflow
 
   return {
@@ -439,6 +453,7 @@ export async function getCashFlow(fromDate: string, toDate: string) {
         outflow: {
           purchases: purchaseOutflow,
           salaries: salaryOutflow,
+          creditRefunds: refundOutflow,
           total: totalOutflow,
         },
         net: netOperating,
@@ -565,7 +580,7 @@ export async function getTrialBalance(asOfDate: string) {
   if (!asOf) return { success: false, error: 'Invalid as-of date' }
 
   const [payments, receivables, inventory, poPayables, salesTotal, purchasesTotal,
-    payrollTotal, employerTotal, gstOutput, gstInput, notes, staffLoans, salaryPaid, loanRecoveries, refundsOwed] = await Promise.all([
+    payrollTotal, employerTotal, gstOutput, gstInput, notes, staffLoans, salaryPaid, loanRecoveries, refundsOwed, refundsPaid] = await Promise.all([
     prisma.payment.aggregate({ where: { date: { lte: asOf }, invoice: { invoiceStatus: { not: 'CANCELLED' } } }, _sum: { amount: true } }),
     prisma.invoice.aggregate({ where: { invoiceStatus: 'ACTIVE', heldAt: null, date: { lte: asOf } }, _sum: { balanceDue: true } }),
     prisma.product.findMany({ select: { stock: true, costPrice: true } }),
@@ -581,13 +596,14 @@ export async function getTrialBalance(asOfDate: string) {
     prisma.payrollRun.aggregate({ where: { status: 'PAID', paidAt: { lte: asOf } }, _sum: { totalNet: true } }),
     prisma.payslip.aggregate({ where: { payrollRun: { status: 'PAID', paidAt: { lte: asOf } } }, _sum: { loanDeduction: true } }),
     refundsOwedToCustomers(asOf),
+    refundsPaidOut({ lte: asOf }),
   ])
 
   const supplierPayout = (await aggregatePurchasePayments({ paidAt: { lte: asOf } }))._sum.amount || 0
   const salaryPaidOut = salaryPaid._sum.totalNet || 0
   const loanInflow = loanRecoveries._sum.loanDeduction || 0
   // Credit notes are not cash; they reduce receivables (or are owed back, below).
-  const cashAndBank = (payments._sum.amount || 0) + loanInflow - supplierPayout - salaryPaidOut
+  const cashAndBank = (payments._sum.amount || 0) + loanInflow - supplierPayout - salaryPaidOut - refundsPaid
   const receivablesVal = receivables._sum.balanceDue || 0
   const inventoryVal = inventory.reduce((s, p) => s + p.stock * (p.costPrice || 0), 0)
   const gstITC = gstInput._sum.gst || 0

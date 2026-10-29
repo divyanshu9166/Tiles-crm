@@ -591,6 +591,7 @@ export default function FinancialsPage() {
                 { label: 'Staff Loan Repayments Received', val: cfData.operating?.inflow?.loanRepayments, positive: true },
                 { label: 'Payments to Suppliers', val: -cfData.operating?.outflow?.purchases, positive: false },
                 { label: 'Salary Payments', val: -cfData.operating?.outflow?.salaries, positive: false },
+                { label: 'Refunds Paid to Customers', val: -cfData.operating?.outflow?.creditRefunds, positive: false },
               ].map(r => (
                 <div key={r.label} className="flex justify-between text-sm">
                   <span className="text-muted pl-3">{r.label}</span>

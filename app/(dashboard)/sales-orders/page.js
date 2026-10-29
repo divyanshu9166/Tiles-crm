@@ -19,6 +19,7 @@ import { CustomerPicker, ProductPicker } from '@/components/erp/pickers';
 import { getStoreSettings } from '@/app/actions/settings';
 import { computeTaxes, lineAmount, orderDiscount } from '@/lib/erp/sales-math';
 import { chargesTax, principalGstRate } from '@/lib/line-math';
+import { gstinState, supplyTypeFor } from '@/lib/erp/gst-math';
 
 // Same math the server uses when it saves the order, so the footer total is
 // what the customer will actually be charged.
@@ -52,6 +53,7 @@ export default function SalesOrdersPage() {
   const [staff, setStaff] = useState([]);
   const [saving, setSaving] = useState(false);
   const [storeGst, setStoreGst] = useState(18);
+  const [storeGstin, setStoreGstin] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -72,6 +74,7 @@ export default function SalesOrdersPage() {
     if (products.length === 0) {
       const [p, g, s, pl, st] = await Promise.all([getProducts(), getGodowns(), getStaff(), getPricelists(), getStoreSettings()]);
       if (st.success && st.data?.gstRate != null) setStoreGst(Number(st.data.gstRate));
+      if (st.success) setStoreGstin(st.data?.gstNumber || '');
       if (pl.success) setPricelists(pl.data);
       if (p.success) setProducts(p.data);
       if (g.success) {
@@ -151,16 +154,20 @@ export default function SalesOrdersPage() {
     if ('quantity' in patch || 'areaSqft' in patch) applyPrices(next);
   };
 
+  // With both GSTINs known the state codes decide the supply type (the server does the same).
+  const supplyTypeLocked = !!(gstinState(storeGstin) && gstinState(form.customer?.gstNumber));
+  const supplyType = supplyTypeFor(storeGstin, form.customer?.gstNumber, form.supplyType);
+
   const totals = useMemo(() => {
     const lines = form.lines.map(line => ({ amount: lineValue(line), gstRate: storeGst }));
     const subtotal = lines.reduce((sum, line) => sum + line.amount, 0);
     const discount = orderDiscount(subtotal, form.discountType, Number(form.discountValue) || 0);
-    const taxes = computeTaxes(lines, discount, form.supplyType);
+    const taxes = computeTaxes(lines, discount, supplyType);
     const charges = (Number(form.freightCharge) || 0) + (Number(form.loadingCharge) || 0) + (Number(form.installationCharge) || 0);
-    const chargeTax = chargesTax(charges, principalGstRate(taxes.lines, storeGst), form.supplyType === 'INTERSTATE');
+    const chargeTax = chargesTax(charges, principalGstRate(taxes.lines, storeGst), supplyType === 'INTERSTATE');
     const gst = taxes.gst + chargeTax.gst;
     return { untaxed: taxes.taxable + charges, gst, total: taxes.taxable + taxes.gst + charges + chargeTax.gst };
-  }, [form.lines, form.discountType, form.discountValue, form.supplyType, form.freightCharge, form.loadingCharge, form.installationCharge, storeGst]);
+  }, [form.lines, form.discountType, form.discountValue, supplyType, form.freightCharge, form.loadingCharge, form.installationCharge, storeGst]);
 
   const submit = async () => {
     if (!form.customer?.id && !(form.customer?.name && form.customer?.phone)) return notify('Select a customer or enter a name and phone', { variant: 'warning' });
@@ -178,7 +185,7 @@ export default function SalesOrdersPage() {
       projectName: form.projectName || undefined,
       customerReference: form.customerReference || undefined,
       dispatchAddress: form.dispatchAddress || undefined,
-      supplyType: form.supplyType,
+      supplyType,
       discountType: form.discountType,
       discountValue: Number(form.discountValue) || 0,
       freightCharge: Number(form.freightCharge) || 0,
@@ -366,7 +373,7 @@ export default function SalesOrdersPage() {
             <Field label="Loading (₹)"><input type="number" min="0" value={form.loadingCharge} onChange={e => setForm({ ...form, loadingCharge: e.target.value })} className={inputClass} /></Field>
             <Field label="Installation (₹)"><input type="number" min="0" value={form.installationCharge} onChange={e => setForm({ ...form, installationCharge: e.target.value })} className={inputClass} /></Field>
             <Field label="Supply type">
-              <select value={form.supplyType} onChange={e => setForm({ ...form, supplyType: e.target.value })} className={inputClass}>
+              <select value={supplyType} disabled={supplyTypeLocked} title={supplyTypeLocked ? 'Set from the store and customer GSTIN state codes' : undefined} onChange={e => setForm({ ...form, supplyType: e.target.value })} className={inputClass}>
                 <option value="INTRASTATE">Intrastate (CGST+SGST)</option><option value="INTERSTATE">Interstate (IGST)</option>
               </select>
             </Field>

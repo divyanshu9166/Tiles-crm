@@ -70,6 +70,14 @@ export const createCreditNoteSchema = z.object({
   reason: z.string().min(1, 'Reason is required'),
 })
 
+export const recordRefundSchema = z.object({
+  invoiceId: z.number(),
+  amount: z.number().int().min(1, 'Refund must be at least ₹1'),
+  method: z.enum(['Cash', 'UPI', 'Card', 'Bank Transfer', 'Cheque']).default('Cash'),
+  reference: z.string().optional(),
+  notes: z.string().optional(),
+})
+
 export type CreateInvoiceInput = z.infer<typeof createInvoiceSchema>
 export type UpdateInvoiceInput = z.infer<typeof updateInvoiceSchema>
 export type RecordPaymentInput = z.infer<typeof recordPaymentSchema>

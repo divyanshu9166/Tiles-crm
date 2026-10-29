@@ -93,7 +93,8 @@ export async function ensureReceiptForPurchaseOrder(tx: Tx, poId: number, author
   if (pending.length === 0) return null
   // Stock is valued net of the PO discount, the same amount the supplier bill carries.
   const discountFactor = po.subtotal > 0 ? Math.max(0, po.subtotal - po.discount) / po.subtotal : 1
-  const godown = await resolveStockGodown(tx)
+  // The PO delivery location (a deleted one falls back to the default).
+  const godown = await resolveStockGodown(tx, po.godownId ?? undefined)
   const displayId = await nextSequence(tx, 'Receipt')
   const picking = await tx.stockPicking.create({
     data: {

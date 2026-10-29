@@ -1297,6 +1297,8 @@ model PurchaseOrder {
   displayId    String    @unique
   supplierId   Int
   supplier     Supplier  @relation(fields: [supplierId], references: [id])
+  godownId     Int? // delivery location (Odoo: deliver to); empty = the default location
+  godown       Godown?   @relation("PurchaseOrderGodown", fields: [godownId], references: [id], onDelete: SetNull)
   status       POStatus  @default(DRAFT)
   subtotal     Int       @default(0)
   discount     Int       @default(0)
@@ -1326,6 +1328,7 @@ model PurchaseOrder {
 
   @@index([supplierId])
   @@index([status])
+  @@index([godownId])
 }
 
 model PurchaseOrderItem {
@@ -1436,6 +1439,7 @@ model Godown {
   salesOrders   SalesOrder[]     @relation("SalesOrderGodown")
   pickings      StockPicking[]   @relation("PickingGodown")
   reorderRules  ReorderRule[]    @relation("ReorderRuleGodown")
+  purchaseOrders PurchaseOrder[] @relation("PurchaseOrderGodown")
   counts        InventoryCount[] @relation("CountGodown")
 
   @@index([branchId])

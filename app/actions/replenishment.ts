@@ -41,9 +41,12 @@ export async function getReplenishment() {
       }),
       prisma.productSupplier.findMany({ include: { supplier: { select: { id: true, name: true } } }, orderBy: [{ isPreferred: 'desc' }, { price: 'asc' }] }),
       // Odoo "On order": quantities already on draft RFQs are not suggested again.
-      prisma.purchaseOrderItem.groupBy({ by: ['productId'], where: { po: { status: 'DRAFT' } }, _sum: { quantity: true } }),
+      prisma.purchaseOrderItem.findMany({ where: { po: { status: 'DRAFT' } }, select: { productId: true, quantity: true, po: { select: { godownId: true } } } }),
     ])
-    const onOrder = new Map(draftLines.map(line => [line.productId, line._sum.quantity || 0]))
+    // A rule for one location only counts drafts delivering there; everything else counts all drafts.
+    const draftedFor = (productId: number, godownId: number | null) => draftLines
+      .filter(line => line.productId === productId && (godownId === null || line.po.godownId === godownId))
+      .reduce((sum, line) => sum + line.quantity, 0)
     const vendorsByProduct = new Map<number, typeof vendorPrices>()
     for (const vendor of vendorPrices) vendorsByProduct.set(vendor.productId, [...(vendorsByProduct.get(vendor.productId) || []), vendor])
 
@@ -66,8 +69,8 @@ export async function getReplenishment() {
         multipleQty: rule.multipleQty,
         leadDays: rule.leadDays,
         ...forecast,
-        onOrder: onOrder.get(rule.productId) || 0,
-        toOrder: suggestedOrderQty(forecast.forecast + (onOrder.get(rule.productId) || 0), rule.minQty, rule.maxQty, rule.multipleQty),
+        onOrder: draftedFor(rule.productId, rule.godownId),
+        toOrder: suggestedOrderQty(forecast.forecast + draftedFor(rule.productId, rule.godownId), rule.minQty, rule.maxQty, rule.multipleQty),
         supplier: rule.supplier || vendor?.supplier || null,
         unitCost: vendor?.price || rule.product.costPrice,
         vendors: vendorsByProduct.get(rule.productId)?.map(v => ({ supplierId: v.supplierId, name: v.supplier.name, price: v.price, leadDays: v.leadDays })) || [],
@@ -77,7 +80,7 @@ export async function getReplenishment() {
     for (const product of products) {
       if (ruled.has(product.id)) continue
       const forecast = globalForecast.get(product.id) || { ...empty, onHand: product.stock, free: product.stock, forecast: product.stock }
-      const drafted = onOrder.get(product.id) || 0
+      const drafted = draftedFor(product.id, null)
       if (product.reorderLevel > 0 ? forecast.forecast + drafted > product.reorderLevel : forecast.forecast + drafted >= 0) continue
       const vendor = vendorsByProduct.get(product.id)?.[0]
       rows.push({
@@ -217,6 +220,7 @@ const orderSchema = z.object({
   items: z.array(z.object({
     productId: z.number().int().positive(),
     supplierId: z.number().int().positive(),
+    godownId: z.number().int().positive().optional().nullable(),
     quantity: z.number().int().positive(),
     unitCost: z.number().int().min(0).optional(),
     ruleId: z.number().int().positive().optional().nullable(),
@@ -236,18 +240,25 @@ export async function orderReplenishment(data: unknown) {
       const hsnCodes = products.flatMap(p => p.hsnCode ? [p.hsnCode] : [])
       const hsnRates = new Map((await tx.hsnCode.findMany({ where: { code: { in: hsnCodes } }, select: { code: true, gstRate: true } })).map(h => [h.code, h.gstRate]))
       const defaultRate = (await tx.storeSettings.findFirst({ where: { id: 1 }, select: { gstRate: true } }))?.gstRate ?? 18
-      const bySupplier = new Map<number, typeof input.items>()
-      for (const item of input.items) bySupplier.set(item.supplierId, [...(bySupplier.get(item.supplierId) || []), item])
+      // One draft PO per supplier and delivery location, so each branch's stock lands where it is needed.
+      const bySupplier = new Map<string, { supplierId: number; godownId: number | null; items: typeof input.items }>()
+      for (const item of input.items) {
+        const key = `${item.supplierId}:${item.godownId ?? 0}`
+        const group = bySupplier.get(key) || { supplierId: item.supplierId, godownId: item.godownId ?? null, items: [] }
+        group.items.push(item)
+        bySupplier.set(key, group)
+      }
       const touched: { id: number; displayId: string; created: boolean }[] = []
 
-      for (const [supplierId, items] of bySupplier) {
+      for (const { supplierId, godownId, items } of bySupplier.values()) {
         if (!(await tx.supplier.findUnique({ where: { id: supplierId }, select: { id: true } }))) throw new Error('A selected supplier no longer exists')
+        if (godownId && !(await tx.godown.findUnique({ where: { id: godownId }, select: { id: true } }))) throw new Error('A selected location no longer exists')
         await tx.$queryRaw`SELECT pg_advisory_xact_lock(82463207, ${supplierId})::text`
-        let po = await tx.purchaseOrder.findFirst({ where: { supplierId, status: 'DRAFT', notes: { contains: '[REPLENISHMENT]' } }, include: { items: true }, orderBy: { id: 'desc' } })
+        let po = await tx.purchaseOrder.findFirst({ where: { supplierId, godownId, status: 'DRAFT', notes: { contains: '[REPLENISHMENT]' } }, include: { items: true }, orderBy: { id: 'desc' } })
         const created = !po
         if (!po) {
           po = await tx.purchaseOrder.create({
-            data: { displayId: await nextSequence(tx, 'PurchaseOrder'), supplierId, notes: '[REPLENISHMENT] Created from reordering rules', createdBy: actor.name },
+            data: { displayId: await nextSequence(tx, 'PurchaseOrder'), supplierId, godownId, notes: '[REPLENISHMENT] Created from reordering rules', createdBy: actor.name },
             include: { items: true },
           })
         }

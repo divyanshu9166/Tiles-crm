@@ -64,7 +64,7 @@ export default function ReplenishmentPage() {
   const order = async () => {
     const items = chosen.map(([key, value]) => {
       const row = rows.find(item => item.key === key);
-      return { productId: row.product.id, supplierId: Number(value.supplierId), quantity: Math.round(Number(value.qty) || 0), ruleId: row.ruleId || undefined };
+      return { productId: row.product.id, supplierId: Number(value.supplierId), godownId: row.godown?.id || undefined, quantity: Math.round(Number(value.qty) || 0), ruleId: row.ruleId || undefined };
     });
     if (items.some(item => !item.supplierId)) return notify('Choose a vendor for every selected line', { variant: 'warning' });
     if (items.some(item => item.quantity <= 0)) return notify('Quantities must be greater than zero', { variant: 'warning' });

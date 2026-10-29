@@ -280,6 +280,7 @@ const generateCustomSku = (name) => {
 
 const createEmptyPOForm = () => ({
   supplierId: '',
+  godownId: '',
   expectedDate: '',
   discount: 0,
   isRCM: false,
@@ -473,6 +474,7 @@ export default function PurchasesPage() {
     setEditingPOId(po.id)
     setPOForm({
       supplierId: String(po.supplierId || ''),
+      godownId: po.godownId ? String(po.godownId) : '',
       expectedDate: po.expectedDate ? new Date(po.expectedDate).toISOString().slice(0, 10) : '',
       discount: Number(po.discount || 0),
       isRCM: !!po.isRCM,
@@ -566,6 +568,7 @@ export default function PurchasesPage() {
 
       const payload = {
         supplierId: Number(poForm.supplierId),
+        godownId: poForm.godownId ? Number(poForm.godownId) : null,
         expectedDate: poForm.expectedDate || undefined,
         discount: Math.max(0, Number(poForm.discount) || 0),
         isRCM: !!poForm.isRCM,
@@ -1092,6 +1095,7 @@ export default function PurchasesPage() {
                 <p className="text-[10px] uppercase tracking-wider text-muted font-semibold">PO Details</p>
                 <p className="text-xs text-muted">Date: <span className="text-foreground">{formatDate(selectedPO.date)}</span></p>
                 <p className="text-xs text-muted">Expected: <span className="text-foreground">{formatDate(selectedPO.expectedDate)}</span></p>
+                {selectedPO.godown && <p className="text-xs text-muted">Deliver to: <span className="text-foreground">{selectedPO.godown.name}</span></p>}
                 <p className="text-xs text-muted">Status: <span className={`px-2 py-0.5 rounded-full text-xs ${poStatusColors[selectedPO.status]}`}>{selectedPO.status}</span></p>
                 <p className="text-xs text-muted">ITC: <span className="text-foreground">{selectedPO.itcEligible ? selectedPO.itcCategory?.replace(/_/g, ' ') : 'Ineligible'}</span></p>
                 <p className="text-xs text-muted">RCM: <span className="text-foreground">{selectedPO.isRCM ? 'Yes' : 'No'}</span></p>
@@ -1351,6 +1355,13 @@ export default function PurchasesPage() {
               <option value="">Select Supplier</option>
               {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
+            </div>
+            <div>
+              <label className="text-sm text-muted mb-1 block">Deliver To</label>
+              <select value={poForm.godownId} onChange={e => setPOForm(p => ({ ...p, godownId: e.target.value }))} className="w-full px-3 py-2 bg-surface border border-border rounded-lg text-sm text-foreground">
+                <option value="">Default location</option>
+                {godowns.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+              </select>
             </div>
             <div>
               <label className="text-sm text-muted mb-1 block">Expected Delivery</label>

@@ -313,6 +313,7 @@ async function _getPurchaseOrders() {
   const pos = await prisma.purchaseOrder.findMany({
     orderBy: { date: 'desc' },
     include: {
+      godown: { select: { id: true, name: true } },
       supplier: { select: { name: true, phone: true, email: true, contactPerson: true, gstNumber: true, address: true, paymentTerms: true } },
       items: { include: { product: { select: { name: true, sku: true, isSlabTracked: true, thicknessMm: true } } } },
     },
@@ -329,7 +330,8 @@ async function _createPurchaseOrder(data: unknown) {
   const parsed = createPurchaseOrderSchema.safeParse(data)
   if (!parsed.success) return { success: false, error: parsed.error.issues[0].message }
 
-  const { supplierId, expectedDate, notes, discount, isRCM, itcEligible, itcCategory, items } = parsed.data
+  const { supplierId, godownId, expectedDate, notes, discount, isRCM, itcEligible, itcCategory, items } = parsed.data
+  if (godownId && !await prisma.godown.findUnique({ where: { id: godownId }, select: { id: true } })) return { success: false, error: 'The selected delivery location no longer exists' }
 
   // Calculate totals
   const subtotal = items.reduce((sum, i) => sum + i.quantity * i.unitCost, 0)
@@ -351,6 +353,7 @@ async function _createPurchaseOrder(data: unknown) {
     data: {
       displayId: await nextSequence(tx, 'PurchaseOrder'),
       supplierId,
+      godownId: godownId ?? null,
       notes,
       discount: discountAmt,
       subtotal,
@@ -403,7 +406,8 @@ async function _updatePurchaseOrder(id: number, data: unknown) {
     return { success: false, error: 'Only DRAFT purchase orders can be edited' }
   }
 
-  const { supplierId, expectedDate, notes, discount, isRCM, itcEligible, itcCategory, items } = parsed.data
+  const { supplierId, godownId, expectedDate, notes, discount, isRCM, itcEligible, itcCategory, items } = parsed.data
+  if (godownId && !await prisma.godown.findUnique({ where: { id: godownId }, select: { id: true } })) return { success: false, error: 'The selected delivery location no longer exists' }
 
   // Recalculate PO totals from updated line items.
   const subtotal = items.reduce((sum, i) => sum + i.quantity * i.unitCost, 0)
@@ -434,6 +438,7 @@ async function _updatePurchaseOrder(id: number, data: unknown) {
       where: { id },
       data: {
         supplierId,
+        godownId: godownId ?? null,
         notes,
         discount: discountAmt,
         subtotal,

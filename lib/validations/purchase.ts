@@ -23,6 +23,7 @@ export const poItemSchema = z.object({
 
 export const createPurchaseOrderSchema = z.object({
   supplierId: z.number(),
+  godownId: z.number().int().positive().nullable().optional(),
   expectedDate: z.string().optional(),
   notes: z.string().optional(),
   discount: z.number().min(0).default(0),

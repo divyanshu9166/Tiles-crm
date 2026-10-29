@@ -1242,4 +1242,27 @@ describe.skipIf(!url)('ERP document flows (Odoo parity)', () => {
     expect(result.data.errors).toEqual([{ row: 3, message: `SKU ${sku} already exists` }])
   })
 
+
+  it('PO delivery location: the receipt goes to the PO godown, and replenishment makes one draft PO per supplier and location', async () => {
+    const yard = await db.godown.create({ data: { name: `ERP-Yard-${crypto.randomUUID()}` } })
+    const product = await newProduct()
+    const created = await createPurchaseOrder({ supplierId, godownId: yard.id, items: [{ productId: product.id, name: product.name, sku: product.sku, quantity: 5, unitCost: 100, gstRate: 18 }] })
+    if (!created.success || !created.data) throw new Error(created.error)
+    expect((await approvePurchaseOrder(created.data.id)).success).toBe(true)
+    const receipt = await db.stockPicking.findFirstOrThrow({ where: { purchaseOrderId: created.data.id, status: 'READY' }, include: { lines: true } })
+    expect(receipt.godownId).toBe(yard.id)
+    expect((await validatePicking({ id: receipt.id, createBackorder: false, lines: [{ lineId: receipt.lines[0].id, doneQty: 5 }] })).success).toBe(true)
+    expect((await db.godownStock.findUniqueOrThrow({ where: { productId_godownId: { productId: product.id, godownId: yard.id } } })).quantity).toBe(5)
+
+    const other = await db.godown.create({ data: { name: `ERP-Branch-${crypto.randomUUID()}` } })
+    const ordered = await orderReplenishment({ items: [
+      { productId: product.id, supplierId, godownId: yard.id, quantity: 3 },
+      { productId: product.id, supplierId, godownId: other.id, quantity: 4 },
+    ] })
+    if (!ordered.success) throw new Error(ordered.error)
+    expect(ordered.data).toHaveLength(2)
+    const drafts = await db.purchaseOrder.findMany({ where: { id: { in: ordered.data.map(po => po.id) } }, select: { godownId: true } })
+    expect(drafts.map(row => row.godownId).sort()).toEqual([yard.id, other.id].sort())
+  })
+
 })

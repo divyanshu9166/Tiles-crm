@@ -140,6 +140,9 @@ const validateSchema = z.object({
     doneQty: z.number().int().min(0),
     batchId: z.number().int().positive().optional().nullable(),
     slabIds: z.array(z.number().int().positive()).max(500).optional(),
+    batchNumber: z.string().trim().max(60).optional(),
+    shadeCode: z.string().trim().max(60).optional(),
+    expiryDate: z.string().trim().max(10).optional(),
   })).min(1),
 })
 

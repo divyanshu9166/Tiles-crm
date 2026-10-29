@@ -1265,4 +1265,35 @@ describe.skipIf(!url)('ERP document flows (Odoo parity)', () => {
     expect(drafts.map(row => row.godownId).sort()).toEqual([yard.id, other.id].sort())
   })
 
+
+  it('receipts record the supplier lot and shade, and a second receipt of the same lot adds to it', async () => {
+    const product = await newProduct()
+    const created = await createPurchaseOrder({ supplierId, items: [{ productId: product.id, name: product.name, sku: product.sku, quantity: 10, unitCost: 100, gstRate: 18 }] })
+    if (!created.success || !created.data) throw new Error(created.error)
+    const poId = created.data.id
+    expect((await approvePurchaseOrder(poId)).success).toBe(true)
+    const lot = `LOT-${crypto.randomUUID().slice(0, 6)}`
+
+    const first = await db.stockPicking.findFirstOrThrow({ where: { purchaseOrderId: poId, status: 'READY' }, include: { lines: true } })
+    const done = await validatePicking({ id: first.id, createBackorder: true, lines: [{ lineId: first.lines[0].id, doneQty: 6, batchNumber: lot, shadeCode: 'A12', expiryDate: '2030-01-31' }] })
+    expect(done.success, done.success ? '' : done.error).toBe(true)
+    const batch = await db.productBatch.findUniqueOrThrow({ where: { productId_batchNumber: { productId: product.id, batchNumber: lot } } })
+    expect([batch.remainingQty, batch.shadeCode]).toEqual([6, 'A12'])
+    expect(batch.expiryDate?.toISOString().slice(0, 10)).toBe('2030-01-31')
+    expect((await db.stockPickingLine.findUniqueOrThrow({ where: { id: first.lines[0].id } })).batchId).toBe(batch.id)
+
+    const second = await db.stockPicking.findFirstOrThrow({ where: { purchaseOrderId: poId, status: 'READY' }, include: { lines: true } })
+    expect((await validatePicking({ id: second.id, createBackorder: false, lines: [{ lineId: second.lines[0].id, doneQty: 4, batchNumber: lot }] })).success).toBe(true)
+    const again = await db.productBatch.findUniqueOrThrow({ where: { id: batch.id } })
+    expect([again.quantity, again.remainingQty, again.shadeCode]).toEqual([10, 10, 'A12'])
+
+    // A receipt with no lot typed still gets a PO-based batch, as before.
+    const plain = await createPurchaseOrder({ supplierId, items: [{ productId: product.id, name: product.name, sku: product.sku, quantity: 2, unitCost: 100, gstRate: 18 }] })
+    if (!plain.success || !plain.data) throw new Error(plain.error)
+    await approvePurchaseOrder(plain.data.id)
+    const receipt = await db.stockPicking.findFirstOrThrow({ where: { purchaseOrderId: plain.data.id, status: 'READY' }, include: { lines: true } })
+    expect((await validatePicking({ id: receipt.id, createBackorder: false, lines: [{ lineId: receipt.lines[0].id, doneQty: 2 }] })).success).toBe(true)
+    expect(await db.productBatch.count({ where: { productId: product.id, batchNumber: { startsWith: 'PO-' } } })).toBe(1)
+  })
+
 })

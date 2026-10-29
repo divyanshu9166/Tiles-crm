@@ -6,7 +6,8 @@ import { syncStoneLotTotals } from '@/lib/stone-inventory'
 
 type Tx = Prisma.TransactionClient
 
-export type PickingLineInput = { lineId: number; doneQty: number; batchId?: number | null; slabIds?: number[] }
+// On a receipt, batchNumber/shadeCode/expiryDate record the supplier's lot as it arrives.
+export type PickingLineInput = { lineId: number; doneQty: number; batchId?: number | null; slabIds?: number[]; batchNumber?: string; shadeCode?: string; expiryDate?: string }
 export type ValidatePickingInput = {
   lines: PickingLineInput[]
   createBackorder: boolean
@@ -170,7 +171,7 @@ export async function validatePickingTx(tx: Tx, pickingId: number, input: Valida
     const qty = slabIds.length > 0 ? slabIds.length : Number(value?.doneQty ?? 0)
     if (!Number.isInteger(qty) || qty < 0) throw new Error(`Done quantity for ${line.name} must be a whole number`)
     if (qty > line.demandQty) throw new Error(`${line.name}: done quantity (${qty}) exceeds the demand (${line.demandQty})`)
-    return { line, qty, batchId: value?.batchId ?? line.batchId ?? null, slabIds }
+    return { line, qty, batchId: value?.batchId ?? line.batchId ?? null, slabIds, lot: { batchNumber: value?.batchNumber?.trim() || '', shadeCode: value?.shadeCode?.trim() || '', expiryDate: value?.expiryDate || '' } }
   })
   const allSlabs = done.flatMap(row => row.slabIds)
   if (new Set(allSlabs).size !== allSlabs.length) throw new Error('A slab can only be delivered once')
@@ -188,7 +189,8 @@ export async function validatePickingTx(tx: Tx, pickingId: number, input: Valida
     ? { referenceType: 'Delivery', referenceId: picking.id }
     : { referenceType: 'PurchaseOrder', referenceId: picking.purchaseOrderId ?? picking.id }
 
-  for (const { line, qty, batchId, slabIds } of done) {
+  for (const { line, qty, batchId: requestedBatchId, slabIds, lot } of done) {
+    let batchId = requestedBatchId
     if (qty === 0) continue
     const product = productById.get(line.productId)
     if (!product) throw new Error(`${line.name} no longer exists`)
@@ -219,12 +221,16 @@ export async function validatePickingTx(tx: Tx, pickingId: number, input: Valida
       product.costPrice = nextCost
       if (line.purchaseOrderItemId && picking.purchaseOrder) {
         await tx.purchaseOrderItem.update({ where: { id: line.purchaseOrderItemId }, data: { receivedQty: { increment: qty } } })
-        const batchNumber = `PO-${picking.purchaseOrder.displayId}-${line.purchaseOrderItemId}`
-        await tx.productBatch.upsert({
+        // The supplier's own lot/shade when it was entered, otherwise a number made from the PO.
+        const batchNumber = lot.batchNumber || `PO-${picking.purchaseOrder.displayId}-${line.purchaseOrderItemId}`
+        const expiryDate = lot.expiryDate ? new Date(lot.expiryDate) : null
+        if (expiryDate && Number.isNaN(expiryDate.getTime())) throw new Error(`${line.name}: the expiry date is not valid`)
+        const batch = await tx.productBatch.upsert({
           where: { productId_batchNumber: { productId: line.productId, batchNumber } },
-          create: { productId: line.productId, batchNumber, quantity: qty, remainingQty: qty, costPrice: unitCost, supplierId: picking.purchaseOrder.supplierId, poId: picking.purchaseOrder.id },
-          update: { quantity: { increment: qty }, remainingQty: { increment: qty }, costPrice: unitCost },
+          create: { productId: line.productId, batchNumber, quantity: qty, remainingQty: qty, costPrice: unitCost, supplierId: picking.purchaseOrder.supplierId, poId: picking.purchaseOrder.id, shadeCode: lot.shadeCode || null, expiryDate },
+          update: { quantity: { increment: qty }, remainingQty: { increment: qty }, costPrice: unitCost, ...(lot.shadeCode ? { shadeCode: lot.shadeCode } : {}), ...(expiryDate ? { expiryDate } : {}) },
         })
+        batchId = batch.id
       }
     }
     await tx.stockPickingLine.update({ where: { id: line.id }, data: { doneQty: qty, batchId } })

@@ -30,6 +30,7 @@ export default function PickingPage() {
   const [godowns, setGodowns] = useState([]);
   const [chatterKey, setChatterKey] = useState(0);
   const [returnForm, setReturnForm] = useState(null);
+  const [lots, setLots] = useState({});
   const router = useRouter();
 
   const load = useCallback(async () => {
@@ -57,6 +58,7 @@ export default function PickingPage() {
   if (!picking) return <p className="text-sm text-muted">Transfer not found.</p>;
 
   const isDelivery = picking.pickingType === 'DELIVERY';
+  const isReceipt = picking.pickingType === 'RECEIPT';
   const ready = picking.status === 'READY';
   const isSlab = (line) => line.product?.isSlabTracked;
   const qty = (line) => (isSlab(line) ? (slabSel[line.id] || []).length : Math.max(0, Math.round(Number(done[line.id]) || 0)));
@@ -90,7 +92,7 @@ export default function PickingPage() {
       id: pickingId,
       createBackorder,
       ...transport,
-      lines: picking.lines.map(line => ({ lineId: line.id, doneQty: qty(line), batchId: isSlab(line) ? null : batches[line.id] ? Number(batches[line.id]) : null, ...(isSlab(line) ? { slabIds: slabSel[line.id] || [] } : {}) })),
+      lines: picking.lines.map(line => ({ lineId: line.id, doneQty: qty(line), batchId: isSlab(line) ? null : batches[line.id] ? Number(batches[line.id]) : null, ...(isSlab(line) ? { slabIds: slabSel[line.id] || [] } : {}), ...(isReceipt ? { batchNumber: lots[line.id]?.batchNumber || undefined, shadeCode: lots[line.id]?.shadeCode || undefined, expiryDate: lots[line.id]?.expiryDate || undefined } : {}) })),
     });
     setBusy('');
     setAskBackorder(false);
@@ -219,6 +221,7 @@ export default function PickingPage() {
                 <thead><tr className="border-y border-border text-[11px] uppercase text-muted text-left">
                   <th className="px-4 py-2">Product</th>
                   {isDelivery && <th className="px-4 py-2">Batch / shade</th>}
+                  {isReceipt && <th className="px-4 py-2">Supplier lot / shade</th>}
                   <th className="px-4 py-2 text-right">{isDelivery ? 'On hand here' : isReturn ? '' : 'Unit cost'}</th>
                   <th className="px-4 py-2 text-right">Demand</th>
                   <th className="px-4 py-2 text-right w-32">Quantity</th>
@@ -233,6 +236,16 @@ export default function PickingPage() {
                       <Fragment key={line.id}>
                       <tr className="border-b border-border/50">
                         <td className="px-4 py-2.5"><div className="text-foreground">{line.name}</div><div className="text-[11px] text-muted">{line.sku} · {line.product?.unitOfMeasure}</div></td>
+                        {isReceipt && (
+                          <td className="px-4 py-2.5">
+                            {ready ? (
+                              <div className="flex gap-1.5">
+                                <input value={lots[line.id]?.batchNumber || ''} onChange={e => setLots({ ...lots, [line.id]: { ...lots[line.id], batchNumber: e.target.value } })} placeholder="Lot / batch no." className={`${inputClass} w-36`} />
+                                <input value={lots[line.id]?.shadeCode || ''} onChange={e => setLots({ ...lots, [line.id]: { ...lots[line.id], shadeCode: e.target.value } })} placeholder="Shade" className={`${inputClass} w-24`} />
+                              </div>
+                            ) : <span className="text-muted">{line.batch ? `${line.batch.batchNumber}${line.batch.shadeCode ? ` · ${line.batch.shadeCode}` : ''}` : '—'}</span>}
+                          </td>
+                        )}
                         {isDelivery && (
                           <td className="px-4 py-2.5">
                             {slabRow ? <span className="text-xs text-muted">{chosen.length} slab(s) · {chosenSqft.toFixed(1)} sq.ft</span> : ready ? (

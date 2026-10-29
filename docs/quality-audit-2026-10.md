@@ -193,11 +193,21 @@ re-audited. 117 integration checks pass, including 7 new `P3:` cases.
   duplicate SKUs by sheet row; a BOX product needs coverage per box.
 - Invoices made from a quotation carry the converting user's salesperson (team dashboards count them).
 
+**Done in the Odoo-parity pass**
+- A purchase order has a "Deliver to" location (`PurchaseOrder.godownId`, migration
+  `20261030100000_po_destination_godown`); its receipt goes there. Replenishment makes one draft PO per supplier
+  *and* location, and a location's rule counts only drafts delivering there.
+- Receipts capture the supplier's lot number, shade and expiry per line (Operations → receipt). The same lot received
+  again adds to the same batch; with nothing typed the PO-based batch is created as before.
+
 **Open (needs a product decision or a larger change)**
-- Per-godown replenishment and PO destination godown; shade/batch capture at receipt; batches per godown.
+- Batches per godown: batch quantity is still one total per batch (a shade's stock can't be told apart by
+  location); that needs a per-location batch-stock table touching deliveries, transfers, counts and POS.
 - Store orders still deduct stock without a GST invoice; staff can't reach Billing, so this is their only way to
-  sell. Decide whether staff should use POS or quotations instead.
-- Large pages (`quotations`, `billing`, `inventory`, 2,300–2,800 lines each) should be split into routes.
+  sell. Odoo's way is quotation → sales order → delivery → invoice, which staff can already start; turning
+  store orders into invoices needs a rule for GST on their amount, so it was left as is.
+- Large pages (`quotations`, `billing`, `inventory`, 2,300–2,800 lines each) should be split into routes
+  (maintainability only; do it as its own change).
 
 ---
 
